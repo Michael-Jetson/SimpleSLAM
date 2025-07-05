@@ -1,0 +1,10 @@
+# 传感器配置
+sensor_cfg:
+  lidar_cfg:
+    lidar_topic: "/lidar_topic"
+    lidar_frame_id: "lidar_frame"
+  camera_cfg:
+    camera_topic: "/camera_topic"
+  imu_topic: "/imu_topic"
+  bag_path: "/bag/rosbag.bag"
+  mapping_mode: "offline"

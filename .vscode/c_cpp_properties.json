@@ -1,0 +1,23 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/include/**",
+                "/usr/include",
+                "/usr/local/include",
+                "/usr/local/include/pcl-1.12",
+                "/usr/include/x86_64-linux-gnu",
+                "/usr/include/eigen3",
+                "/opt/ros/noetic/include/**",
+                "/usr/include/vtk-9.1"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++20",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
