@@ -12,7 +12,7 @@ public:
      * @tparam T IMU数据类型，必须满足IMUData概念
      * @param imu_data IMU数据
      */
-    template<IMUData T>
+    template<typename T>
     void processIMUData(const T& imu_data) {
         // 处理IMU数据的逻辑
         // 例如：存储、预处理等

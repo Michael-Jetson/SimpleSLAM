@@ -5,8 +5,8 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "slam_node");
     ros::NodeHandle nh;
+    SimpleSlam::IMUSubModule imu_submodule("imu_submodule");
 
-    SensorIO sensor_io();
 
     // 进入循环，等待回调函数处理数据
     ros::spin();
