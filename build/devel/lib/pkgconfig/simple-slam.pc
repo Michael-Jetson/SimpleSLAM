@@ -1,8 +1,0 @@
-prefix=/home/gpf/catkin_ws/src/simple-slam/build/devel
-
-Name: simple-slam
-Description: Description of simple-slam
-Version: 0.0.0
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
