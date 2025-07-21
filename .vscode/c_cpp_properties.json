@@ -5,14 +5,14 @@
             "includePath": [
                 "${workspaceFolder}/include/**",
                 "/usr/include",
-                "/usr/local/include",
+                "/usr/local/include/**",
                 "/usr/local/include/opencv4",
                 "/usr/local/include/eigen3",
                 "/usr/local/include/pcl-1.12",
                 "/usr/include/x86_64-linux-gnu",
                 "/usr/include/eigen3",
                 "/opt/ros/noetic/include/**",
-                "/usr/include/vtk-9.2"
+
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc-11",

@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(simple-slam)
+set(CMAKE_CXX_STANDARD 20)
+
+# Qt5支持
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Gui)
+set(CMAKE_AUTOMOC ON)
+
+# catkin依赖
+find_package(catkin REQUIRED COMPONENTS
+  nav_msgs
+  roscpp
+  rospy
+  sensor_msgs
+  std_msgs
+)
+
+# 其他依赖
+find_package(Eigen3 REQUIRED)
+find_package(PCL REQUIRED)
+find_package(OpenCV REQUIRED)
+
+catkin_package()
+
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${PCL_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+# module_graph库 - 手动处理MOC
+qt5_wrap_cpp(MODULE_GRAPH_MOC include/module_graph/module_graph.h)
+add_library(module_graph 
+  src/module_graph/module_graph.cpp
+  ${MODULE_GRAPH_MOC}
+)
+target_link_libraries(module_graph 
+  Qt5::Core 
+  Qt5::Widgets 
+  Qt5::Gui
+)
+
+# slam可执行文件
+add_executable(slam src/ros1_inference/slam.cpp)
+target_link_libraries(slam ${catkin_LIBRARIES})
+
+# graph_demo可执行文件  
+add_executable(graph_demo apps/graph_demo.cpp)
+target_link_libraries(graph_demo 
+  ${catkin_LIBRARIES}
+  module_graph
+  Qt5::Core 
+  Qt5::Widgets 
+  Qt5::Gui
+)
+
+

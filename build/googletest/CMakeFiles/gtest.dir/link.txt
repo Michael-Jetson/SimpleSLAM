@@ -1,0 +1,2 @@
+/usr/bin/ar qc /home/gpf/catkin_ws/src/simple-slam/build/gmock/lib/libgtest.a CMakeFiles/gtest.dir/src/gtest-all.cc.o
+/usr/bin/ranlib /home/gpf/catkin_ws/src/simple-slam/build/gmock/lib/libgtest.a

@@ -1,5 +1,5 @@
-#ifndef DATA_TYPE_H
-#define DATA_TYPE_H
+#ifndef _SIMPLE_SLAM_DATA_TYPE_H
+#define _SIMPLE_SLAM_DATA_TYPE_H
 #include<concepts>
 #include <Eigen/Dense>
 #include<pcl-1.12/pcl/point_cloud.h>
@@ -7,16 +7,7 @@ typedef Eigen::Matrix<double, 3, 1> V3D; // 三维向量
 typedef Eigen::Matrix<double, 3, 3> M3D; // 三维矩阵
 typedef Eigen::Matrix<double, 4, 4> M4D; // 四维矩阵
 
-/*
- * @brief IMU数据概念
- * @note 该概念要求类型T必须具有time、acc和gyr三个成员变量
- */
-template<typename T>
-concept IMUData = requires(T t) {
-    { t.time } -> std::convertible_to<double>;
-    { t.acc } -> std::convertible_to<V3D>;
-    { t.gyr } -> std::convertible_to<V3D>;
-};
+
 /*
  * @brief 针对IMU数据的6D位姿结构体
  * @param time: 时间戳
@@ -38,4 +29,25 @@ struct Pose6D
     V3D pos; // 位置
     M3D rot; // 旋转矩阵
 };
+
+/*
+ * @brief 点云数据结构体
+ * @param x: x坐标
+ * @param y: y坐标
+ * @param z: z坐标
+ * @param intensity: 强度
+ * @param timestamp: 时间戳
+*/
+struct CTPoint
+{
+    CTPoint() : timestamp(0), x(0), y(0), z(0), intensity(0) {}
+    CTPoint(double t, double x, double y, double z) : timestamp(t), x(x), y(y), z(z) {}
+    double timestamp;
+    double x;
+    double y;
+    double z;
+    double intensity;
+};
+
+
 #endif

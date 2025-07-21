@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(s-slam)
+project(simple-slam)
 set(CMAKE_CXX_STANDARD 20)
-## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
 
-## Find catkin macros and libraries
-## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
+# Qt5支持
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Gui)
+set(CMAKE_AUTOMOC ON)
+
+# catkin依赖
 find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   roscpp
@@ -14,59 +14,39 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
 )
+
+# 其他依赖
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
-include_directories(${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR} ${PCL_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS} ${GTSAM_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS} ${GeographicLib_INCLUDE_DIRS} include)
-## System dependencies are found with CMake's conventions
-# find_package(Boost REQUIRED COMPONENTS system)
+find_package(Sophus REQUIRED)
+
 catkin_package()
 
-## Uncomment this if the package has a setup.py. This macro ensures
-## modules and global scripts declared therein get installed
-## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
-# catkin_python_setup()
-
-################################################
-## Declare ROS messages, services and actions ##
-################################################
-
-## To declare and build messages, services or actions from within this
-## package, follow these steps:
-## * Let MSG_DEP_SET be the set of packages whose message types you use in
-##   your messages/services/actions (e.g. std_msgs, actionlib_msgs, ...).
-## * In the file package.xml:
-##   * add a build_depend tag for "message_generation"
-##   * add a build_depend and a exec_depend tag for each package in MSG_DEP_SET
-##   * If MSG_DEP_SET isn't empty the following dependency has been pulled in
-
-###########
-
-## Specify additional locations of header files
-## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${PCL_INCLUDE_DIRS}
+  ${Sophus_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
-# Declare a C++ library
-add_library(sensor include/sensor_io/sensor_io.cpp)
+# module_graph库 - 手动处理MOC
+qt5_wrap_cpp(MODULE_GRAPH_MOC include/module_graph/module_graph.h)
+add_library(module_graph include/module_graph/module_graph.cpp ${MODULE_GRAPH_MOC})
+target_link_libraries(module_graph Qt5::Core Qt5::Widgets Qt5::Gui)
 
-
+# slam可执行文件
 add_executable(slam src/ros1_inference/slam.cpp)
-target_link_libraries(slam ${catkin_LIBRARIES} sensor)
+target_link_libraries(slam ${catkin_LIBRARIES})
+
+# graph_demo可执行文件  
+add_executable(graph_demo apps/graph_demo.cpp)
+target_link_libraries(graph_demo 
+  ${catkin_LIBRARIES}
+  module_graph
+
+)
 
 
-
-#############
-## Testing ##
-#############
-
-## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_s-slam.cpp)
-# if(TARGET ${PROJECT_NAME}-test)
-#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
-# endif()
-
-## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)

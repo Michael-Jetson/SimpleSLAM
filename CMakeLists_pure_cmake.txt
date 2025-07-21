@@ -1,0 +1,54 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(simple-slam)
+set(CMAKE_CXX_STANDARD 20)
+
+# Qt5支持
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Gui)
+set(CMAKE_AUTOMOC ON)
+
+# 其他依赖（可选）
+find_package(Eigen3 QUIET)
+find_package(PCL QUIET)
+find_package(OpenCV QUIET)
+
+# 包含目录
+include_directories(include)
+
+if(EIGEN3_FOUND)
+    include_directories(${EIGEN3_INCLUDE_DIR})
+endif()
+
+if(PCL_FOUND)
+    include_directories(${PCL_INCLUDE_DIRS})
+endif()
+
+if(OpenCV_FOUND)
+    include_directories(${OpenCV_INCLUDE_DIRS})
+endif()
+
+# module_graph库 - 手动处理MOC
+qt5_wrap_cpp(MODULE_GRAPH_MOC include/module_graph/module_graph.h)
+add_library(module_graph 
+  src/module_graph/module_graph.cpp
+  ${MODULE_GRAPH_MOC}
+)
+target_link_libraries(module_graph 
+  Qt5::Core 
+  Qt5::Widgets 
+  Qt5::Gui
+)
+
+# graph_demo可执行文件  
+add_executable(graph_demo apps/graph_demo.cpp)
+target_link_libraries(graph_demo 
+  module_graph
+  Qt5::Core 
+  Qt5::Widgets 
+  Qt5::Gui
+)
+
+# 可选：slam可执行文件（如果需要）
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/ros1_inference/slam.cpp")
+    add_executable(slam src/ros1_inference/slam.cpp)
+    # 根据需要添加链接库
+endif() 
