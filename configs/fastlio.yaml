@@ -1,0 +1,9 @@
+logging:
+  dir: ./logs
+  run_name: dataset_01
+  level: info
+  async: true
+  tag_width: 40
+  overrides:
+    "[Frontend][ORBExtractor]": debug
+    "[Backend]": info
