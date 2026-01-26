@@ -6,6 +6,8 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <typeinfo>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -210,12 +212,112 @@ inline const Node& Require(const std::string& owner_type,
 
 class ModuleBase {
 public:
+  // Lifecycle states for diagnostics and basic control.
+  enum class State {
+    kCreated,
+    kInitialized,
+    kRunning,
+    kStopped,
+    kError,
+    kShutdown
+  };
+
+  // Scheduling hint for the runtime/executor.
+  enum class ExecMode {
+    kPassive,
+    kActive
+  };
+
+  ModuleBase(const ModuleBase&) = delete;
+  ModuleBase& operator=(const ModuleBase&) = delete;
+  ModuleBase(ModuleBase&&) = delete;
+  ModuleBase& operator=(ModuleBase&&) = delete;
+
   virtual ~ModuleBase() = default;
+
+  // Identity and config as provided by the factory/Builder.
+  const std::string& name() const noexcept { return name_; }
+  const Params& params() const noexcept { return params_; }
+
+  // RTTI-based type name is used mainly for logging and diagnostics.
+  virtual std::string_view type_name() const noexcept { return typeid(*this).name(); }
+  // Default is passive; active modules are explicitly scheduled by runtime.
+  virtual ExecMode exec_mode() const noexcept { return ExecMode::kPassive; }
+
+  // Lifecycle hooks; runtime calls these in order when available.
+  virtual bool Configure() { return true; }
+  virtual bool Init() { return true; }
+  virtual bool Start() { return true; }
+  virtual void Stop() {}
+  virtual void Reset() {}
+  virtual void Shutdown() {}
+
+  // Updated by runtime/module; errors should set kError.
+  State state() const noexcept { return state_; }
+  const std::string& last_error() const noexcept { return last_error_; }
+
+protected:
+  // Modules are constructed by the factory with a name and params.
+  explicit ModuleBase(std::string name, Params params)
+      : name_(std::move(name)), params_(std::move(params)) {}
+
+  void set_state(State s) noexcept { state_ = s; }
+  // Record error and mark state as kError.
+  void set_error(std::string msg) {
+    last_error_ = std::move(msg);
+    state_ = State::kError;
+  }
+
+  std::string name_;
+  Params params_;
+  State state_{State::kCreated};
+  std::string last_error_;
 };
 
 class PluginBase {
 public:
+  // Thread-safety declaration for the runtime and module owners.
+  enum class ThreadModel {
+    kSingleThread,
+    kThreadSafe,
+    kExternalSync
+  };
+
+  PluginBase(const PluginBase&) = delete;
+  PluginBase& operator=(const PluginBase&) = delete;
+  PluginBase(PluginBase&&) = delete;
+  PluginBase& operator=(PluginBase&&) = delete;
+
   virtual ~PluginBase() = default;
+
+  // Identity and config as provided by the factory/Builder.
+  const std::string& name() const noexcept { return name_; }
+  const Params& params() const noexcept { return params_; }
+
+  // RTTI-based type name is used mainly for logging and diagnostics.
+  virtual std::string_view type_name() const noexcept { return typeid(*this).name(); }
+  // Thread model hint to avoid unsafe concurrent calls.
+  virtual ThreadModel thread_model() const noexcept { return ThreadModel::kSingleThread; }
+
+  // Minimal lifecycle; modules decide how/when to use plugins.
+  virtual bool Init() { return true; }
+  virtual void Reset() {}
+  virtual void Shutdown() {}
+
+  // Error string for diagnostics (kept by plugin itself).
+  const std::string& last_error() const noexcept { return last_error_; }
+
+protected:
+  // Plugins are constructed by the factory with a name and params.
+  explicit PluginBase(std::string name, Params params)
+      : name_(std::move(name)), params_(std::move(params)) {}
+
+  // Record error without changing any external state.
+  void set_error(std::string msg) { last_error_ = std::move(msg); }
+
+  std::string name_;
+  Params params_;
+  std::string last_error_;
 };
 
 // ============================================================
