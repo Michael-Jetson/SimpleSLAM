@@ -102,26 +102,26 @@ SimpleSLAM 的设计基于六个核心原则，这些原则贯穿整个架构设
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         ① Builder（装配器）                          │
-│     YAML配置 → 工厂创建 → 能力校验 → 权限分配 → 依赖注入 → 启动      │
+│       YAML配置 → 工厂创建 → 能力校验 → 权限分配 → 依赖注入 → 启动          │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
 ┌────────────────────────────────▼────────────────────────────────────┐
 │                        ② 基础设施层                                  │
-│  TopicBus │ Scheduler │ 日志 │ 性能度量 │ 配置 │ IMU服务 │ 时间同步  │
-│  工厂注册表 │ 推理引擎（可选）                                        │
+│     TopicBus │ Scheduler │ 日志 │ 性能度量 │ 配置 │ IMU服务 │ 时间同步  │
+│     工厂注册表 │ 推理引擎（可选）                                       │
 └───┬────────────────────────────────────────────────────────────┬───┘
     │                                                            │
 ┌───▼──────────┐  ┌──────────────────────────┐  ┌───────────────▼───┐
-│ ③ SensorIO   │  │    ④ 前端管道             │  │  ⑤ 后端服务层     │
-│  数据接入     │─→│    整体可替换             │─→│  可组合的异步服务  │
-│  时间同步     │  │    内部可定制             │←─│                  │
-│  基础预处理   │  │    输出契约: PipelineResult│  │                  │
-└──────────────┘  └────────────┬─────────────┘  └────────┬─────────┘
+│ ③ SensorIO  │   │    ④ 前端管道            │  │  ⑤ 后端服务层      │
+│  数据接入     │─→ │    整体可替换             │─→│  可组合的异步服务    │
+│  时间同步     │   │    内部可定制             │←─│                   │
+│  基础预处理    │  │   输出契约: PipelineResult│  │                   │
+└──────────────┘  └────────────┬─────────────┘  └─────────┬─────────┘
                                │       ↑                  │      ↑
                                ▼       │                  ▼      │
                   ┌───────────────────────────────────────────────────┐
-                  │               ⑥ 全局资源层                        │
-                  │  三类资源：静态配置 │ 运行状态 │ 数据存储           │
+                  │                ⑥ 全局资源层                        │
+                  │      三类资源：静态配置 │ 运行状态 │ 数据存储           │
                   └───────────────────────────────────────────────────┘
 ```
 
@@ -199,3 +199,14 @@ LoopDetector ──IIndexQuery──> IndexStore
 ## 早期设计目标
 
 基于古法编程，匠心打造重置版Fast-LIO
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=Michael-Jetson%2FSimpleSLAM&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=Michael-Jetson/SimpleSLAM&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=Michael-Jetson/SimpleSLAM&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=Michael-Jetson/SimpleSLAM&type=date&legend=bottom-right" />
+ </picture>
+</a>
