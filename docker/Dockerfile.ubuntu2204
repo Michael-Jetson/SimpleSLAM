@@ -1,0 +1,42 @@
+# SimpleSLAM v0 开发环境
+# 基于 ROS Humble（Ubuntu 22.04），包含完整 C++20 工具链
+#
+# GCC 版本说明：
+#   ROS humble 镜像自带 GCC 11，已支持 v0 所需的 C++20 特性：
+#   concepts, jthread, span, source_location, [[likely]]/[[unlikely]]
+#
+# 构建说明：
+#   需先运行 scripts/install_deps.sh 或手动在 docker/deps/ 下准备 catch2 和 manif 源码
+#   然后在项目根目录执行：docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
+FROM osrf/ros:humble-desktop-full
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── v0 核心依赖 ──
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libeigen3-dev \
+    libspdlog-dev \
+    libyaml-cpp-dev \
+    libfmt-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Catch2 3.x（从预下载的源码构建，避免容器内 GitHub 访问问题）──
+COPY docker/deps/catch2 /tmp/catch2
+RUN cmake -S /tmp/catch2 -B /tmp/catch2/build \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DBUILD_TESTING=OFF \
+    && cmake --build /tmp/catch2/build -j$(nproc) \
+    && cmake --install /tmp/catch2/build \
+    && rm -rf /tmp/catch2
+
+# ── manif 李群库（header-only + CMake config，替代 Sophus）──
+COPY docker/deps/manif /tmp/manif
+RUN cmake -S /tmp/manif -B /tmp/manif/build \
+        -DBUILD_TESTING=OFF \
+        -DBUILD_EXAMPLES=OFF \
+    && cmake --build /tmp/manif/build -j$(nproc) \
+    && cmake --install /tmp/manif/build \
+    && rm -rf /tmp/manif
+
+WORKDIR /workspace
