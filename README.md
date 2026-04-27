@@ -1,210 +1,190 @@
-# 概述
-**核心理念**：通过切换 YAML 配置文件，在 LIO / VIO / LIVO 紧耦合 / LIVO 松耦合四种方案之间自由切换，并在每种方案内部替换具体的子算法，而不需要修改任何框架代码。
+# SimpleSLAM
 
-**设计の哲学**：架构是重构出来的，不是设计出来的。先让代码跑起来，再逐步抽象。
+面向视觉-激光-惯性三模态的**模块化 C++20 SLAM 框架**，兼顾定位与建图。
 
-## 一. 项目定位
+## 项目定位
 
-### 1.1 SimpleSLAM 是什么
+SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能快速验证算法组合的构建框架。通过 YAML 配置切换 LIO / VIO / LIVO 方案，在每种方案内部替换子算法，无需修改框架代码。
 
-SimpleSLAM 是一个**模块化 C++ SLAM 框架**，目标不是做又一个 SLAM 算法实现，而是做一个让 SLAM 工程师能快速验证算法组合的构建工具——类似深度学习领域的 MMDetection，但针对 SLAM 的特殊性做了根本性的架构适配。
+**SimpleSLAM 不是什么**：
+- 不是万能机器人框架——专注 SLAM，不做导航规划和运动控制
+- 不重新发明优化器——后端使用 GTSAM / Ceres 等成熟因子图库
+- 不依赖 ROS 编译——核心库纯 C++20，ROS 2 集成是可选适配层
+- 不追求"任意模块自由替换"——模块化边界由 SLAM 的数学结构决定
 
-### 1.2 SimpleSLAM 解决什么问题
-
-**传统 SLAM 开发的痛点**：
-- 想测试不同的配准方法（ICP vs NDT），需要修改大量代码
-- 想从 LIO 切换到 VIO，需要重写整个系统
-- 想复用 ORB-SLAM3 的回环检测，但它和你的前端紧耦合
-- 想尝试新的地图结构，但改动会影响整个系统
-- 想更换前端的特征描述子，但是发现需要修改多处
-
-**SimpleSLAM 的解决方案**：
-- **方案级切换**：通过修改 YAML 一行配置，在 LIO / VIO / LIVO 之间切换
-- **算法级替换**：在同一方案内部，替换配准方法、特征提取、地图结构等
-- **模块复用**：回环检测、全局优化等后端服务可以跨方案复用
-- **快速验证**：新算法只需实现接口并注册，无需修改框架代码
-
-### 1.3 SimpleSLAM 不是什么
-
-**SimpleSLAM 不追求"任意模块自由替换"**。
-
-为什么？因为 SLAM 与深度学习有本质差异：
-- **数据类型异构**：位姿、特征、点云、预积分量差异巨大（不像 Tensor 统一）
-- **存在反馈环路**：前端查地图、后端校正回传前端（不是 DAG）
-- **实时性约束异构**：前端硬实时，后端可容忍延迟
-- **紧耦合系统不可拆分**：FAST-LIVO2 的 LiDAR 配准和视觉跟踪在同一个 IEKF 中交替更新，根本无法拆成独立模块
-
-因此 SimpleSLAM 聚焦**同类算法可替换**——在同一种方案框架内部，替换具体的子算法。
-
----
-
-## 2. 核心设计原则
-
-SimpleSLAM 的设计基于六个核心原则，这些原则贯穿整个架构设计。
-
-### 原则一：契约优于结构
-
-**含义**：框架不规定模块内部如何组织，只约束模块之间的数据契约和交互协议。
-
-**为什么**：FAST-LIO2 的 IEKF 循环与 ORB-SLAM3 的特征匹配管线、FAST-LIVO2 的交替更新与 LVI-SAM 的双子系统松耦合，内部结构差异太大，任何统一的内部框架都无法容纳。
-
-**实践**：前端管道内部是紧耦合还是松耦合，是滤波还是优化，框架不干涉。只要输出符合 `PipelineResult` 契约即可。
-
-### 原则二：插件分层
-
-**含义**：可替换性存在于两个层次——方案级替换和算法级替换，用不同机制实现。
-
-**为什么**：方案级切换（LIO → VIO）和算法级切换（ICP → NDT）是不同性质的操作，需要不同的抽象层次。
-
-**实践**：
-- **方案级**：通过管道模板（LIOPipeline / VIOPipeline / LIVOTightPipeline / LIVOLoosePipeline）实现
-- **算法级**：通过算法槽（配准方法、视觉跟踪、地图结构等）实现
-
-### 原则三：服务可组合
-
-**含义**：后端不是单体模块，而是一组可独立启用、独立触发的服务，需要什么就开什么。
-
-**为什么**：不同场景需要不同的后端功能组合。纯里程计不需要回环检测，小场景不需要地图分区，单地图不需要 Atlas。
-
-**实践**：ConstraintManager（隐式启动）/ LocalOptimizer / GlobalOptimizer / LoopDetector / Relocator / MapManager / AtlasManager，共一个核心服务 + 六个可选服务，通过 YAML 配置启用/禁用。
-
-### 原则四：资源无决策逻辑
-
-**含义**：共享资源提供数据存储、并发控制和高效检索能力（如近邻查询），但所有业务决策（何时清理、何时切换分块、何时触发优化）在服务层完成。
-
-**为什么**：资源层提供数据能力，但不做业务决策。这样资源层可以被不同服务以不同方式使用。近邻查询是数据能力而非业务决策。
-
-**实践**：MapStore 只提供查询/更新接口，何时清理旧数据由 MapManager 决定。
-
-### 原则五：权限静态分配
-
-**含义**：谁读谁写在 Builder 构建期确定，运行时不可更改。
-
-**为什么**：运行时动态权限检查开销大且容易出错。编译期/构建期确定权限，运行时零开销。
-
-**实践**：LIO 管道持有 MapStore 的写权限，VIO 管道只有读权限。Builder 在构建期验证不会出现冲突的写权限。
-
-### 原则六：统一 TopicRuntime，按语义分型
-
-**含义**：框架对外提供统一的 ROS 风格 TopicRuntime 抽象，但按语义区分两类 topic：
-- **Stream topics**：承载高频连续数据流（如 IMU、点云、图像）
-- **Event topics**：承载低频离散事件（如关键帧、回环、优化完成）
-
-同步查询仍然通过资源层接口完成，不纳入 topic 通信。
-
-**为什么**：统一 API 可以降低使用门槛、便于后续替换 backend；而高频流与低频事件在延迟、所有权、广播需求上的差异很大，不能强行共用一种底层机制。
-
-**实践**：
-- **Stream topic**：SensorIO → Pipeline（200Hz IMU / 点云数据流）
-- **Event topic**：Pipeline → LoopDetector（1-10Hz 关键帧事件）
-- **资源接口**：Pipeline 查询 MapStore（按需同步调用）
-
----
-## 3. 总体架构
-
-### 3.1 六层架构图
+## 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ① Builder（装配器）                          │
-│       YAML配置 → 工厂创建 → 能力校验 → 权限分配 → 依赖注入 → 启动          │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-┌────────────────────────────────▼────────────────────────────────────┐
-│                        ② 基础设施层                                  │
-│   TopicRuntime │ Scheduler │ 日志 │ 性能度量 │ 配置 │ IMU服务 │ 时间同步 │
-│     工厂注册表 │ 推理引擎（可选）                                       │
-└───┬────────────────────────────────────────────────────────────┬───┘
-    │                                                            │
-┌───▼──────────┐  ┌──────────────────────────┐  ┌───────────────▼───┐
-│ ③ SensorIO  │   │    ④ 前端管道            │  │  ⑤ 后端服务层      │
-│  数据接入     │─→ │    整体可替换             │─→│  可组合的异步服务    │
-│  时间同步     │   │    内部可定制             │←─│                   │
-│  基础预处理    │  │   输出契约: PipelineResult│  │                   │
-└──────────────┘  └────────────┬─────────────┘  └─────────┬─────────┘
-                               │       ↑                  │      ↑
-                               ▼       │                  ▼      │
-                  ┌───────────────────────────────────────────────────┐
-                  │                ⑥ 全局资源层                        │
-                  │      三类资源：静态配置 │ 运行状态 │ 数据存储           │
-                  └───────────────────────────────────────────────────┘
++----------------------------------------------------------------------+
+|  SimpleSLAM                                                          |
+|                                                                      |
+|  SensorIO --> Odometry --> Topic<T> + CallbackSlots                  |
+|  (数据接入)    (LIO/VIO/       +----------+----------+              |
+|                 LVIO/LO)        v          v          v              |
+|                              核心后端   基础后端   扩展后端          |
+|                             (回环/PGO) (子图管理) (可视化...)        |
+|                                                                      |
+|  资源层:     KeyframeStore | CurrentState | PoseGraph                |
+|  基础设施:   Logger | Config | Timing | Clock                        |
+|  Runner:     组装全部组件 + 管理生命周期 + 四种运行模式              |
++----------------------------------------------------------------------+
 ```
 
-### 3.2 六层职责
+五个顶层组件通过**数据流协作**，不是层叠依赖：
 
-**① Builder（装配器）**：
-- 读取 YAML 配置
-- 通过工厂创建所有组件
-- 验证能力标签兼容性
-  - Phase 1-3：基于插件代码中的 `provides` / `requires` 标签做最小类型兼容性校验（编译期注册，Builder 运行时早期验证）
-  - Phase 4+：引入外部 YAML 兼容性矩阵做语义级校验（见 12.3.3），并实现完整的能力标签传播
-- 分配资源读写权限
-- 依赖注入
-- 创建 Scheduler 并注入所有组件，调用 `scheduler.run()` 进入主循环
+- **SensorIO** — 对接外部数据源，统一转换为内部类型
+- **Odometry** — 前端里程计，输出实时位姿（ESIKF / 滑窗 BA / ICP 求解）
+- **Backend** — 一组可独立启停的后端服务（回环检测、位姿图优化、重定位等）
+- **Resources** — 被动的共享数据容器（关键帧、位姿图、外参等）
+- **Infrastructure** — 日志、配置、计时、时钟等非算法功能
 
-**② 基础设施层**：
-- 提供统一通信入口（TopicRuntime：Event topics + Stream topics）
-- 提供调度能力（ThreadManager / 线程池）
-- 提供系统编排（Scheduler：主循环、触发策略、初始化/跟踪状态切换、imu_batch 打包，见 6.2）
-- 提供日志、性能度量、配置解析
-- 提供 IMU 基础服务、时间同步
-- 提供工厂注册表、推理引擎（可选）
+## 核心设计法则
 
-**③ SensorIO（传感器接入层）**：
-- 统一接入多传感器数据（ROS / 数据集 / 驱动）
-- 时间戳标准化和同步
-- 基础预处理（去畸变、降采样等）
-- 封装统一消息并分发
+1. **模块化边界跟随数学接缝** — 在真正存在多种实现的地方设可替换边界，紧耦合的地方拒绝拆分
+2. **热路径必须单态** — C++20 concept 约束的模板保证内联和向量化，运行时多态只在启动期使用
+3. **永不"停止世界"** — 回环校正通过 FUTURE_ONLY + per-submap 变换实现，不阻塞前端
+4. **故障隔离** — 后端故障不传播到前端，Odometry 始终继续输出位姿
+5. **架构是重构出来的** — 先让算法跑通，再根据实际需求引入抽象
 
-**④ 前端管道（Pipeline）**：
-- 实时估计位姿（里程计）
-- 关键帧决策
-- 输出契约：PipelineResult（状态 + PipelineOutput + 退化信息，详见 8.1）
-- 整体可替换（LIO / VIO / LIVO 紧 / LIVO 松）
-- 内部可定制（算法槽）
+## 三层使用深度
 
-**⑤ 后端服务层**：
-- 一个核心服务 + 六个可选的异步服务
-- ConstraintManager：约束管理（隐式启动）
-- LocalOptimizer：局部优化 + 路标管理 [Phase 4]
-- GlobalOptimizer：全局优化
-- LoopDetector：回环检测
-- Relocator：重定位
-- MapManager：地图管理
-- AtlasManager：多地图管理
+| 层级 | 用户画像 | 使用方式 |
+|------|---------|---------|
+| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML，运行 `run_slam_offline` |
+| L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，自由组装组件 |
+| L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用 |
 
-**⑥ 全局资源层**：
-- 三类资源：StaticConfig / RuntimeState / DataStore
-- 提供并发安全的读写接口
-- 版本管理和快照
+## 当前状态
 
-### 3.3 数据流概览
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| **v0** | 基础设施（日志、配置、计时、时钟、几何类型） | **已完成** |
+| **v0.5** | 纯激光里程计（点云数据结构、RegistrationTarget、VoxelHashTarget、KITTI） | 进行中 |
+| v1.0 | LIO + 回环（ESIKF、IMU 预积分、ScanContext、GTSAM iSAM2） | 计划中 |
+| v1.5 | LIVO + 三地图族（相机前端、Ceres 滑窗 BA） | 计划中 |
+| v2.0 | 子图持久化 + 资源分页 + Python 绑定 | 计划中 |
 
-**高频实时路径**（通过 Stream topics）：
-```
-SensorIO ──StreamTopic<IMU/PointCloud>──> Pipeline ──ResourceQuery──> MapStore
-                                                 │
-                                                 └──ResourceWrite──> MapStore (LIO only)
-```
+精度目标：v1.0 达到 FAST-LIO2 级（EuRoC ATE < 0.12m，KITTI ATE < 3m）
 
-**低频事件路径**（通过 Event topics）：
-```
-Pipeline ──EventTopic<NewKeyFrame>──┬──> LocalOptimizer (局部BA/路标管理) [Phase4]
-                                    ├──> LoopDetector ──EventTopic<LoopDetected>──> GlobalOptimizer
-                                    │                                                  │
-                                    │    EventTopic<CorrectionReady> ←─────────────────┘
-                                    └──> ConstraintManager
+## 快速开始
+
+### 环境要求
+
+- Docker（推荐）或 Ubuntu 22.04+
+- GCC 11+（C++20 支持）
+
+### Docker 构建
+
+```bash
+# 1. 预下载依赖源码（容器内 GitHub 访问可能不稳定）
+git clone --branch v3.4.0 --depth 1 https://github.com/catchorg/Catch2.git docker/deps/catch2
+git clone --branch master --depth 1 https://github.com/artivis/manif.git docker/deps/manif
+
+# 2. 构建开发镜像
+docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
+
+# 3. 编译 + 测试
+docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
+    bash -c "cmake -B build -DBUILD_TESTING=ON && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
 
-**同步查询路径**（按需，直接调用）：
-```
-Pipeline ──IMapQuery──> MapStore
-LoopDetector ──IIndexQuery──> IndexStore
-```
-## 早期设计目标
+### 原生构建
 
-基于古法编程，匠心打造重置版Fast-LIO
+```bash
+# 安装依赖
+bash scripts/install_deps.sh
 
+# 编译
+cmake -B build -DBUILD_TESTING=ON
+cmake --build build -j
+
+# 测试
+cd build && ctest --output-on-failure
+```
+
+## 目录结构
+
+```
+simpleslam/
+├── core/                           # simpleslam_core 库（纯 C++20）
+│   ├── include/simpleslam/
+│   │   ├── convention.hpp          # 框架公约常量
+│   │   ├── types/                  # 核心数据类型
+│   │   │   ├── common.hpp          #   Timestamp, PointXYZI
+│   │   │   ├── geometry.hpp        #   SE3d, SO3d, Vec3d (manif 别名)
+│   │   │   └── sensor_data.hpp     #   LidarScan, ImageFrame, ImuSample
+│   │   ├── concepts/               # C++20 concept 接口定义
+│   │   │   └── registration_target.hpp
+│   │   ├── math/                   # 数学工具（点云操作、李群工具）
+│   │   └── infra/                  # 基础设施
+│   │       ├── logger.hpp          #   spdlog 封装（per-module、async）
+│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验
+│   │       ├── timing.hpp          #   RAII 计时 + 统计（p50/p95/p99）
+│   │       └── clock.hpp           #   时钟抽象（系统/数据集）
+│   └── src/
+├── registration/                   # RegistrationTarget 实现
+├── odometry/                       # Odometry 实现
+├── backend/                        # 后端服务
+├── resources/                      # 共享资源
+├── sensor_io/                      # 传感器接入
+├── runner/                         # 系统组装 + 运行入口
+├── apps/                           # 可执行文件
+├── configs/                        # 参考配置
+├── tests/                          # 单元测试 + 契约测试 + 集成测试
+├── docker/                         # Docker 开发环境
+├── scripts/                        # 工具脚本
+└── docs/                           # 架构文档
+```
+
+## 依赖
+
+### 核心依赖（simpleslam_core）
+
+| 库 | 用途 | 类型 |
+|---|------|------|
+| Eigen 3.4+ | 矩阵运算、四元数 | header-only |
+| manif | SE3d/SO3d 李群操作 | header-only |
+| spdlog | 异步日志 | 编译库 |
+| yaml-cpp | YAML 配置 | 编译库 |
+| fmt | 字符串格式化 | header-only |
+| Catch2 3.x | 单元测试 | 编译库 |
+
+### 可选依赖（按版本引入）
+
+| 库 | 用途 | 引入版本 |
+|---|------|---------|
+| nanoflann | KD-Tree 近邻搜索 | v0.5 |
+| tsl::robin_map | 高性能哈希表 | v0.5 |
+| GTSAM 4.3+ | 因子图优化 | v1.0 |
+| small_gicp | 回环验证 ICP | v1.0 |
+| Ceres 2.1+ | 滑窗 BA | v1.5 |
+| OpenCV 4.5+ | 视觉前端 | v1.5 |
+
+## 编码规范
+
+| 类目 | 规范 | 示例 |
+|------|------|------|
+| 文件名 | `snake_case.hpp` / `.cpp` | `timing.hpp` |
+| 类名 | `PascalCase` | `TimingManager` |
+| 函数/变量 | `camelCase` | `processFrame` |
+| 成员变量 | `snake_case_` | `root_` |
+| 常量 | `kPascalCase` | `kMaxSamples` |
+| 所有具体类 | 标注 `final` | `class SystemClock final` |
+| 头文件保护 | `#pragma once` | |
+| 技术标准 | C++20（不使用 C++23） | |
+
+## 技术栈
+
+```
+Eigen + manif — 基础数学层（李群、矩阵运算）
+    │
+    ├── ESIKF / IMU 预积分 — 手写，只依赖 Eigen + manif
+    │   (纯 LIO 路径在此层完全自洽)
+    │
+    ├── Ceres（可选）— 局部滑窗 BA / VIO
+    │
+    └── GTSAM（可选）— 全局因子图 / 回环优化
+```
 
 ## Star History
 
@@ -215,3 +195,7 @@ LoopDetector ──IIndexQuery──> IndexStore
    <img alt="Star History Chart" src="https://api.star-history.com/image?repos=Michael-Jetson/SimpleSLAM&type=date&legend=bottom-right" />
  </picture>
 </a>
+
+## License
+
+MIT
