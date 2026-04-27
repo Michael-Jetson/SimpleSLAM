@@ -1,0 +1,39 @@
+# 构建产物
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 缓存
+.cache/
+.ccache/
+CMakeCache.txt
+CMakeFiles/
+
+# 日志与运行时输出
+logs/
+
+# 内部文档（蓝图、调研报告等，不对外发布）
+docs/
+
+# Docker 预下载依赖（由 scripts/install_deps.sh 或手动下载）
+docker/deps/
+
+# 临时文件
+issue.md
+Review.md
+git.sh
+*.zip
+
+# 系统文件
+.DS_Store
+Thumbs.db
