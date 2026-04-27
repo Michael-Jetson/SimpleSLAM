@@ -1,0 +1,19 @@
+# SimpleSLAM 默认配置
+# 所有配置项均可被 dataset.yaml / experiment.yaml / CLI 覆盖
+schema_version: 1
+
+# ── 日志配置 ──
+logging:
+  async: true                    # 异步日志（实时线程不阻塞）
+  async_queue_size: 8192         # 异步队列容量
+  console_level: info            # 控制台输出级别
+  file_level: debug              # 文件输出级别
+  file_path: ""                  # 空则不写文件
+  backtrace_size: 32             # backtrace ring buffer 大小
+  levels: {}                     # 按模块覆盖级别，如 { odometry: debug, backend: warn }
+
+# ── 计时配置 ──
+timing:
+  enabled: true                  # 是否启用计时统计
+  dump_on_shutdown: true         # 关闭时自动输出统计
+  output_dir: ""                 # 空则只输出到日志
