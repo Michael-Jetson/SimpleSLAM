@@ -1,11 +1,14 @@
 # simpleslam_core —— 核心基础设施库
-# 纯 C++20，依赖 Eigen + manif + spdlog + yaml-cpp + fmt
-# v0 阶段只包含类型定义和基础设施（日志、配置、计时、时钟）
+# 类型定义、基础设施（日志/配置/计时/时钟）、数学工具、Topic 通信
 
 add_library(simpleslam_core
     src/logger.cpp
     src/timing.cpp
     src/config.cpp
+    src/point_ops.cpp
+    src/normal_estimation.cpp
+    src/pcd_io.cpp
+    src/topic_hub.cpp
 )
 
 target_compile_features(simpleslam_core PUBLIC cxx_std_20)
@@ -22,7 +25,9 @@ target_link_libraries(simpleslam_core
         MANIF::manif
         ${SIMPLESLAM_SPDLOG_TARGET}
         ${SIMPLESLAM_YAMLCPP_TARGET}
+        nanoflann::nanoflann
+        tsl::robin_map
     PRIVATE
-        fmt::fmt                      # 仅 .cpp 中使用，不暴露给下游
+        fmt::fmt
         simpleslam_compiler_options
 )
