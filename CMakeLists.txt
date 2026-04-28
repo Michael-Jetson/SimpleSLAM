@@ -17,13 +17,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(CompilerOptions)
 
-# ── 查找 v0 依赖 ──
+# ── 查找依赖 ──
 find_package(Eigen3 3.4 REQUIRED)
-# manif 导出的 target 名为 MANIF::manif（注意大写）
 find_package(manif REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(fmt REQUIRED)
+find_package(nanoflann REQUIRED)
+find_package(tsl-robin-map REQUIRED)
+# eventpp 和 SPSCQueue 预留给 v1.5 online 高性能模式
+# v1.0 的 Topic<T> 用标准库实现全部三种 QoS，接口完全兼容
 
 # yaml-cpp 目标名兼容（0.7.x 导出 yaml-cpp，0.8+ 导出 yaml-cpp::yaml-cpp）
 if(TARGET yaml-cpp::yaml-cpp)
@@ -43,8 +46,15 @@ else()
     message(FATAL_ERROR "找不到 spdlog 的 CMake target")
 endif()
 
+# ── 可选依赖 ──
+option(SIMPLESLAM_USE_GTSAM "启用 GTSAM 集成" OFF)
+
 # ── 子目录 ──
 add_subdirectory(core)
+add_subdirectory(sensor_io)
+add_subdirectory(resources)
+add_subdirectory(adapters)
+add_subdirectory(backend)
 
 # ── 测试（默认开启）──
 option(BUILD_TESTING "构建单元测试" ON)
