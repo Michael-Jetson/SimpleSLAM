@@ -56,15 +56,17 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 ## 当前状态
 
-| 版本 | 内容 | 状态 |
-|------|------|------|
-| **v0** | 基础设施（日志、配置、计时、时钟、几何类型） | **已完成** |
-| **v0.5** | 纯激光里程计（点云数据结构、RegistrationTarget、VoxelHashTarget、KITTI） | 进行中 |
-| v1.0 | LIO + 回环（ESIKF、IMU 预积分、ScanContext、GTSAM iSAM2） | 计划中 |
-| v1.5 | LIVO + 三地图族（相机前端、Ceres 滑窗 BA） | 计划中 |
-| v2.0 | 子图持久化 + 资源分页 + Python 绑定 | 计划中 |
+| 版本 | 内容 | 状态 | 测试 |
+|------|------|------|------|
+| **v0** | 基础设施（日志、配置、计时、时钟、几何类型） | **已完成** | 16 |
+| **v0.5** | 点云工具 + Sensor IO（KDTree、VoxelGrid、降采样、KittiSource） | **已完成** | 54 |
+| **v1.0 基础设施** | Topic 通信、共享资源、Concept 定义、PCD IO、EuRoC、后端框架 | **已完成** | 113 |
+| v1.0 算法 | 纯 LO（VoxelHashTarget、ICP-SVD、Runner） | **待实现** | — |
+| v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
+| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2、SubMapManager） | 计划中 | — |
+| v3.0+ | VIO / LIVO / 传感器扩展 / Python 绑定 | 计划中 | — |
 
-精度目标：v1.0 达到 FAST-LIO2 级（EuRoC ATE < 0.12m，KITTI ATE < 3m）
+精度目标：v1.5 达到 FAST-LIO2 级（EuRoC ATE < 0.12m，KITTI ATE < 3m）
 
 ## 快速开始
 
@@ -79,13 +81,15 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 # 1. 预下载依赖源码（容器内 GitHub 访问可能不稳定）
 git clone --branch v3.4.0 --depth 1 https://github.com/catchorg/Catch2.git docker/deps/catch2
 git clone --branch master --depth 1 https://github.com/artivis/manif.git docker/deps/manif
+git clone --branch v1.6.1 --depth 1 https://github.com/jlblancoc/nanoflann.git docker/deps/nanoflann
+git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git docker/deps/robin-map
 
 # 2. 构建开发镜像
 docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
 
-# 3. 编译 + 测试
+# 3. 编译 + 测试（113 个测试）
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
-    bash -c "cmake -B build -DBUILD_TESTING=ON && cmake --build build -j && cd build && ctest --output-on-failure"
+    bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
 
 ### 原生构建
@@ -105,33 +109,62 @@ cd build && ctest --output-on-failure
 ## 目录结构
 
 ```
-simpleslam/
-├── core/                           # simpleslam_core 库（纯 C++20）
-│   ├── include/simpleslam/
-│   │   ├── convention.hpp          # 框架公约常量
+SimpleSLAM/
+├── include/SimpleSLAM/
+│   ├── core.hpp                    # 核心模块 umbrella header
+│   ├── resources.hpp               # 共享资源 umbrella header
+│   ├── core/
+│   │   ├── convention.hpp          # 框架公约（ENU、T_world_body、精度约定）
 │   │   ├── types/                  # 核心数据类型
 │   │   │   ├── common.hpp          #   Timestamp, PointXYZI
 │   │   │   ├── geometry.hpp        #   SE3d, SO3d, Vec3d (manif 别名)
-│   │   │   └── sensor_data.hpp     #   LidarScan, ImageFrame, ImuSample
+│   │   │   ├── sensor_data.hpp     #   LidarScan (SOA), ImageFrame, ImuSample
+│   │   │   ├── odometry_result.hpp #   OdometryResult, TrackingStatus
+│   │   │   ├── keyframe.hpp        #   KeyframeData
+│   │   │   └── event_types.hpp     #   KeyframeEvent, LoopDetectedEvent...
 │   │   ├── concepts/               # C++20 concept 接口定义
-│   │   │   └── registration_target.hpp
-│   │   ├── math/                   # 数学工具（点云操作、李群工具）
-│   │   └── infra/                  # 基础设施
-│   │       ├── logger.hpp          #   spdlog 封装（per-module、async）
+│   │   │   ├── registration_target.hpp  # RegistrationTarget + MatchResult
+│   │   │   ├── loop_detector.hpp        # LoopDetector + LoopCandidate
+│   │   │   └── pose_graph_optimizer.hpp # PoseGraphOptimizer + OptimizationResult
+│   │   ├── math/                   # 数学工具
+│   │   │   ├── kdtree.hpp          #   nanoflann 零拷贝 KDTree3f
+│   │   │   ├── voxel_grid.hpp      #   VoxelMap (FNV + Morton)
+│   │   │   ├── point_ops.hpp       #   降采样、过滤、变换、SOR
+│   │   │   ├── normal_estimation.hpp#  KNN PCA 法向量估计
+│   │   │   ├── scan_utils.hpp      #   extractByIndices, RangeImageView
+│   │   │   ├── lie_utils.hpp       #   hat/vee/perturb/Jacobian
+│   │   │   └── pcd_io.hpp          #   PCD 二进制读写
+│   │   └── infra/                  # 基础设施 + 通信
+│   │       ├── logger.hpp          #   spdlog 封装
 │   │       ├── config.hpp          #   YAML 层级加载 + schema 校验
-│   │       ├── timing.hpp          #   RAII 计时 + 统计（p50/p95/p99）
-│   │       └── clock.hpp           #   时钟抽象（系统/数据集）
-│   └── src/
-├── registration/                   # RegistrationTarget 实现
-├── odometry/                       # Odometry 实现
-├── backend/                        # 后端服务
-├── resources/                      # 共享资源
-├── sensor_io/                      # 传感器接入
-├── runner/                         # 系统组装 + 运行入口
-├── apps/                           # 可执行文件
+│   │       ├── timing.hpp          #   RAII 计时 + 统计
+│   │       ├── clock.hpp           #   时钟抽象（系统/数据集）
+│   │       ├── topic.hpp           #   Topic<T> 发布-订阅（3 种 QoS）
+│   │       ├── topic_hub.hpp       #   TopicHub 全局单例 + BFS drain
+│   │       ├── topic_names.hpp     #   话题名常量
+│   │       └── callback_slot.hpp   #   同步回调槽
+│   ├── resources/                  # 共享资源容器
+│   │   ├── current_state.hpp       #   T_odom + T_correction 双缓冲
+│   │   ├── pose_graph.hpp          #   关键帧节点 + 边（shared_mutex）
+│   │   ├── keyframe_store.hpp      #   关键帧存储（写后不可变）
+│   │   ├── extrinsics_manager.hpp  #   传感器外参管理
+│   │   └── trajectory.hpp          #   位姿历史 + TUM/KITTI 导出
+│   ├── sensor_io/                  # 传感器接入
+│   │   ├── sensor_source.hpp       #   ISensorSource 接口
+│   │   ├── kitti_source.hpp        #   KITTI 数据集读取器
+│   │   ├── euroc_source.hpp        #   EuRoC MAV 数据集读取器
+│   │   └── sensor_mux.hpp          #   多源时间排序合并
+│   ├── adapters/                   # 类型转换桥接
+│   │   └── gtsam_bridge.hpp        #   manif ↔ GTSAM（条件编译）
+│   └── backend/                    # 后端服务框架
+│       ├── service_base.hpp        #   可选生命周期基类
+│       └── submap/submap.hpp       #   子图数据容器
+├── core/src/                       # 核心库实现
+├── resources/src/                  # 资源层实现
+├── sensor_io/src/                  # 传感器 IO 实现
 ├── configs/                        # 参考配置
-├── tests/                          # 单元测试 + 契约测试 + 集成测试
-├── docker/                         # Docker 开发环境
+├── tests/unit/                     # 113 个单元测试
+├── docker/                         # Docker 开发环境 + 预下载依赖
 ├── scripts/                        # 工具脚本
 └── docs/                           # 架构文档
 ```
@@ -140,25 +173,25 @@ simpleslam/
 
 ### 核心依赖（simpleslam_core）
 
-| 库 | 用途 | 类型 |
-|---|------|------|
-| Eigen 3.4+ | 矩阵运算、四元数 | header-only |
-| manif | SE3d/SO3d 李群操作 | header-only |
-| spdlog | 异步日志 | 编译库 |
-| yaml-cpp | YAML 配置 | 编译库 |
-| fmt | 字符串格式化 | header-only |
-| Catch2 3.x | 单元测试 | 编译库 |
+| 库 | 用途 | 类型 | 引入版本 |
+|---|------|------|---------|
+| Eigen 3.4+ | 矩阵运算、四元数 | header-only | v0 |
+| manif | SE3d/SO3d 李群操作 | header-only | v0 |
+| spdlog | 异步日志 | 编译库 | v0 |
+| yaml-cpp | YAML 配置 | 编译库 | v0 |
+| fmt | 字符串格式化 | header-only | v0 |
+| nanoflann | KD-Tree 近邻搜索 | header-only | v0.5 |
+| tsl::robin_map | 高性能哈希表（体素哈希） | header-only | v0.5 |
+| Catch2 3.x | 单元测试 | 编译库 | v0 |
 
 ### 可选依赖（按版本引入）
 
 | 库 | 用途 | 引入版本 |
 |---|------|---------|
-| nanoflann | KD-Tree 近邻搜索 | v0.5 |
-| tsl::robin_map | 高性能哈希表 | v0.5 |
-| GTSAM 4.3+ | 因子图优化 | v1.0 |
-| small_gicp | 回环验证 ICP | v1.0 |
-| Ceres 2.1+ | 滑窗 BA | v1.5 |
-| OpenCV 4.5+ | 视觉前端 | v1.5 |
+| GTSAM 4.3+ | 因子图优化 | v2.0 |
+| small_gicp | 回环验证 ICP | v2.0 |
+| Ceres 2.1+ | 滑窗 BA | v3.5 |
+| OpenCV 4.5+ | 视觉前端 | v3.0 |
 
 ## 编码规范
 
