@@ -16,8 +16,83 @@ target_compile_definitions(test_config PRIVATE
     SIMPLESLAM_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+# ── v0.5 测试 ──
+
+add_executable(test_sensor_data unit/test_sensor_data.cpp)
+target_link_libraries(test_sensor_data PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_point_ops unit/test_point_ops.cpp)
+target_link_libraries(test_point_ops PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_voxel_grid unit/test_voxel_grid.cpp)
+target_link_libraries(test_voxel_grid PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_kdtree unit/test_kdtree.cpp)
+target_link_libraries(test_kdtree PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_scan_utils unit/test_scan_utils.cpp)
+target_link_libraries(test_scan_utils PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_kitti_source unit/test_kitti_source.cpp)
+target_link_libraries(test_kitti_source PRIVATE simpleslam_sensor_io Catch2::Catch2WithMain)
+target_compile_definitions(test_kitti_source PRIVATE
+    SIMPLESLAM_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# ── v1.0 测试 ──
+
+add_executable(test_callback_slot unit/test_callback_slot.cpp)
+target_link_libraries(test_callback_slot PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_topic unit/test_topic.cpp)
+target_link_libraries(test_topic PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_topic_hub unit/test_topic_hub.cpp)
+target_link_libraries(test_topic_hub PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_event_types unit/test_event_types.cpp)
+target_link_libraries(test_event_types PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_pose_graph unit/test_pose_graph.cpp)
+target_link_libraries(test_pose_graph PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_keyframe_store unit/test_keyframe_store.cpp)
+target_link_libraries(test_keyframe_store PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_trajectory unit/test_trajectory.cpp)
+target_link_libraries(test_trajectory PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_current_state unit/test_current_state.cpp)
+target_link_libraries(test_current_state PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_extrinsics_manager unit/test_extrinsics_manager.cpp)
+target_link_libraries(test_extrinsics_manager PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_pcd_io unit/test_pcd_io.cpp)
+target_link_libraries(test_pcd_io PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_submap unit/test_submap.cpp)
+target_link_libraries(test_submap PRIVATE simpleslam_backend Catch2::Catch2WithMain)
+
 # ── 注册到 CTest ──
 include(CTest)
 include(Catch)
 catch_discover_tests(test_geometry)
 catch_discover_tests(test_config)
+catch_discover_tests(test_sensor_data)
+catch_discover_tests(test_point_ops)
+catch_discover_tests(test_voxel_grid)
+catch_discover_tests(test_kdtree)
+catch_discover_tests(test_scan_utils)
+catch_discover_tests(test_kitti_source)
+catch_discover_tests(test_callback_slot)
+catch_discover_tests(test_topic)
+catch_discover_tests(test_topic_hub)
+catch_discover_tests(test_event_types)
+catch_discover_tests(test_pose_graph)
+catch_discover_tests(test_keyframe_store)
+catch_discover_tests(test_trajectory)
+catch_discover_tests(test_current_state)
+catch_discover_tests(test_extrinsics_manager)
+catch_discover_tests(test_pcd_io)
+catch_discover_tests(test_submap)
