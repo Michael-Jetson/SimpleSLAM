@@ -39,4 +39,35 @@ RUN cmake -S /tmp/manif -B /tmp/manif/build \
     && cmake --install /tmp/manif/build \
     && rm -rf /tmp/manif
 
+# ── nanoflann（header-only KD-Tree，v0.5 点云最近邻搜索）──
+COPY docker/deps/nanoflann /tmp/nanoflann
+RUN cmake -S /tmp/nanoflann -B /tmp/nanoflann/build \
+        -DNANOFLANN_BUILD_EXAMPLES=OFF \
+        -DNANOFLANN_BUILD_TESTS=OFF \
+    && cmake --build /tmp/nanoflann/build -j$(nproc) \
+    && cmake --install /tmp/nanoflann/build \
+    && rm -rf /tmp/nanoflann
+
+# ── tsl::robin_map（header-only 高性能哈希表，v0.5 体素哈希后端）──
+COPY docker/deps/robin-map /tmp/robin-map
+RUN cmake -S /tmp/robin-map -B /tmp/robin-map/build \
+    && cmake --build /tmp/robin-map/build -j$(nproc) \
+    && cmake --install /tmp/robin-map/build \
+    && rm -rf /tmp/robin-map
+
+# ── eventpp（header-only 事件分发，v1.0 Topic Event 后端）──
+COPY docker/deps/eventpp /tmp/eventpp
+RUN cmake -S /tmp/eventpp -B /tmp/eventpp/build \
+        -DEVENTPP_INSTALL=ON \
+    && cmake --build /tmp/eventpp/build -j$(nproc) \
+    && cmake --install /tmp/eventpp/build \
+    && rm -rf /tmp/eventpp
+
+# ── SPSCQueue（单头文件 wait-free 队列，v1.0 Topic Stream 后端）──
+COPY docker/deps/SPSCQueue /tmp/SPSCQueue
+RUN cmake -S /tmp/SPSCQueue -B /tmp/SPSCQueue/build \
+    && cmake --build /tmp/SPSCQueue/build -j$(nproc) \
+    && cmake --install /tmp/SPSCQueue/build \
+    && rm -rf /tmp/SPSCQueue
+
 WORKDIR /workspace
