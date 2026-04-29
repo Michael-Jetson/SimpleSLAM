@@ -55,6 +55,8 @@ add_subdirectory(sensor_io)
 add_subdirectory(resources)
 add_subdirectory(adapters)
 add_subdirectory(backend)
+add_subdirectory(odometry)
+add_subdirectory(runner)
 
 # ── 测试（默认开启）──
 option(BUILD_TESTING "构建单元测试" ON)
