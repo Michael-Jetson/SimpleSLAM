@@ -96,3 +96,26 @@ catch_discover_tests(test_current_state)
 catch_discover_tests(test_extrinsics_manager)
 catch_discover_tests(test_pcd_io)
 catch_discover_tests(test_submap)
+
+# ── v1.0 框架层测试 ──
+
+add_executable(test_keyframe_selector unit/test_keyframe_selector.cpp)
+target_link_libraries(test_keyframe_selector PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+add_executable(test_any_registration_target unit/test_any_registration_target.cpp)
+target_link_libraries(test_any_registration_target PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_health_monitor unit/test_health_monitor.cpp)
+target_link_libraries(test_health_monitor PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_odometry_base unit/test_odometry_base.cpp)
+target_link_libraries(test_odometry_base PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+add_executable(test_offline_runner unit/test_offline_runner.cpp)
+target_link_libraries(test_offline_runner PRIVATE simpleslam_runner Catch2::Catch2WithMain)
+
+catch_discover_tests(test_keyframe_selector)
+catch_discover_tests(test_any_registration_target)
+catch_discover_tests(test_health_monitor)
+catch_discover_tests(test_odometry_base)
+catch_discover_tests(test_offline_runner)
