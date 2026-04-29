@@ -61,12 +61,24 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 | **v0** | 基础设施（日志、配置、计时、时钟、几何类型） | **已完成** | 16 |
 | **v0.5** | 点云工具 + Sensor IO（KDTree、VoxelGrid、降采样、KittiSource） | **已完成** | 54 |
 | **v1.0 基础设施** | Topic 通信、共享资源、Concept 定义、PCD IO、EuRoC、后端框架 | **已完成** | 113 |
-| v1.0 算法 | 纯 LO（VoxelHashTarget、ICP-SVD、Runner） | **待实现** | — |
+| **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
+| v1.0 算法 | 纯 LO（VoxelHashTarget、ICP-SVD） | **待实现** | — |
 | v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
 | v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2、SubMapManager） | 计划中 | — |
-| v3.0+ | VIO / LIVO / 传感器扩展 / Python 绑定 | 计划中 | — |
+| v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
+| v3.0 | 视觉特征组件（ORB、DBoW2、FeatureMapTarget） | 计划中 | — |
+| v3.5 | VIO Baseline（Ceres 滑窗 BA、ORB-SLAM3 风格） | 计划中 | — |
+| v4.0 | 第二 VIO（KLT 光流、VINS 风格紧耦合） | 计划中 | — |
+| v4.5 | LiDAR-视觉紧耦合（FAST-LIVO2 风格 LIVO） | 计划中 | — |
+| v5.0 | 传感器扩展（GNSS/UWB/轮速计因子、在线外参标定、dlopen） | 计划中 | — |
+| v5.5 | 地图持久化（.smap 格式）+ 分页（Hot/Warm/Cold）+ 定位模式 | 计划中 | — |
+| v6.0 | 重定位增强 + Pangolin/Rerun 可视化 + TSDF/高程图 | 计划中 | — |
+| v7.0 | Python 绑定（pybind11）+ CLI + Jupyter 教程 + 自动化评测 CI | 计划中 | — |
+| v8.0 | 语义地图（分割融合、动态物体过滤、语义约束因子） | 计划中 | — |
+| v8.5 | 拓扑地图 + 3D 场景图 + 自然语言空间查询 | 计划中 | — |
+| v9.0+ | 连续时间轨迹、多机器人、GPU 加速、NeRF/3DGS 建图 | 探索中 | — |
 
-精度目标：v1.5 达到 FAST-LIO2 级（EuRoC ATE < 0.12m，KITTI ATE < 3m）
+精度目标：v1.0 KITTI ATE 达 KISS-ICP 级，v1.5 达 FAST-LIO2 级（EuRoC ATE < 0.12m）
 
 ## 快速开始
 
@@ -87,7 +99,7 @@ git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git dock
 # 2. 构建开发镜像
 docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
 
-# 3. 编译 + 测试（113 个测试）
+# 3. 编译 + 测试（147 个测试）
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
     bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
@@ -124,6 +136,7 @@ SimpleSLAM/
 │   │   │   └── event_types.hpp     #   KeyframeEvent, LoopDetectedEvent...
 │   │   ├── concepts/               # C++20 concept 接口定义
 │   │   │   ├── registration_target.hpp  # RegistrationTarget + MatchResult
+│   │   │   ├── any_registration_target.hpp # Sean Parent 类型擦除包装
 │   │   │   ├── loop_detector.hpp        # LoopDetector + LoopCandidate
 │   │   │   └── pose_graph_optimizer.hpp # PoseGraphOptimizer + OptimizationResult
 │   │   ├── math/                   # 数学工具
@@ -142,7 +155,8 @@ SimpleSLAM/
 │   │       ├── topic.hpp           #   Topic<T> 发布-订阅（3 种 QoS）
 │   │       ├── topic_hub.hpp       #   TopicHub 全局单例 + BFS drain
 │   │       ├── topic_names.hpp     #   话题名常量
-│   │       └── callback_slot.hpp   #   同步回调槽
+│   │       ├── callback_slot.hpp   #   同步回调槽
+│   │       └── health_monitor.hpp  #   系统级健康状态机
 │   ├── resources/                  # 共享资源容器
 │   │   ├── current_state.hpp       #   T_odom + T_correction 双缓冲
 │   │   ├── pose_graph.hpp          #   关键帧节点 + 边（shared_mutex）
@@ -154,6 +168,11 @@ SimpleSLAM/
 │   │   ├── kitti_source.hpp        #   KITTI 数据集读取器
 │   │   ├── euroc_source.hpp        #   EuRoC MAV 数据集读取器
 │   │   └── sensor_mux.hpp          #   多源时间排序合并
+│   ├── odometry/                   # 里程计框架
+│   │   ├── odometry_base.hpp       #   前端里程计抽象基类
+│   │   └── keyframe_selector.hpp   #   关键帧选择策略
+│   ├── runner/                     # 运行模式编排器
+│   │   └── offline_runner.hpp      #   离线数据集回放主循环
 │   ├── adapters/                   # 类型转换桥接
 │   │   └── gtsam_bridge.hpp        #   manif ↔ GTSAM（条件编译）
 │   └── backend/                    # 后端服务框架
@@ -162,11 +181,12 @@ SimpleSLAM/
 ├── core/src/                       # 核心库实现
 ├── resources/src/                  # 资源层实现
 ├── sensor_io/src/                  # 传感器 IO 实现
+├── runner/src/                     # Runner 实现
 ├── configs/                        # 参考配置
-├── tests/unit/                     # 113 个单元测试
+├── tests/unit/                     # 147 个单元测试
 ├── docker/                         # Docker 开发环境 + 预下载依赖
-├── scripts/                        # 工具脚本
-└── docs/                           # 架构文档
+├── scripts/                        # 工具脚本（evaluate.py 轨迹评测）
+└── docs/                           # 架构文档 + 教程
 ```
 
 ## 依赖
