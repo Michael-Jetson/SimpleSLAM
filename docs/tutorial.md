@@ -62,7 +62,7 @@ cd build && ctest --output-on-failure
 看到类似输出即成功：
 
 ```
-100% tests passed, 0 tests failed out of 147
+100% tests passed, 0 tests failed out of 182
 ```
 
 ---
@@ -932,54 +932,132 @@ public:
 static_assert(simpleslam::LoopDetector<MyLoopDetector>);
 ```
 
-### 8.5 回环检测后端服务模板
+### 8.5 使用框架内置的 LoopClosureService
+
+框架已提供 `LoopClosureService`——一个完整的回环检测后端服务骨架。你只需实现满足 `LoopDetector` concept 的检测器，用 `AnyLoopDetector` 类型擦除包装后传入：
 
 ```cpp
-class LoopDetectionService final : public simpleslam::ServiceBase {
-public:
-    LoopDetectionService() : ServiceBase("LoopDetection") {}
+#include <SimpleSLAM/backend/loop_closure_service.hpp>
+#include <SimpleSLAM/core/concepts/any_loop_detector.hpp>
 
-    void initialize(simpleslam::TopicHub& hub) override {
-        sub_ = hub.subscribeImpl<simpleslam::KeyframeEvent>(
-            std::string(simpleslam::topic_names::kSlamKeyframe),
-            [this](simpleslam::MsgPtr<simpleslam::KeyframeEvent> msg) {
-                onKeyframe(*msg);
-            });
-        loop_pub_ = hub.createPublisherImpl<simpleslam::LoopDetectedEvent>(
-            std::string(simpleslam::topic_names::kSlamLoop));
-    }
+// 用你的检测器创建服务
+auto svc = std::make_unique<simpleslam::LoopClosureService>(
+    simpleslam::AnyLoopDetector(MyLoopDetector{}));
 
-private:
-    void onKeyframe(const simpleslam::KeyframeEvent& kf_event) {
-        simpleslam::KeyframeData kf;
-        kf.id = kf_event.keyframe_id;
-        kf.timestamp = kf_event.timestamp;
-        kf.pose = kf_event.pose;
-        kf.scan = kf_event.scan;
-
-        detector_.addKeyframe(kf);
-        auto candidate = detector_.detect(kf);
-        if (candidate) {
-            loop_pub_.emplace(
-                kf.id,
-                candidate->match_id,
-                candidate->T_match_query,
-                candidate->score
-            );
-        }
-    }
-
-    MyLoopDetector detector_;
-    simpleslam::SubscriptionHandle sub_;
-    simpleslam::Publisher<simpleslam::LoopDetectedEvent> loop_pub_;
-};
+// 注册到 Runner
+runner.addService(std::move(svc));
 ```
 
-### 8.6 练习
+LoopClosureService 内部自动完成：
+1. 订阅 `slam/keyframe` 话题
+2. 将 `KeyframeEvent` 转换为 `KeyframeData` 并传给检测器
+3. 检测到回环时发布 `LoopDetectedEvent` 到 `slam/loop` 话题
+
+### 8.6 使用框架内置的 PgoService
+
+类似地，`PgoService` 是位姿图优化的服务骨架。你实现满足 `PoseGraphOptimizer` concept 的优化器：
+
+```cpp
+#include <SimpleSLAM/core/concepts/pose_graph_optimizer.hpp>
+
+class MyPGOptimizer final {
+public:
+    void addOdometryEdge(uint64_t from, uint64_t to,
+                         const simpleslam::SE3d& rel,
+                         const simpleslam::Mat6d& info) {
+        // 添加里程计边到因子图
+    }
+
+    void addLoopEdge(uint64_t from, uint64_t to,
+                     const simpleslam::SE3d& rel,
+                     const simpleslam::Mat6d& info) {
+        // 添加回环边
+    }
+
+    simpleslam::OptimizationResult optimize() {
+        // 求解因子图
+        simpleslam::OptimizationResult result;
+        result.converged = true;
+        // result.optimized_poses = ...;
+        return result;
+    }
+
+    void reset() { /* 清空因子图 */ }
+};
+
+static_assert(simpleslam::PoseGraphOptimizer<MyPGOptimizer>);
+```
+
+然后用 `AnyPoseGraphOptimizer` 包装传入 PgoService：
+
+```cpp
+#include <SimpleSLAM/backend/pgo_service.hpp>
+#include <SimpleSLAM/core/concepts/any_pose_graph_optimizer.hpp>
+
+auto pgo = std::make_unique<simpleslam::PgoService>(
+    simpleslam::AnyPoseGraphOptimizer(MyPGOptimizer{}));
+runner.addService(std::move(pgo));
+```
+
+PgoService 自动完成：
+1. 订阅 `slam/keyframe`（构建里程计边）和 `slam/loop`（添加回环边）
+2. 每检测到回环立即优化
+3. 收敛时发布 `CorrectionEvent` 到 `slam/correction`
+
+### 8.7 完整回环管线示例
+
+```cpp
+auto source = std::make_unique<simpleslam::KittiSource>("path/to/00");
+auto odom = std::make_unique<MyOdometry>();
+
+simpleslam::OfflineRunner runner(std::move(source), std::move(odom));
+
+// 添加回环检测服务
+runner.addService(std::make_unique<simpleslam::LoopClosureService>(
+    simpleslam::AnyLoopDetector(MyScanContextDetector{})));
+
+// 添加 PGO 服务
+runner.addService(std::make_unique<simpleslam::PgoService>(
+    simpleslam::AnyPoseGraphOptimizer(MyGtsamOptimizer{})));
+
+// 运行——事件链自动串联：
+// Keyframe → LoopClosureService → LoopDetectedEvent → PgoService → CorrectionEvent
+auto result = runner.run();
+```
+
+### 8.8 SubMapManager——子图生命周期
+
+`SubMapManager` 管理子图的创建、关键帧分配、冻结和 PGO 校正：
+
+```cpp
+#include <SimpleSLAM/backend/submap_manager.hpp>
+
+simpleslam::SubMapManagerConfig config;
+config.max_keyframes_per_submap = 50;  // 每 50 个关键帧切换子图
+
+simpleslam::SubMapManager mgr(config);
+
+// 创建第一个子图
+uint64_t submap_id = mgr.createSubmap(initial_pose);
+
+// 每个关键帧添加到活跃子图
+mgr.addKeyframe(keyframe_id);
+
+// 检查是否需要冻结
+if (mgr.shouldFreezeActive()) {
+    uint64_t new_id = mgr.freezeAndCreateNew(current_pose);
+}
+
+// PGO 校正后更新锚点位姿
+mgr.applyCorrections(optimized_submap_poses);
+```
+
+### 8.9 练习
 
 1. 实现 KeyframeLogger，接入 OfflineRunner，观察关键帧输出
 2. 实现一个 FrameCounter 服务，统计总帧数并在 shutdown 时打印
-3. 实现一个回环检测的"假"实现（每 20 个关键帧报告一次假回环），验证事件链
+3. 实现一个回环检测的"假"实现（每 20 个关键帧报告一次假回环），用 LoopClosureService + PgoService 验证完整事件链
+4. 使用 SubMapManager 管理子图，观察冻结和切换行为
 
 ---
 
@@ -1063,11 +1141,56 @@ target.update(scan, pose);
 static_assert(simpleslam::RegistrationTarget<simpleslam::AnyRegistrationTarget>);
 ```
 
-### 9.4 练习
+### 9.4 AnyLoopDetector——回环检测器类型擦除
+
+与 AnyRegistrationTarget 完全同构：
+
+```cpp
+#include <SimpleSLAM/core/concepts/any_loop_detector.hpp>
+
+// 包装你的检测器
+simpleslam::AnyLoopDetector detector(MyScanContextDetector{});
+
+// 通过统一接口使用
+detector.addKeyframe(kf);
+auto candidate = detector.detect(kf);
+
+// AnyLoopDetector 自身满足 LoopDetector concept
+static_assert(simpleslam::LoopDetector<simpleslam::AnyLoopDetector>);
+```
+
+### 9.5 AnyPoseGraphOptimizer——优化器类型擦除
+
+```cpp
+#include <SimpleSLAM/core/concepts/any_pose_graph_optimizer.hpp>
+
+simpleslam::AnyPoseGraphOptimizer opt(MyGtsamOptimizer{});
+
+opt.addOdometryEdge(from, to, relative, info);
+opt.addLoopEdge(from, to, relative, info);
+auto result = opt.optimize();
+
+static_assert(simpleslam::PoseGraphOptimizer<simpleslam::AnyPoseGraphOptimizer>);
+```
+
+### 9.6 三种类型擦除的统一模式
+
+SimpleSLAM 的三种类型擦除包装（AnyRegistrationTarget、AnyLoopDetector、AnyPoseGraphOptimizer）都遵循 Sean Parent 模式：
+
+| 类型擦除 | 包装的 Concept | 用于 |
+|---------|---------------|------|
+| `AnyRegistrationTarget` | `RegistrationTarget` | Odometry 内部地图选择 |
+| `AnyLoopDetector` | `LoopDetector` | LoopClosureService 回环算法选择 |
+| `AnyPoseGraphOptimizer` | `PoseGraphOptimizer` | PgoService 优化器选择 |
+
+所有三种都是 move-only、单虚分派、自身满足对应 concept（static_assert 验证）。
+
+### 9.7 练习
 
 1. 实现 NaiveNearestTarget，配合 IdentityOdometry 使用（只做地图构建，不做配准）
 2. 把 NaiveNearestTarget 包装到 AnyRegistrationTarget 中使用
 3. 实现另一个 RegistrationTarget（如基于体素的），通过 AnyRegistrationTarget 切换
+4. 实现一个 MockLoopDetector（固定频率返回假回环），通过 AnyLoopDetector 包装后传入 LoopClosureService
 
 ---
 
@@ -1099,7 +1222,32 @@ if (monitor.state() == simpleslam::SystemHealth::Lost) {
 
 状态转移：`OK → Degraded → Lost → Failed（终态）`，恢复是阶梯式（不跳级）。
 
-### 10.2 Submap 架构
+### 10.2 ImuBuffer——IMU 数据管理
+
+LIO 模式需要管理高频 IMU 数据流。`ImuBuffer` 提供线程安全的缓冲区，支持时间窗查询和插值：
+
+```cpp
+#include <SimpleSLAM/odometry/imu_buffer.hpp>
+
+simpleslam::ImuBuffer buffer(10000);  // 最多保留 10000 个样本
+
+// 传感器线程写入
+buffer.addSample(imu_sample);
+buffer.addBatch(imu_batch);  // 批量添加
+
+// 里程计线程查询：获取 [t_start, t_end] 内的 IMU 数据
+auto samples = buffer.query(scan_start_time, scan_end_time);
+
+// 精确时间点插值（线性插值 acc 和 gyro）
+auto interpolated = buffer.interpolateAt(exact_timestamp);
+
+// 清理旧数据
+buffer.trimBefore(oldest_needed_timestamp);
+```
+
+`query()` 支持边界插值——如果 t_start/t_end 落在两个样本之间，返回的结果包含插值的边界样本，确保 IMU 预积分获得精确的起止数据。
+
+### 10.3 Submap 架构
 
 ```cpp
 #include <SimpleSLAM/backend/submap/submap.hpp>
@@ -1118,7 +1266,7 @@ submap.frozen = true;
 // submap.T_world_submap = corrected_pose;  // O(1) 操作
 ```
 
-### 10.3 GTSAM 适配器
+### 10.4 GTSAM 适配器
 
 ```cpp
 // 条件编译：只有启用 GTSAM 时才可用
@@ -1136,7 +1284,7 @@ auto info_gtsam = simpleslam::toGtsamInfoOrder(info_manif);
 #endif
 ```
 
-### 10.4 添加新的 SensorSource
+### 10.5 添加新的 SensorSource
 
 实现 `ISensorSource` 接口即可支持新数据源：
 
@@ -1163,32 +1311,6 @@ public:
         // 当前消息时间戳
     }
 };
-```
-
-### 10.5 PoseGraphOptimizer Concept
-
-实现位姿图优化器：
-
-```cpp
-#include <SimpleSLAM/core/concepts/pose_graph_optimizer.hpp>
-
-class MyPGOptimizer final {
-public:
-    bool optimize(const simpleslam::PoseGraph& graph,
-                  simpleslam::OptimizationResult& result) {
-        // 读取节点和边，构建因子图，求解
-        // result.optimized_poses = ...;
-        // result.error = ...;
-        // result.converged = true;
-        return true;
-    }
-
-    void reset() {
-        // 重置优化器状态
-    }
-};
-
-static_assert(simpleslam::PoseGraphOptimizer<MyPGOptimizer>);
 ```
 
 ### 10.6 下一步
@@ -1224,8 +1346,15 @@ static_assert(simpleslam::PoseGraphOptimizer<MyPGOptimizer>);
 | 位姿图 | `<SimpleSLAM/resources/pose_graph.hpp>` |
 | 轨迹导出 | `<SimpleSLAM/resources/trajectory.hpp>` |
 | 后端服务基类 | `<SimpleSLAM/backend/service_base.hpp>` |
+| 回环检测服务 | `<SimpleSLAM/backend/loop_closure_service.hpp>` |
+| PGO 服务 | `<SimpleSLAM/backend/pgo_service.hpp>` |
+| 子图管理 | `<SimpleSLAM/backend/submap_manager.hpp>` |
 | 健康监控 | `<SimpleSLAM/core/infra/health_monitor.hpp>` |
-| 类型擦除 | `<SimpleSLAM/core/concepts/any_registration_target.hpp>` |
+| IMU 缓冲区 | `<SimpleSLAM/odometry/imu_buffer.hpp>` |
+| 类型擦除（配准） | `<SimpleSLAM/core/concepts/any_registration_target.hpp>` |
+| 类型擦除（回环） | `<SimpleSLAM/core/concepts/any_loop_detector.hpp>` |
+| 类型擦除（PGO） | `<SimpleSLAM/core/concepts/any_pose_graph_optimizer.hpp>` |
 | 全部核心 | `<SimpleSLAM/core.hpp>` |
 | 全部资源 | `<SimpleSLAM/resources.hpp>` |
 | 全部里程计 | `<SimpleSLAM/odometry.hpp>` |
+| 全部后端 | `<SimpleSLAM/backend.hpp>` |

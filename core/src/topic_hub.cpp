@@ -51,14 +51,15 @@ std::vector<std::string> TopicHub::listTopics() {
     return names;
 }
 
-TopicHub::TopicStats TopicHub::stats(const std::string& name) {
+TopicHub::TopicStats TopicHub::stats(std::string_view name) {
     auto& hub = instance();
     std::lock_guard lock(hub.mutex_);
-    auto it = hub.topics_.find(name);
+    std::string key(name);
+    auto it = hub.topics_.find(key);
     if (it == hub.topics_.end()) {
-        throw std::runtime_error("TopicHub: topic not found: " + name);
+        throw std::runtime_error("TopicHub: topic not found: " + key);
     }
-    return {name,
+    return {key,
             it->second.base->publisherCount(),
             it->second.base->subscriberCount(),
             it->second.base->messageCount()};

@@ -21,12 +21,66 @@ class CallbackSlot {
 public:
     using Callback = std::function<void(Args...)>;
 
+    /// RAII 连接句柄——析构时自动 disconnect
+    class ScopedConnection {
+    public:
+        ScopedConnection() = default;
+        ScopedConnection(CallbackSlot* slot, size_t handle)
+            : slot_(slot), handle_(handle) {}
+        ~ScopedConnection() { reset(); }
+
+        ScopedConnection(ScopedConnection&& other) noexcept
+            : slot_(other.slot_), handle_(other.handle_) {
+            other.slot_ = nullptr;
+        }
+        ScopedConnection& operator=(ScopedConnection&& other) noexcept {
+            if (this != &other) {
+                reset();
+                slot_ = other.slot_;
+                handle_ = other.handle_;
+                other.slot_ = nullptr;
+            }
+            return *this;
+        }
+
+        ScopedConnection(const ScopedConnection&) = delete;
+        ScopedConnection& operator=(const ScopedConnection&) = delete;
+
+        void reset() {
+            if (slot_) {
+                slot_->disconnect(handle_);
+                slot_ = nullptr;
+            }
+        }
+
+    private:
+        CallbackSlot* slot_ = nullptr;
+        size_t handle_ = 0;
+    };
+
     /// 注册回调，返回 handle 用于注销
     size_t connect(Callback cb) {
         std::lock_guard lock(mutex_);
         size_t handle = next_handle_++;
         entries_.push_back({handle, std::move(cb)});
         return handle;
+    }
+
+    /// 注册成员函数回调
+    template <typename Obj>
+    size_t connect(void (Obj::*method)(Args...), Obj* obj) {
+        return connect([obj, method](Args... args) { (obj->*method)(args...); });
+    }
+
+    /// 注册回调并返回 RAII 句柄（析构自动退订）
+    ScopedConnection connectScoped(Callback cb) {
+        return ScopedConnection(this, connect(std::move(cb)));
+    }
+
+    /// 注册成员函数并返回 RAII 句柄
+    template <typename Obj>
+    ScopedConnection connectScoped(void (Obj::*method)(Args...), Obj* obj) {
+        return ScopedConnection(this, connect(method, obj));
     }
 
     /// 按 handle 注销回调
@@ -39,7 +93,6 @@ public:
     }
 
     /// 同步调用所有已注册回调（按注册顺序）
-    /// 先拷贝回调列表再调用——防止回调中 connect/disconnect 导致死锁
     void emit(Args... args) const {
         std::vector<Callback> snapshot;
         {

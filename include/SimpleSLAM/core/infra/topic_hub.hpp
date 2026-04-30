@@ -15,6 +15,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -31,7 +32,7 @@ public:
     // ── 静态 Publisher 创建（用默认 hub）──
 
     template <typename T>
-    static Publisher<T> createPublisher(const std::string& name,
+    static Publisher<T> createPublisher(std::string_view name,
                                        QoS qos = QoS::Event) {
         return instance().createPublisherImpl<T>(name, qos);
     }
@@ -39,7 +40,7 @@ public:
     // ── 静态 Subscriber 创建：成员函数 ──
 
     template <typename T, typename Obj, typename Method>
-    static SubscriptionHandle createSubscriber(const std::string& name,
+    static SubscriptionHandle createSubscriber(std::string_view name,
                                                Method method, Obj* obj,
                                                SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(method, obj);
@@ -49,7 +50,7 @@ public:
     // ── 静态 Subscriber 创建：lambda / 自由函数 / std::function ──
 
     template <typename T, typename Callable>
-    static SubscriptionHandle createSubscriber(const std::string& name,
+    static SubscriptionHandle createSubscriber(std::string_view name,
                                                Callable&& callback,
                                                SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(std::forward<Callable>(callback));
@@ -59,7 +60,7 @@ public:
     // ── 最新值查询 ──
 
     template <typename T>
-    static MsgPtr<T> getLatest(const std::string& name) {
+    static MsgPtr<T> getLatest(std::string_view name) {
         return instance().getLatestImpl<T>(name);
     }
 
@@ -78,7 +79,7 @@ public:
         size_t subscriber_count;
         uint64_t message_count;
     };
-    static TopicStats stats(const std::string& name);
+    static TopicStats stats(std::string_view name);
 
     // ── 构造函数（隔离实例，测试用）──
 
@@ -91,33 +92,56 @@ public:
     // ── 实例方法（测试/隔离用）──
 
     template <typename T>
-    Publisher<T> createPublisherImpl(const std::string& name,
+    Publisher<T> createPublisherImpl(std::string_view name,
                                     QoS qos = QoS::Event) {
         auto* topic = getOrCreateTopic<T>(name, qos);
         return Publisher<T>(topic);
     }
 
-    template <typename T>
-    SubscriptionHandle subscribeImpl(const std::string& name,
-                                     std::function<void(MsgPtr<T>)> cb,
+    /// 订阅：lambda / 自由函数 / std::function
+    template <typename T, typename Callable>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     Callable&& cb,
                                      SubscribeOptions opts = {}) {
+        auto wrapped = detail::wrapCallback<T>(std::forward<Callable>(cb));
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        return topic->subscribe(std::move(wrapped), opts);
+    }
+
+    /// 订阅：成员函数 void(Obj::*)(const T&)——自动推导 T
+    template <typename T, typename Obj>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     void (Obj::*method)(const T&), Obj* obj,
+                                     SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(method, obj);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        return topic->subscribe(std::move(cb), opts);
+    }
+
+    /// 订阅：成员函数 void(Obj::*)(MsgPtr<T>)——自动推导 T
+    template <typename T, typename Obj>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     void (Obj::*method)(MsgPtr<T>), Obj* obj,
+                                     SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(method, obj);
         auto* topic = getOrCreateTopic<T>(name, QoS::Event);
         return topic->subscribe(std::move(cb), opts);
     }
 
     template <typename T>
-    MsgPtr<T> getLatestImpl(const std::string& name) {
+    MsgPtr<T> getLatestImpl(std::string_view name) {
         std::lock_guard lock(mutex_);
-        auto it = topics_.find(name);
+        std::string key(name);
+        auto it = topics_.find(key);
         if (it == topics_.end()) return nullptr;
         auto* typed = std::any_cast<Topic<T>*>(&it->second.typed);
         if (!typed) return nullptr;
         return (*typed)->latest();
     }
 
-    [[nodiscard]] bool hasTopic(const std::string& name) const {
+    [[nodiscard]] bool hasTopic(std::string_view name) const {
         std::lock_guard lock(mutex_);
-        return topics_.count(name) > 0;
+        return topics_.count(std::string(name)) > 0;
     }
 
 private:
@@ -126,26 +150,26 @@ private:
         std::any typed;  ///< Topic<T>*
     };
 
-    /// 获取或按需创建 Topic（首次 createPublisher/createSubscriber 时自动创建）
     template <typename T>
-    Topic<T>* getOrCreateTopic(const std::string& name, QoS qos) {
+    Topic<T>* getOrCreateTopic(std::string_view name, QoS qos) {
         std::lock_guard lock(mutex_);
-        auto it = topics_.find(name);
+        std::string key(name);
+        auto it = topics_.find(key);
         if (it != topics_.end()) {
             auto* ptr = std::any_cast<Topic<T>*>(&it->second.typed);
             if (!ptr) {
                 throw std::runtime_error(
-                    "TopicHub: type mismatch for topic: " + name);
+                    "TopicHub: type mismatch for topic: " + key);
             }
             return *ptr;
         }
-        auto topic = std::make_unique<Topic<T>>(name, qos);
+        auto topic = std::make_unique<Topic<T>>(key, qos);
         topic->setOfflineMode(offline_mode_);
         auto* raw = topic.get();
         TopicEntry entry;
         entry.base = std::move(topic);
         entry.typed = raw;
-        topics_[name] = std::move(entry);
+        topics_[key] = std::move(entry);
         return raw;
     }
 

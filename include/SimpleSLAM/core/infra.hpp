@@ -7,6 +7,7 @@
 #include <SimpleSLAM/core/infra/clock.hpp>
 #include <SimpleSLAM/core/infra/config.hpp>
 #include <SimpleSLAM/core/infra/logger.hpp>
+#include <SimpleSLAM/core/infra/registry.hpp>
 #include <SimpleSLAM/core/infra/timing.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic_hub.hpp>

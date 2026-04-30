@@ -50,8 +50,8 @@ TEST_CASE("OdometryBase initialize 创建 Publisher", "[odometry_base]") {
     MockOdometry odom;
     odom.initialize(hub);
 
-    REQUIRE(hub.hasTopic(std::string(topic_names::kSlamOdometry)));
-    REQUIRE(hub.hasTopic(std::string(topic_names::kSlamKeyframe)));
+    REQUIRE(hub.hasTopic(topic_names::kSlamOdometry));
+    REQUIRE(hub.hasTopic(topic_names::kSlamKeyframe));
 }
 
 TEST_CASE("OdometryBase processLidarImu 默认委托 processLidar", "[odometry_base]") {
@@ -107,7 +107,7 @@ TEST_CASE("OdometryBase publishResult 发布到 Topic", "[odometry_base]") {
 
     int topic_count = 0;
     auto sub = hub.subscribeImpl<OdometryResult>(
-        std::string(topic_names::kSlamOdometry),
+        topic_names::kSlamOdometry,
         [&](MsgPtr<OdometryResult>) { ++topic_count; });
 
     odom.processLidar(makeScan(1.0));

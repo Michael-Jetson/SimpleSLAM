@@ -8,6 +8,7 @@
 
 #include <SimpleSLAM/core/types/common.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
+#include <SimpleSLAM/core/types/keyframe.hpp>
 #include <SimpleSLAM/core/types/sensor_data.hpp>
 
 #include <cstdint>
@@ -24,6 +25,11 @@ struct KeyframeEvent {
     SE3d pose;                                      ///< T_world_body
     std::shared_ptr<const LidarScan> scan;          ///< 零拷贝共享原始点云
     std::shared_ptr<const ImageFrame> image;         ///< 可选
+
+    /// 转换为 KeyframeData（后端服务直接使用）
+    [[nodiscard]] KeyframeData toKeyframeData() const {
+        return KeyframeData{keyframe_id, timestamp, pose, scan, image, {}};
+    }
 };
 
 /// LoopDetector 检测到回环时发布

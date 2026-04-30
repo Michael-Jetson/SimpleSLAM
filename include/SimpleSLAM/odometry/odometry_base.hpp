@@ -8,6 +8,7 @@
 /// OdometryBase 提供公共基础设施，不含任何算法逻辑。
 
 #include <SimpleSLAM/core/infra/callback_slot.hpp>
+#include <SimpleSLAM/core/infra/logger.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic_hub.hpp>
 #include <SimpleSLAM/core/infra/topic_names.hpp>
@@ -30,10 +31,11 @@ public:
     /// 生命周期初始化——Runner 组装完成后调用
     /// 基类实现创建 odom/keyframe Publisher，派生类应先调用基类再做自身初始化
     virtual void initialize(TopicHub& hub) {
+        log_ = Logger::get(std::string(name()));
         odom_pub_ = hub.createPublisherImpl<OdometryResult>(
-            std::string(topic_names::kSlamOdometry), QoS::Latest);
+            topic_names::kSlamOdometry, QoS::Latest);
         keyframe_pub_ = hub.createPublisherImpl<KeyframeEvent>(
-            std::string(topic_names::kSlamKeyframe));
+            topic_names::kSlamKeyframe);
     }
 
     /// 处理纯 LiDAR 帧（LO 模式必须覆盖）
@@ -86,6 +88,7 @@ protected:
         }
     }
 
+    std::shared_ptr<spdlog::logger> log_;  ///< 以里程计名命名的专属日志器
     Publisher<OdometryResult> odom_pub_;
     Publisher<KeyframeEvent> keyframe_pub_;
 };

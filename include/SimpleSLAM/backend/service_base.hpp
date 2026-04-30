@@ -7,6 +7,8 @@
 /// 也可以完全不继承，直接订阅 Topic 话题使用。
 /// 这是一个便利基类，不是强制接口。
 
+#include <SimpleSLAM/core/infra/logger.hpp>
+
 #include <string>
 #include <utility>
 
@@ -17,7 +19,8 @@ class TopicHub;  // 前向声明
 class ServiceBase {
 public:
     explicit ServiceBase(std::string service_name)
-        : name_(std::move(service_name)) {}
+        : name_(std::move(service_name))
+        , log_(Logger::get(name_)) {}
 
     virtual ~ServiceBase() = default;
 
@@ -35,6 +38,7 @@ public:
 
 protected:
     std::string name_;
+    std::shared_ptr<spdlog::logger> log_;  ///< 以模块名命名的专属日志器
 };
 
 }  // namespace simpleslam
