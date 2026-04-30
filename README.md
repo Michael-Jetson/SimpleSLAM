@@ -62,9 +62,10 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 | **v0.5** | 点云工具 + Sensor IO（KDTree、VoxelGrid、降采样、KittiSource） | **已完成** | 54 |
 | **v1.0 基础设施** | Topic 通信、共享资源、Concept 定义、PCD IO、EuRoC、后端框架 | **已完成** | 113 |
 | **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
-| v1.0 算法 | 纯 LO（VoxelHashTarget、ICP-SVD） | **待实现** | — |
+| **v1.0+ 工程扩展** | AnyLoopDetector、AnyPoseGraphOptimizer、LoopClosureService、PgoService、SubMapManager、ImuBuffer | **已完成** | 182 |
+| **v1.0 算法** | 纯 LO（VoxelHashTarget、IcpSolver-GN、LoIcpOdometry） | **已完成** | 202 |
 | v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
-| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2、SubMapManager） | 计划中 | — |
+| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 | — |
 | v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
 | v3.0 | 视觉特征组件（ORB、DBoW2、FeatureMapTarget） | 计划中 | — |
 | v3.5 | VIO Baseline（Ceres 滑窗 BA、ORB-SLAM3 风格） | 计划中 | — |
@@ -99,7 +100,7 @@ git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git dock
 # 2. 构建开发镜像
 docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
 
-# 3. 编译 + 测试（147 个测试）
+# 3. 编译 + 测试（182 个测试）
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
     bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
@@ -134,11 +135,13 @@ SimpleSLAM/
 │   │   │   ├── odometry_result.hpp #   OdometryResult, TrackingStatus
 │   │   │   ├── keyframe.hpp        #   KeyframeData
 │   │   │   └── event_types.hpp     #   KeyframeEvent, LoopDetectedEvent...
-│   │   ├── concepts/               # C++20 concept 接口定义
+│   │   ├── concepts/               # C++20 concept 接口定义 + 类型擦除
 │   │   │   ├── registration_target.hpp  # RegistrationTarget + MatchResult
 │   │   │   ├── any_registration_target.hpp # Sean Parent 类型擦除包装
 │   │   │   ├── loop_detector.hpp        # LoopDetector + LoopCandidate
-│   │   │   └── pose_graph_optimizer.hpp # PoseGraphOptimizer + OptimizationResult
+│   │   │   ├── any_loop_detector.hpp    # LoopDetector 类型擦除包装
+│   │   │   ├── pose_graph_optimizer.hpp # PoseGraphOptimizer + OptimizationResult
+│   │   │   └── any_pose_graph_optimizer.hpp # PoseGraphOptimizer 类型擦除包装
 │   │   ├── math/                   # 数学工具
 │   │   │   ├── kdtree.hpp          #   nanoflann 零拷贝 KDTree3f
 │   │   │   ├── voxel_grid.hpp      #   VoxelMap (FNV + Morton)
@@ -168,22 +171,29 @@ SimpleSLAM/
 │   │   ├── kitti_source.hpp        #   KITTI 数据集读取器
 │   │   ├── euroc_source.hpp        #   EuRoC MAV 数据集读取器
 │   │   └── sensor_mux.hpp          #   多源时间排序合并
-│   ├── odometry/                   # 里程计框架
+│   ├── odometry/                   # 里程计框架 + 算法实现
 │   │   ├── odometry_base.hpp       #   前端里程计抽象基类
-│   │   └── keyframe_selector.hpp   #   关键帧选择策略
+│   │   ├── keyframe_selector.hpp   #   关键帧选择策略
+│   │   ├── imu_buffer.hpp          #   线程安全 IMU 数据缓冲区
+│   │   ├── voxel_hash_target.hpp   #   体素哈希配准地图（对标 KISS-ICP）
+│   │   └── lo_icp_odometry.hpp     #   纯 LO 里程计（VoxelHash + GN-ICP）
 │   ├── runner/                     # 运行模式编排器
 │   │   └── offline_runner.hpp      #   离线数据集回放主循环
 │   ├── adapters/                   # 类型转换桥接
 │   │   └── gtsam_bridge.hpp        #   manif ↔ GTSAM（条件编译）
+│   ├── backend.hpp                 # 后端模块 umbrella header
 │   └── backend/                    # 后端服务框架
 │       ├── service_base.hpp        #   可选生命周期基类
+│       ├── loop_closure_service.hpp#   回环检测后端服务骨架
+│       ├── pgo_service.hpp         #   位姿图优化后端服务骨架
+│       ├── submap_manager.hpp      #   子图生命周期管理器
 │       └── submap/submap.hpp       #   子图数据容器
 ├── core/src/                       # 核心库实现
 ├── resources/src/                  # 资源层实现
 ├── sensor_io/src/                  # 传感器 IO 实现
 ├── runner/src/                     # Runner 实现
 ├── configs/                        # 参考配置
-├── tests/unit/                     # 147 个单元测试
+├── tests/unit/                     # 202 个单元测试
 ├── docker/                         # Docker 开发环境 + 预下载依赖
 ├── scripts/                        # 工具脚本（evaluate.py 轨迹评测）
 └── docs/                           # 架构文档 + 教程

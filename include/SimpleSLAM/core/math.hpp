@@ -10,3 +10,4 @@
 #include <SimpleSLAM/core/math/point_ops.hpp>
 #include <SimpleSLAM/core/math/scan_utils.hpp>
 #include <SimpleSLAM/core/math/voxel_grid.hpp>
+#include <SimpleSLAM/core/math/icp_solver.hpp>

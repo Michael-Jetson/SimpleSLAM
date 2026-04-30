@@ -119,3 +119,59 @@ catch_discover_tests(test_any_registration_target)
 catch_discover_tests(test_health_monitor)
 catch_discover_tests(test_odometry_base)
 catch_discover_tests(test_offline_runner)
+
+# ── v1.0+ 工程基础设施测试 ──
+
+add_executable(test_any_loop_detector unit/test_any_loop_detector.cpp)
+target_link_libraries(test_any_loop_detector PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_any_pose_graph_optimizer unit/test_any_pose_graph_optimizer.cpp)
+target_link_libraries(test_any_pose_graph_optimizer PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_imu_buffer unit/test_imu_buffer.cpp)
+target_link_libraries(test_imu_buffer PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+add_executable(test_submap_manager unit/test_submap_manager.cpp)
+target_link_libraries(test_submap_manager PRIVATE simpleslam_backend Catch2::Catch2WithMain)
+
+add_executable(test_loop_closure_service unit/test_loop_closure_service.cpp)
+target_link_libraries(test_loop_closure_service PRIVATE simpleslam_backend Catch2::Catch2WithMain)
+
+add_executable(test_pgo_service unit/test_pgo_service.cpp)
+target_link_libraries(test_pgo_service PRIVATE simpleslam_backend Catch2::Catch2WithMain)
+
+catch_discover_tests(test_any_loop_detector)
+catch_discover_tests(test_any_pose_graph_optimizer)
+catch_discover_tests(test_imu_buffer)
+catch_discover_tests(test_submap_manager)
+catch_discover_tests(test_loop_closure_service)
+catch_discover_tests(test_pgo_service)
+
+# ── v1.0+ 注册表测试 ──
+
+add_executable(test_registry unit/test_registry.cpp)
+target_link_libraries(test_registry PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+catch_discover_tests(test_registry)
+
+# ── PipelineBuilder 测试 ──
+
+add_executable(test_pipeline_builder unit/test_pipeline_builder.cpp)
+target_link_libraries(test_pipeline_builder PRIVATE simpleslam_runner Catch2::Catch2WithMain)
+
+catch_discover_tests(test_pipeline_builder)
+
+# ── v1.0 算法层测试 ──
+
+add_executable(test_voxel_hash_target unit/test_voxel_hash_target.cpp)
+target_link_libraries(test_voxel_hash_target PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+add_executable(test_icp_solver unit/test_icp_solver.cpp)
+target_link_libraries(test_icp_solver PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
+add_executable(test_lo_icp_odometry unit/test_lo_icp_odometry.cpp)
+target_link_libraries(test_lo_icp_odometry PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
+catch_discover_tests(test_voxel_hash_target)
+catch_discover_tests(test_icp_solver)
+catch_discover_tests(test_lo_icp_odometry)
