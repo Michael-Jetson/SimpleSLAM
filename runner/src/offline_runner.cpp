@@ -3,6 +3,7 @@
 
 #include <SimpleSLAM/runner/offline_runner.hpp>
 
+#include <SimpleSLAM/core/infra/comm_config.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
 
 #include <cassert>
@@ -11,12 +12,13 @@
 namespace simpleslam {
 
 OfflineRunner::OfflineRunner(std::unique_ptr<ISensorSource> source,
-                             std::unique_ptr<OdometryBase> odometry)
+                             std::unique_ptr<OdometryBase> odometry,
+                             const Config& cfg)
     : source_(std::move(source)), odometry_(std::move(odometry)) {
     assert(source_ && "ISensorSource must not be null");
     assert(odometry_ && "OdometryBase must not be null");
 
-    TopicHub::init(true);
+    TopicHub::init(loadOfflineMode(cfg));
     odometry_->initialize(TopicHub::instance());
 }
 

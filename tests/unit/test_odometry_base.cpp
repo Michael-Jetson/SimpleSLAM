@@ -3,6 +3,7 @@
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <yaml-cpp/yaml.h>
 
 using namespace simpleslam;
 
@@ -10,6 +11,8 @@ namespace {
 
 class MockOdometry final : public OdometryBase {
 public:
+    explicit MockOdometry(const Config& cfg = {}) : OdometryBase(cfg) {}
+
     int process_count = 0;
 
     OdometryResult processLidar(const LidarScan& scan) override {
@@ -52,6 +55,19 @@ TEST_CASE("OdometryBase initialize 创建 Publisher", "[odometry_base]") {
 
     REQUIRE(hub.hasTopic(topic_names::kSlamOdometry));
     REQUIRE(hub.hasTopic(topic_names::kSlamKeyframe));
+}
+
+TEST_CASE("OdometryBase 从 config 读话题名（运行期覆盖默认）", "[odometry_base][config]") {
+    auto cfg = Config::fromNode(YAML::Load(
+        "output: {topic: custom/odom, qos: latest}\n"
+        "keyframe: {topic: custom/kf}"));
+    TopicHub hub(true);
+    MockOdometry odom(cfg);
+    odom.initialize(hub);
+
+    REQUIRE(hub.hasTopic("custom/odom"));                     // 用了 config 的名字
+    REQUIRE(hub.hasTopic("custom/kf"));
+    REQUIRE_FALSE(hub.hasTopic(topic_names::kSlamOdometry));  // 没用默认
 }
 
 TEST_CASE("OdometryBase processLidarImu 默认委托 processLidar", "[odometry_base]") {

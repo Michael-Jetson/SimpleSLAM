@@ -8,6 +8,7 @@
 /// 管理 TopicHub 全局单例的生命周期（init/shutdown）。
 
 #include <SimpleSLAM/backend/service_base.hpp>
+#include <SimpleSLAM/core/infra/config.hpp>
 #include <SimpleSLAM/odometry/odometry_base.hpp>
 #include <SimpleSLAM/resources/trajectory.hpp>
 #include <SimpleSLAM/sensor_io/sensor_source.hpp>
@@ -28,9 +29,11 @@ struct RunResult {
 /// 离线 Runner——从数据源拉取数据，驱动 Odometry，协调后端服务
 class OfflineRunner final {
 public:
-    /// 构造时初始化 TopicHub 全局单例（离线模式）并初始化 Odometry
+    /// 构造时初始化 TopicHub 全局单例并初始化 Odometry。
+    /// cfg 提供 runtime.offline_mode（缺省 true=离线确定性）。
     OfflineRunner(std::unique_ptr<ISensorSource> source,
-                  std::unique_ptr<OdometryBase> odometry);
+                  std::unique_ptr<OdometryBase> odometry,
+                  const Config& cfg = {});
 
     /// 析构时关闭 Odometry 并销毁 TopicHub 全局单例
     ~OfflineRunner();

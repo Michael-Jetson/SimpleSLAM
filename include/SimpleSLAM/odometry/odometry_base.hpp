@@ -8,8 +8,8 @@
 /// OdometryBase 提供公共基础设施，不含任何算法逻辑。
 
 #include <SimpleSLAM/core/infra/callback_slot.hpp>
+#include <SimpleSLAM/core/infra/comm_config.hpp>
 #include <SimpleSLAM/core/infra/logger.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
@@ -33,9 +33,9 @@ public:
     virtual void initialize(TopicHub& hub) {
         log_ = Logger::get(std::string(name()));
         odom_pub_ = hub.createPublisherImpl<OdometryResult>(
-            topic_names::kSlamOdometry, QoS::Latest);
+            odom_spec_.name, odom_spec_.qos);
         keyframe_pub_ = hub.createPublisherImpl<KeyframeEvent>(
-            topic_names::kSlamKeyframe);
+            keyframe_spec_.name, keyframe_spec_.qos);
     }
 
     /// 处理纯 LiDAR 帧（LO 模式必须覆盖）
@@ -72,7 +72,11 @@ public:
     OdometryBase& operator=(const OdometryBase&) = delete;
 
 protected:
-    OdometryBase() = default;
+    /// 从自己的 config 段读话题规格（output/keyframe；缺省回退 topic_names 常量）
+    explicit OdometryBase(const Config& cfg = {}) {
+        if (cfg.has("output")) odom_spec_ = loadTopicSpec(cfg, "output");
+        if (cfg.has("keyframe")) keyframe_spec_ = loadTopicSpec(cfg, "keyframe");
+    }
 
     /// 发布位姿结果——先触发 on_after_update 回调（同步），再发布到 Topic（入队）
     void publishResult(const OdometryResult& result) {
@@ -91,6 +95,10 @@ protected:
     std::shared_ptr<spdlog::logger> log_;  ///< 以里程计名命名的专属日志器
     Publisher<OdometryResult> odom_pub_;
     Publisher<KeyframeEvent> keyframe_pub_;
+
+    /// 话题规格（默认 topic_names 常量；ctor 可从 YAML 覆盖名字/QoS）
+    TopicSpec odom_spec_{std::string(topic_names::kSlamOdometry), QoS::Latest, {}};
+    TopicSpec keyframe_spec_{std::string(topic_names::kSlamKeyframe), QoS::Event, {}};
 };
 
 }  // namespace simpleslam

@@ -3,6 +3,7 @@
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <yaml-cpp/yaml.h>
 
 using namespace simpleslam;
 
@@ -44,6 +45,19 @@ TEST_CASE("LoopClosureService initialize 创建 Topic", "[loop_closure_service]"
     svc.initialize(hub);
 
     REQUIRE(hub.hasTopic(topic_names::kSlamLoop));
+}
+
+TEST_CASE("LoopClosureService 从 config 读话题名", "[loop_closure_service][config]") {
+    auto cfg = Config::fromNode(YAML::Load(
+        "loop: {topic: custom/loop}\n"
+        "keyframe: {topic: custom/kf}"));
+    TopicHub hub(true);
+    LoopClosureService svc(AnyLoopDetector(AlwaysDetectMock{}), cfg);
+    svc.initialize(hub);
+
+    REQUIRE(hub.hasTopic("custom/loop"));                  // config 的名字
+    REQUIRE(hub.hasTopic("custom/kf"));
+    REQUIRE_FALSE(hub.hasTopic(topic_names::kSlamLoop));   // 没用默认
 }
 
 TEST_CASE("LoopClosureService AlwaysDetect 发布 LoopDetectedEvent", "[loop_closure_service]") {

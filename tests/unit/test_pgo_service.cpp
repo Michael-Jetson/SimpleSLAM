@@ -3,6 +3,7 @@
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <yaml-cpp/yaml.h>
 
 using namespace simpleslam;
 
@@ -63,6 +64,19 @@ TEST_CASE("PgoService initialize 创建 Topic", "[pgo_service]") {
     svc.initialize(hub);
 
     REQUIRE(hub.hasTopic(topic_names::kSlamCorrection));
+}
+
+TEST_CASE("PgoService 从 config 读话题名", "[pgo_service][config]") {
+    auto cfg = Config::fromNode(YAML::Load(
+        "correction: {topic: custom/corr}\n"
+        "keyframe: {topic: custom/kf}\n"
+        "loop: {topic: custom/loop}"));
+    TopicHub hub(true);
+    PgoService svc(AnyPoseGraphOptimizer(MockPGO{}), cfg);
+    svc.initialize(hub);
+
+    REQUIRE(hub.hasTopic("custom/corr"));                       // config 的名字
+    REQUIRE_FALSE(hub.hasTopic(topic_names::kSlamCorrection));  // 没用默认
 }
 
 TEST_CASE("PgoService 两个连续 keyframe 产生 odometry edge", "[pgo_service]") {

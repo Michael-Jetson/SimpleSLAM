@@ -27,8 +27,9 @@ struct LoIcpConfig {
 /// 纯 LiDAR 里程计——ICP scan-to-map
 class LoIcpOdometry final : public OdometryBase {
 public:
-    explicit LoIcpOdometry(const LoIcpConfig& config = {})
-        : config_(config)
+    explicit LoIcpOdometry(const LoIcpConfig& config = {}, const Config& comm = {})
+        : OdometryBase(comm)
+        , config_(config)
         , target_(config.target)
         , solver_(config.solver)
         , kf_selector_(config.keyframe) {}

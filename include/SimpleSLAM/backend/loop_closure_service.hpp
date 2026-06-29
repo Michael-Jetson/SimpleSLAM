@@ -10,6 +10,7 @@
 
 #include <SimpleSLAM/backend/service_base.hpp>
 #include <SimpleSLAM/core/concepts/any_loop_detector.hpp>
+#include <SimpleSLAM/core/infra/comm_config.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
@@ -20,15 +21,19 @@ namespace simpleslam {
 
 class LoopClosureService final : public ServiceBase {
 public:
-    explicit LoopClosureService(AnyLoopDetector detector)
+    explicit LoopClosureService(AnyLoopDetector detector, const Config& cfg = {})
         : ServiceBase("LoopClosureService"), detector_(std::move(detector)) {
         detector_.setOwner(name());
+        if (cfg.has("loop")) loop_spec_ = loadTopicSpec(cfg, "loop");
+        if (cfg.has("keyframe")) keyframe_spec_ = loadTopicSpec(cfg, "keyframe");
     }
 
     void initialize(TopicHub& hub) override {
-        loop_pub_ = hub.createPublisherImpl<LoopDetectedEvent>(topic_names::kSlamLoop);
+        loop_pub_ = hub.createPublisherImpl<LoopDetectedEvent>(
+            loop_spec_.name, loop_spec_.qos);
         keyframe_sub_ = hub.subscribeImpl(
-            topic_names::kSlamKeyframe, &LoopClosureService::onKeyframe, this);
+            keyframe_spec_.name, &LoopClosureService::onKeyframe, this,
+            keyframe_spec_.options);
     }
 
     void shutdown() override {
@@ -50,6 +55,9 @@ private:
     AnyLoopDetector detector_;
     Publisher<LoopDetectedEvent> loop_pub_;
     SubscriptionHandle keyframe_sub_;
+
+    TopicSpec loop_spec_{std::string(topic_names::kSlamLoop), QoS::Event, {}};
+    TopicSpec keyframe_spec_{std::string(topic_names::kSlamKeyframe), QoS::Event, {}};
 };
 
 }  // namespace simpleslam
