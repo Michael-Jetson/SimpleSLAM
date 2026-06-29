@@ -57,7 +57,9 @@ public:
         }
     }
 
-    /// 通过 dot-path 获取值，路径不存在则返回默认值
+    /// 通过 dot-path 获取值，路径【不存在/null】才返回默认值。
+    /// 注意：存在但类型不符（如 max_iterations: "abc"）会抛 ConfigError，而非静默退默认——
+    /// 否则配置笔误被无声吞掉、跑出降级的默认参数。
     template <typename T>
     T get(const std::string& dot_path, const T& fallback) const {
         auto node = navigate(dot_path);
@@ -66,8 +68,8 @@ public:
         }
         try {
             return node.as<T>();
-        } catch (const YAML::Exception&) {
-            return fallback;
+        } catch (const YAML::Exception& e) {
+            throw ConfigError("Config type conversion failed: " + dot_path + " (" + e.what() + ")");
         }
     }
 
