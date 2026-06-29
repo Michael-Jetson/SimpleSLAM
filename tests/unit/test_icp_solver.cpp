@@ -15,7 +15,7 @@ TEST_CASE("IcpSolver: zero residuals give zero update", "[icp_solver]") {
     result.jacobians = {1, 0, 0, 0, 0, 0,
                         0, 1, 0, 0, 0, 0,
                         0, 0, 1, 0, 0, 0};
-    result.num_valid = 3;
+    result.num_rows = 3;
 
     auto dx = solver.solveOneStep(result);
     REQUIRE(dx.norm() < 1e-12);
@@ -31,7 +31,7 @@ TEST_CASE("IcpSolver: known translation residual", "[icp_solver]") {
     result.jacobians = {1, 0, 0, 0, 0,  0,
                         0, 1, 0, 0, 0,  1,
                         0, 0, 1, 0, -1, 0};
-    result.num_valid = 3;
+    result.num_rows = 3;
 
     auto dx = solver.solveOneStep(result);
 
@@ -51,7 +51,7 @@ TEST_CASE("IcpSolver: multiple matches accumulate", "[icp_solver]") {
         result.jacobians.insert(result.jacobians.end(), {0, 1, 0, 0, 0, px});
         result.jacobians.insert(result.jacobians.end(), {0, 0, 1, 0, -px, 0});
     }
-    result.num_valid = 6;
+    result.num_rows = 6;
 
     auto dx = solver.solveOneStep(result);
     REQUIRE_THAT(dx(0), Catch::Matchers::WithinAbs(-0.1, 1e-6));
@@ -76,7 +76,7 @@ TEST_CASE("IcpSolver: Geman-McClure downweights outliers", "[icp_solver]") {
     result.jacobians.insert(result.jacobians.end(), {0, 1, 0, 0, 0, 0});
     result.jacobians.insert(result.jacobians.end(), {0, 0, 1, 0, 0, 0});
 
-    result.num_valid = 6;
+    result.num_rows = 6;
 
     auto dx = solver.solveOneStep(result);
     REQUIRE(std::abs(dx(0)) < 0.5);
@@ -85,7 +85,7 @@ TEST_CASE("IcpSolver: Geman-McClure downweights outliers", "[icp_solver]") {
 TEST_CASE("IcpSolver: empty result gives zero update", "[icp_solver]") {
     IcpSolver solver;
     MatchResult result;
-    result.num_valid = 0;
+    result.num_rows = 0;
 
     auto dx = solver.solveOneStep(result);
     REQUIRE(dx.allFinite());

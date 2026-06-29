@@ -41,11 +41,10 @@ private:
         auto kf = event.toKeyframeData();
         detector_.addKeyframe(kf);
 
-        auto candidate = detector_.detect(kf);
-        if (candidate) {
+        for (const auto& candidate : detector_.detect(kf)) {
             loop_pub_.publish(LoopDetectedEvent{
-                kf.id, candidate->match_keyframe_id,
-                candidate->T_match_query, candidate->score});
+                kf.id, candidate.match_keyframe_id,
+                candidate.T_match_query, candidate.score});
         }
     }
 

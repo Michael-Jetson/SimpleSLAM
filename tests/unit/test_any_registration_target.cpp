@@ -13,7 +13,7 @@ struct MockMapTarget {
 
     void match(const LidarScan&, const SE3d&, MatchResult& result) {
         ++match_count;
-        result.num_valid = 10;
+        result.num_rows = 10;
     }
 
     void update(const LidarScan&, const SE3d&) {
@@ -21,15 +21,17 @@ struct MockMapTarget {
         point_count += 100;
     }
 
+    void clear() { point_count = 0; }
     [[nodiscard]] bool empty() const { return point_count == 0; }
     [[nodiscard]] size_t size() const { return point_count; }
 };
 
 struct AnotherMockTarget {
     void match(const LidarScan&, const SE3d&, MatchResult& result) {
-        result.num_valid = 42;
+        result.num_rows = 42;
     }
     void update(const LidarScan&, const SE3d&) {}
+    void clear() {}
     [[nodiscard]] bool empty() const { return true; }
     [[nodiscard]] size_t size() const { return 0; }
 };
@@ -45,7 +47,7 @@ TEST_CASE("AnyRegistrationTarget 包装 mock 并转发 match", "[any_reg_target]
     MatchResult result;
 
     target.match(scan, pose, result);
-    REQUIRE(result.num_valid == 10);
+    REQUIRE(result.num_rows == 10);
 }
 
 TEST_CASE("AnyRegistrationTarget 包装 mock 并转发 update", "[any_reg_target]") {
@@ -89,7 +91,7 @@ TEST_CASE("AnyRegistrationTarget move 语义", "[any_reg_target]") {
     SE3d pose;
     MatchResult result;
     b.match(scan, pose, result);
-    REQUIRE(result.num_valid == 10);
+    REQUIRE(result.num_rows == 10);
 }
 
 TEST_CASE("AnyRegistrationTarget 不同类型擦除", "[any_reg_target]") {
@@ -103,8 +105,8 @@ TEST_CASE("AnyRegistrationTarget 不同类型擦除", "[any_reg_target]") {
     target_a.match(scan, pose, result_a);
     target_b.match(scan, pose, result_b);
 
-    REQUIRE(result_a.num_valid == 10);
-    REQUIRE(result_b.num_valid == 42);
+    REQUIRE(result_a.num_rows == 10);
+    REQUIRE(result_b.num_rows == 42);
 }
 
 TEST_CASE("AnyRegistrationTarget 满足 RegistrationTarget concept", "[any_reg_target]") {

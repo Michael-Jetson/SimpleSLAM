@@ -30,6 +30,8 @@ struct OdometryResult {
     /// 各自由度的信息量——值越小越退化（可选，由退化检测模块填充）
     std::optional<Eigen::Matrix<double, 6, 1>> degeneracy;
 
+    double processing_time_ms{0.0};  ///< 本帧处理耗时（毫秒），供 HealthMonitor 和自适应降级使用
+
     [[nodiscard]] bool isTracking() const {
         return status == TrackingStatus::Tracking;
     }

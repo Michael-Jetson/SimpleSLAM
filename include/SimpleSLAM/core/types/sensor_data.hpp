@@ -76,6 +76,7 @@ struct LidarScan {
     // ── 组织信息 ──
 
     ScanLayout layout;
+    uint8_t sensor_id = 0;                             ///< 多 LiDAR 场景（与 ImageFrame::camera_id 对称）
 
     // ── 一等可选字段（覆盖 >95% 场景）──
 
@@ -181,6 +182,7 @@ struct ImuSample {
     Timestamp timestamp{0.0};
     Vec3d acc{0.0, 0.0, 0.0};   ///< 加速度（m/s^2，含重力）
     Vec3d gyro{0.0, 0.0, 0.0};  ///< 角速度（rad/s）
+    uint8_t sensor_id = 0;      ///< 多 IMU 场景（GNSS/INS 组合、冗余 IMU）
 };
 
 using ImuBatch = std::vector<ImuSample>;

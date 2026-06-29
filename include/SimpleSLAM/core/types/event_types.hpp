@@ -42,6 +42,14 @@ struct LoopDetectedEvent {
 
 /// PGOptimizer 优化完成后发布——携带所有被校正的位姿
 struct CorrectionEvent {
+    /// 校正级别——Odometry 根据此字段自动选择响应策略（蓝图 A.6 节）
+    enum class Level : uint8_t {
+        WorldOffset = 1,      ///< 仅更新 T_world_odom_
+        OffsetAndRebuild = 2, ///< 更新偏移 + 触发地图重建
+        OffsetAndInject = 3,  ///< 更新偏移 + 注入状态
+    };
+
+    Level level = Level::OffsetAndRebuild;
     std::unordered_map<uint64_t, SE3d> corrected_poses;  ///< kf_id → 校正后的 T_world_body
 };
 

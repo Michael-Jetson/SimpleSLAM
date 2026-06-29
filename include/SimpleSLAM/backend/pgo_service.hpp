@@ -58,7 +58,9 @@ private:
                                event.T_match_query, Mat6d::Identity());
         auto result = optimizer_.optimize();
         if (result.converged && !result.optimized_poses.empty()) {
-            correction_pub_.publish(CorrectionEvent{result.optimized_poses});
+            correction_pub_.publish(CorrectionEvent{
+                CorrectionEvent::Level::OffsetAndRebuild,
+                result.optimized_poses});
         }
     }
 

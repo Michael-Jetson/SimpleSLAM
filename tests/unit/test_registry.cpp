@@ -32,8 +32,8 @@ namespace {
 /// 无参构造的回环检测器 Mock
 struct MockDetectorA {
     void addKeyframe(const KeyframeData&) {}
-    std::optional<LoopCandidate> detect(const KeyframeData&) {
-        return std::nullopt;
+    std::vector<LoopCandidate> detect(const KeyframeData&) {
+        return {};
     }
 };
 
@@ -46,8 +46,8 @@ struct MockDetectorB {
         : threshold(config["threshold"].as<int>(10)) {}
 
     void addKeyframe(const KeyframeData&) {}
-    std::optional<LoopCandidate> detect(const KeyframeData&) {
-        return std::nullopt;
+    std::vector<LoopCandidate> detect(const KeyframeData&) {
+        return {};
     }
 };
 
@@ -126,7 +126,7 @@ TEST_CASE("Plugin YAML 配置创建", "[registry]") {
     // 验证 detect 正常工作（间接验证对象构造成功）
     KeyframeData kf;
     auto result = det.detect(kf);
-    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.empty());
 }
 
 TEST_CASE("Module OdometryBase 无参创建", "[registry]") {

@@ -22,7 +22,7 @@ namespace simpleslam {
 struct MatchResult {
     std::vector<double> residuals;   ///< 每个有效匹配的残差
     std::vector<double> jacobians;   ///< row-major, 每行 6 列（与 Eigen::Map 兼容）
-    int num_valid = 0;               ///< 有效匹配点数
+    int num_rows = 0;                ///< 残差行数（点到点每匹配3行，点到面每匹配1行）
 
     void reserve(size_t max_points) {
         residuals.reserve(max_points);
@@ -32,7 +32,7 @@ struct MatchResult {
     void clear() {
         residuals.clear();
         jacobians.clear();
-        num_valid = 0;
+        num_rows = 0;
     }
 };
 
@@ -46,6 +46,7 @@ concept RegistrationTarget = requires(
     MatchResult& result) {
     { target.match(scan, pose, result) } -> std::same_as<void>;
     { target.update(scan, pose) } -> std::same_as<void>;
+    { target.clear() } -> std::same_as<void>;
     { target.empty() } -> std::convertible_to<bool>;
     { target.size() } -> std::convertible_to<std::size_t>;
 };

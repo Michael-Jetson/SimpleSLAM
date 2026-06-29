@@ -13,18 +13,18 @@ struct AlwaysDetectMock {
 
     void addKeyframe(const KeyframeData&) { ++add_count; }
 
-    std::optional<LoopCandidate> detect(const KeyframeData&) {
+    std::vector<LoopCandidate> detect(const KeyframeData&) {
         LoopCandidate c;
         c.match_keyframe_id = 99;
         c.T_match_query = SE3d{};
         c.score = 0.8;
-        return c;
+        return {c};
     }
 };
 
 struct NeverDetectMock {
     void addKeyframe(const KeyframeData&) {}
-    std::optional<LoopCandidate> detect(const KeyframeData&) { return std::nullopt; }
+    std::vector<LoopCandidate> detect(const KeyframeData&) { return {}; }
 };
 
 KeyframeEvent makeKeyframeEvent(uint64_t id, Timestamp ts) {

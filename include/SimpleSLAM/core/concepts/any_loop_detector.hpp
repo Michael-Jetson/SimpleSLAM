@@ -43,7 +43,7 @@ public:
         self_->doAddKeyframe(keyframe);
     }
 
-    [[nodiscard]] std::optional<LoopCandidate> detect(const KeyframeData& keyframe) {
+    [[nodiscard]] std::vector<LoopCandidate> detect(const KeyframeData& keyframe) {
         assert(self_);
         return self_->doDetect(keyframe);
     }
@@ -72,7 +72,7 @@ private:
     struct Concept {
         virtual ~Concept() = default;
         virtual void doAddKeyframe(const KeyframeData&) = 0;
-        [[nodiscard]] virtual std::optional<LoopCandidate> doDetect(const KeyframeData&) = 0;
+        [[nodiscard]] virtual std::vector<LoopCandidate> doDetect(const KeyframeData&) = 0;
         /// 如果具体类型有 setLogger 方法，注入日志器
         virtual void injectLogger(std::shared_ptr<spdlog::logger>) {}
     };
@@ -87,7 +87,7 @@ private:
             data.addKeyframe(kf);
         }
 
-        [[nodiscard]] std::optional<LoopCandidate> doDetect(const KeyframeData& kf) override {
+        [[nodiscard]] std::vector<LoopCandidate> doDetect(const KeyframeData& kf) override {
             return data.detect(kf);
         }
 

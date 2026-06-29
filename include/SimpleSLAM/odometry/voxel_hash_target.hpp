@@ -113,7 +113,7 @@ public:
             result.jacobians.push_back(0.0);
 
             // 每个匹配贡献 3 行（3D 残差）
-            result.num_valid += 3;
+            result.num_rows += 3;
         }
     }
 

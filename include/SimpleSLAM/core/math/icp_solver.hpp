@@ -48,7 +48,7 @@ public:
     /// MatchResult 内存布局（点到点模式，每个匹配贡献 3 行）：
     ///   residuals:  [r₀, r₁, r₂, r₃, r₄, r₅, ...]   每个 rᵢ 是标量
     ///   jacobians:  [J₀(6个), J₁(6个), J₂(6个), ...]  每行 6 个 double
-    ///   num_valid:  总行数（= 匹配点数 × 3）
+    ///   num_rows:  总行数（= 匹配点数 × 3）
     ///
     /// 数学：逐行累加法方程 H δξ = -b
     ///   H = Σ wᵢ Jᵢᵀ Jᵢ  (6×6)
@@ -60,7 +60,7 @@ public:
         Eigen::Matrix<double, 6, 1> Jtr = Eigen::Matrix<double, 6, 1>::Zero();
 
         // 逐行累加——每行一个标量残差 + 一行 1×6 雅可比
-        for (int i = 0; i < result.num_valid; ++i) {
+        for (int i = 0; i < result.num_rows; ++i) {
             // 取第 i 行的标量残差
             double ri = result.residuals[i];
 

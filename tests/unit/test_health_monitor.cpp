@@ -26,7 +26,7 @@ HealthMetrics highCovarianceFrame() {
 
 TEST_CASE("HealthMonitor 初始状态 OK", "[health_monitor]") {
     HealthMonitor monitor;
-    REQUIRE(monitor.state() == SystemHealth::OK);
+    REQUIRE(monitor.state() == SystemHealth::Healthy);
 }
 
 TEST_CASE("HealthMonitor 连续坏帧达到退化阈值", "[health_monitor]") {
@@ -36,10 +36,10 @@ TEST_CASE("HealthMonitor 连续坏帧达到退化阈值", "[health_monitor]") {
 
     monitor.update(badFrame());
     monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::OK);
+    REQUIRE(monitor.state() == SystemHealth::Healthy);
 
     monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 }
 
 TEST_CASE("HealthMonitor 退化后恢复到 OK", "[health_monitor]") {
@@ -50,11 +50,11 @@ TEST_CASE("HealthMonitor 退化后恢复到 OK", "[health_monitor]") {
 
     monitor.update(badFrame());
     monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 
     monitor.update(goodFrame());
     monitor.update(goodFrame());
-    REQUIRE(monitor.state() == SystemHealth::OK);
+    REQUIRE(monitor.state() == SystemHealth::Healthy);
 }
 
 TEST_CASE("HealthMonitor 退化继续坏帧到 Lost", "[health_monitor]") {
@@ -64,10 +64,10 @@ TEST_CASE("HealthMonitor 退化继续坏帧到 Lost", "[health_monitor]") {
     HealthMonitor monitor(thresholds);
 
     for (int i = 0; i < 2; ++i) monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 
     for (int i = 0; i < 3; ++i) monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Lost);
+    REQUIRE(monitor.state() == SystemHealth::Critical);
 }
 
 TEST_CASE("HealthMonitor Lost 恢复到 Degraded（阶梯式）", "[health_monitor]") {
@@ -78,18 +78,18 @@ TEST_CASE("HealthMonitor Lost 恢复到 Degraded（阶梯式）", "[health_monit
     HealthMonitor monitor(thresholds);
 
     for (int i = 0; i < 2; ++i) monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 
     for (int i = 0; i < 2; ++i) monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Lost);
+    REQUIRE(monitor.state() == SystemHealth::Critical);
 
     monitor.update(goodFrame());
     monitor.update(goodFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 
     monitor.update(goodFrame());
     monitor.update(goodFrame());
-    REQUIRE(monitor.state() == SystemHealth::OK);
+    REQUIRE(monitor.state() == SystemHealth::Healthy);
 }
 
 TEST_CASE("HealthMonitor Failed 是终态", "[health_monitor]") {
@@ -99,16 +99,16 @@ TEST_CASE("HealthMonitor Failed 是终态", "[health_monitor]") {
     HealthMonitor monitor(thresholds);
 
     monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 
     monitor.update(badFrame());
-    REQUIRE(monitor.state() == SystemHealth::Lost);
+    REQUIRE(monitor.state() == SystemHealth::Critical);
 
     for (int i = 0; i < 100; ++i) monitor.update(lostFrame());
-    REQUIRE(monitor.state() == SystemHealth::Failed);
+    REQUIRE(monitor.state() == SystemHealth::Fatal);
 
     monitor.update(goodFrame());
-    REQUIRE(monitor.state() == SystemHealth::Failed);
+    REQUIRE(monitor.state() == SystemHealth::Fatal);
 }
 
 TEST_CASE("HealthMonitor reset 恢复初始", "[health_monitor]") {
@@ -120,10 +120,10 @@ TEST_CASE("HealthMonitor reset 恢复初始", "[health_monitor]") {
     monitor.update(badFrame());
     monitor.update(badFrame());
     for (int i = 0; i < 100; ++i) monitor.update(lostFrame());
-    REQUIRE(monitor.state() == SystemHealth::Failed);
+    REQUIRE(monitor.state() == SystemHealth::Fatal);
 
     monitor.reset();
-    REQUIRE(monitor.state() == SystemHealth::OK);
+    REQUIRE(monitor.state() == SystemHealth::Healthy);
     REQUIRE(monitor.consecutiveBadFrames() == 0);
     REQUIRE(monitor.consecutiveGoodFrames() == 0);
 }
@@ -136,5 +136,5 @@ TEST_CASE("HealthMonitor covariance_trace 超阈值算坏帧", "[health_monitor]
 
     monitor.update(highCovarianceFrame());
     monitor.update(highCovarianceFrame());
-    REQUIRE(monitor.state() == SystemHealth::Degraded);
+    REQUIRE(monitor.state() == SystemHealth::Warning);
 }
