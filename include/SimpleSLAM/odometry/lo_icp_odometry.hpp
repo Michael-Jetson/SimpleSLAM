@@ -27,8 +27,9 @@ struct LoIcpConfig {
 /// 纯 LiDAR 里程计——ICP scan-to-map
 class LoIcpOdometry final : public OdometryBase {
 public:
-    explicit LoIcpOdometry(const LoIcpConfig& config = {})
-        : config_(config)
+    explicit LoIcpOdometry(const LoIcpConfig& config = {}, const Config& comm = {})
+        : OdometryBase(comm)
+        , config_(config)
         , target_(config.target)
         , solver_(config.solver)
         , kf_selector_(config.keyframe) {}
@@ -51,10 +52,10 @@ public:
         for (int i = 0; i < solver_.config().max_iterations; ++i) {
             result_.clear();
             target_.match(source, pose, result_);
-            if (result_.num_valid < 6) break;
+            if (result_.num_rows < 6) break;
 
             auto dx = solver_.solveOneStep(result_);
-            pose = SE3d::Exp(dx) * pose;
+            pose = SE3d::Tangent(dx).exp() * pose;
 
             if (dx.norm() < solver_.config().convergence_threshold) break;
         }
@@ -89,8 +90,8 @@ public:
 
     void reset() override {
         target_.clear();
-        last_pose_ = SE3d{};
-        delta_ = SE3d{};
+        last_pose_ = SE3d::Identity();
+        delta_ = SE3d::Identity();
         kf_selector_.reset();
         next_kf_id_ = 0;
     }
@@ -105,8 +106,8 @@ private:
     IcpSolver solver_;
     KeyframeSelector kf_selector_;
 
-    SE3d last_pose_{};
-    SE3d delta_{};
+    SE3d last_pose_ = SE3d::Identity();
+    SE3d delta_ = SE3d::Identity();
     MatchResult result_;     ///< 复用缓冲区，避免每帧堆分配
     uint64_t next_kf_id_{0};
 };

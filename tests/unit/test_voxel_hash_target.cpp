@@ -54,13 +54,13 @@ TEST_CASE("VoxelHashTarget: max_points_per_voxel limits bucket", "[voxel_hash_ta
     VoxelHashTarget target(cfg);
 
     auto scan = makeTestScan({
-        {1.0f, 0.0f, 0.0f},
-        {2.0f, 0.0f, 0.0f},
-        {3.0f, 0.0f, 0.0f},
-        {4.0f, 0.0f, 0.0f},
-        {5.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
+        {60.0f, 0.0f, 0.0f},
+        {0.0f, 60.0f, 0.0f},
+        {0.0f, 0.0f, 60.0f},
+        {60.0f, 60.0f, 0.0f},
     });
-    target.update(scan, SE3d{});
+    target.update(scan, SE3d::Identity());
     REQUIRE(target.size() == 3);
 }
 
@@ -83,10 +83,10 @@ TEST_CASE("VoxelHashTarget: match produces residuals and jacobians", "[voxel_has
     MatchResult result;
     target.match(query_scan, SE3d{}, result);
 
-    REQUIRE(result.num_valid > 0);
-    REQUIRE(result.num_valid % 3 == 0);
-    REQUIRE(result.residuals.size() == static_cast<size_t>(result.num_valid));
-    REQUIRE(result.jacobians.size() == static_cast<size_t>(result.num_valid) * 6);
+    REQUIRE(result.num_rows > 0);
+    REQUIRE(result.num_rows % 3 == 0);
+    REQUIRE(result.residuals.size() == static_cast<size_t>(result.num_rows));
+    REQUIRE(result.jacobians.size() == static_cast<size_t>(result.num_rows) * 6);
 }
 
 TEST_CASE("VoxelHashTarget: identity match gives zero residuals", "[voxel_hash_target]") {
@@ -101,8 +101,8 @@ TEST_CASE("VoxelHashTarget: identity match gives zero residuals", "[voxel_hash_t
     MatchResult result;
     target.match(makeTestScan(pts), SE3d{}, result);
 
-    REQUIRE(result.num_valid > 0);
-    for (int i = 0; i < result.num_valid; ++i)
+    REQUIRE(result.num_rows > 0);
+    for (int i = 0; i < result.num_rows; ++i)
         REQUIRE_THAT(result.residuals[i], Catch::Matchers::WithinAbs(0.0, 1e-10));
 }
 

@@ -49,6 +49,11 @@ public:
         self_->doUpdate(scan, pose);
     }
 
+    void clear() {
+        assert(self_);
+        self_->doClear();
+    }
+
     [[nodiscard]] bool empty() const {
         assert(self_);
         return self_->doEmpty();
@@ -81,6 +86,7 @@ private:
         virtual ~Concept() = default;
         virtual void doMatch(const LidarScan&, const SE3d&, MatchResult&) = 0;
         virtual void doUpdate(const LidarScan&, const SE3d&) = 0;
+        virtual void doClear() = 0;
         [[nodiscard]] virtual bool doEmpty() const = 0;
         [[nodiscard]] virtual size_t doSize() const = 0;
         virtual void injectLogger(std::shared_ptr<spdlog::logger>) {}
@@ -101,6 +107,7 @@ private:
             data.update(scan, pose);
         }
 
+        void doClear() override { data.clear(); }
         [[nodiscard]] bool doEmpty() const override { return data.empty(); }
         [[nodiscard]] size_t doSize() const override { return data.size(); }
 

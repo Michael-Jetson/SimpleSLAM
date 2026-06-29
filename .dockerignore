@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Docker build-context exclusions for SimpleSLAM.
+# Keeps the context (and the `verify` stage's `COPY .`) small and reproducible.
+# Only the `verify` stage copies source; deps are fetched/built independently.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Build outputs (in-source + out-of-source)
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+**/CMakeFiles/
+**/CMakeCache.txt
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+compile_commands.json
+
+# Pre-downloaded dependency sources — the Dockerfile fetches its own pinned
+# copies, so the (large) vendored git checkouts are not needed in the context.
+docker/deps/
+
+# Docker infrastructure itself (no need to copy it into the image)
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.yaml
+
+# Editor / IDE / OS junk
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Caches & tooling scratch
+.cache/
+.ccache/
+.ruff_cache/
+.agents/
+.codex/
+.claude/
+
+# Large internal docs / runtime output — not needed to compile or test
+docs/
+logs/
+*.md
+*.zip
+git.sh

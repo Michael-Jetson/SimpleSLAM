@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SimpleSLAM — development & CI compose workflow.
+#
+# The image carries the C++20 toolchain + every dependency; your working tree is
+# bind-mounted and the CMake build dir lives in a named volume, so rebuilds are
+# fast and incremental without rebuilding the image.
+#
+#   docker compose build                       # build the dev image once
+#   docker compose up -d dev                   # start a long-lived dev container
+#   docker compose exec dev bash               # shell in; edit on host, build here
+#   docker compose run --rm test               # one-shot configure + build + ctest
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # Long-lived development container. Edit on the host, compile inside.
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: simpleslam-dev:latest
+    working_dir: /workspace
+    volumes:
+      - .:/workspace                       # live source (host <-> container)
+      - simpleslam-build:/workspace/build  # persistent, fast incremental builds
+    command: ["sleep", "infinity"]
+
+  # One-shot build + test runner. `--profile test` keeps it from auto-starting.
+  test:
+    profiles: ["test"]
+    image: simpleslam-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - simpleslam-build:/workspace/build
+    # $$ escapes compose interpolation so bash receives a literal $(nproc).
+    command:
+      - bash
+      - -c
+      - >-
+        cmake -B build -DBUILD_TESTING=ON &&
+        cmake --build build -j"$$(nproc)" &&
+        ctest --test-dir build --output-on-failure
+
+volumes:
+  simpleslam-build:

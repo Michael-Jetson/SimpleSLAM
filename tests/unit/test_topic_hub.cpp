@@ -1,5 +1,5 @@
-#include <SimpleSLAM/core/infra/topic_hub.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -130,4 +130,37 @@ TEST_CASE("TopicHub 静态 createSubscriber 成员函数绑定", "[topic_hub]") 
     REQUIRE(recv.data == "hello");
 
     TopicHub::shutdown();
+}
+
+TEST_CASE("TopicHub 懒加载：免 init 直接用", "[topic_hub]") {
+    TopicHub::shutdown();  // 清掉可能存在的全局实例
+    // 不调用 init() —— 直接构建发布者就能用
+    auto pub = TopicHub::createPublisher<int>("lazy/test");
+    int got = 0;
+    auto sub = TopicHub::createSubscriber<int>("lazy/test",
+                                               [&](const int& v) { got = v; });
+    pub.publish(123);
+    TopicHub::instance().drainAll();
+    REQUIRE(got == 123);
+    TopicHub::shutdown();
+}
+
+TEST_CASE("连通性检查：抓只发无订 / 只订无发（名字错配兜底）", "[topic_hub][wiring]") {
+    TopicHub hub(true);
+    auto pub = hub.createPublisherImpl<int>("only_pub");                 // 发无订
+    auto sub = hub.subscribeImpl<int>("only_sub", [](MsgPtr<int>) {});   // 订无发
+    auto pub2 = hub.createPublisherImpl<int>("connected");
+    auto sub2 = hub.subscribeImpl<int>("connected", [](MsgPtr<int>) {}); // 两端齐
+
+    auto dangling = hub.findDanglingTopics();
+    bool has_only_pub = false, has_only_sub = false, has_connected = false;
+    for (const auto& d : dangling) {
+        if (d.name == "only_pub") has_only_pub = true;
+        if (d.name == "only_sub") has_only_sub = true;
+        if (d.name == "connected") has_connected = true;
+    }
+    REQUIRE(dangling.size() == 2);
+    REQUIRE(has_only_pub);
+    REQUIRE(has_only_sub);
+    REQUIRE_FALSE(has_connected);  // 两端齐的不算悬空
 }

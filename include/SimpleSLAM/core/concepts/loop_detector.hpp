@@ -10,7 +10,7 @@
 
 #include <concepts>
 #include <cstdint>
-#include <optional>
+#include <vector>
 
 namespace simpleslam {
 
@@ -22,12 +22,13 @@ struct LoopCandidate {
 };
 
 /// 回环检测器 concept
+/// detect() 返回按置信度降序排列的候选列表（空=无候选）
 template <typename T>
 concept LoopDetector = requires(
     T& detector,
     const KeyframeData& keyframe) {
     { detector.addKeyframe(keyframe) } -> std::same_as<void>;
-    { detector.detect(keyframe) } -> std::convertible_to<std::optional<LoopCandidate>>;
+    { detector.detect(keyframe) } -> std::same_as<std::vector<LoopCandidate>>;
 };
 
 }  // namespace simpleslam

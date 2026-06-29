@@ -64,6 +64,7 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 | **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
 | **v1.0+ 工程扩展** | AnyLoopDetector、AnyPoseGraphOptimizer、LoopClosureService、PgoService、SubMapManager、ImuBuffer | **已完成** | 182 |
 | **v1.0 算法** | 纯 LO（VoxelHashTarget、IcpSolver-GN、LoIcpOdometry） | **已完成** | 202 |
+| **v1.0 通信增强** | header-only 进程内总线：异常隔离、latching、QoS::Latest 合并、skip-frame、异步 worker、服务、Action、配置驱动（YAML，模块 ctor 注入）、infra/comm 分组 | **已完成** | 259 |
 | v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
 | v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 | — |
 | v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
@@ -100,7 +101,7 @@ git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git dock
 # 2. 构建开发镜像
 docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
 
-# 3. 编译 + 测试（182 个测试）
+# 3. 编译 + 测试（259 个测试）
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
     bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
@@ -150,16 +151,22 @@ SimpleSLAM/
 │   │   │   ├── scan_utils.hpp      #   extractByIndices, RangeImageView
 │   │   │   ├── lie_utils.hpp       #   hat/vee/perturb/Jacobian
 │   │   │   └── pcd_io.hpp          #   PCD 二进制读写
-│   │   └── infra/                  # 基础设施 + 通信
+│   │   └── infra/                  # 基础设施
+│   │       ├── comm/               #   通信子系统（话题 / 服务 / Action）
+│   │       │   ├── topic.hpp       #     Topic<T> + TopicHub：pub/sub、QoS、异常隔离、latching、节流、async、懒加载
+│   │       │   ├── topic_names.hpp #     话题名常量（跨模块接线契约）
+│   │       │   ├── service.hpp     #     进程内 typed 服务（request/reply）
+│   │       │   ├── action.hpp      #     进程内 Action（长任务/取消/反馈）
+│   │       │   └── comm_config.hpp #     通信参数运行期加载（YAML → QoS/SubscribeOptions）
+│   │       ├── comm.hpp            #   通信伞头文件（一行 include 全部机制）
+│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验 + fromNode/sub 切片
 │   │       ├── logger.hpp          #   spdlog 封装
-│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验
 │   │       ├── timing.hpp          #   RAII 计时 + 统计
 │   │       ├── clock.hpp           #   时钟抽象（系统/数据集）
-│   │       ├── topic.hpp           #   Topic<T> 发布-订阅（3 种 QoS）
-│   │       ├── topic_hub.hpp       #   TopicHub 全局单例 + BFS drain
-│   │       ├── topic_names.hpp     #   话题名常量
 │   │       ├── callback_slot.hpp   #   同步回调槽
-│   │       └── health_monitor.hpp  #   系统级健康状态机
+│   │       ├── health_monitor.hpp  #   系统级健康状态机
+│   │       ├── registry.hpp        #   类型擦除注册表（工厂 + REGISTER 宏）
+│   │       └── demangle.hpp        #   类型名 demangle 工具
 │   ├── resources/                  # 共享资源容器
 │   │   ├── current_state.hpp       #   T_odom + T_correction 双缓冲
 │   │   ├── pose_graph.hpp          #   关键帧节点 + 边（shared_mutex）
@@ -188,12 +195,13 @@ SimpleSLAM/
 │       ├── pgo_service.hpp         #   位姿图优化后端服务骨架
 │       ├── submap_manager.hpp      #   子图生命周期管理器
 │       └── submap/submap.hpp       #   子图数据容器
-├── core/src/                       # 核心库实现
-├── resources/src/                  # 资源层实现
-├── sensor_io/src/                  # 传感器 IO 实现
-├── runner/src/                     # Runner 实现
+├── src/                            # 各模块库实现（公共头文件见 include/，纯头模块仅 CMakeLists）
+│   ├── core/src/                   #   核心库实现
+│   ├── sensor_io/src/              #   传感器 IO 实现
+│   ├── resources/src/              #   资源层实现
+│   └── runner/src/                 #   Runner 实现
 ├── configs/                        # 参考配置
-├── tests/unit/                     # 202 个单元测试
+├── tests/unit/                     # 259 个单元测试
 ├── docker/                         # Docker 开发环境 + 预下载依赖
 ├── scripts/                        # 工具脚本（evaluate.py 轨迹评测）
 └── docs/                           # 架构文档 + 教程

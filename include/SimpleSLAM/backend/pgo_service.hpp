@@ -11,9 +11,9 @@
 
 #include <SimpleSLAM/backend/service_base.hpp>
 #include <SimpleSLAM/core/concepts/any_pose_graph_optimizer.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_hub.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/comm_config.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
 
 #include <optional>
@@ -23,18 +23,21 @@ namespace simpleslam {
 
 class PgoService final : public ServiceBase {
 public:
-    explicit PgoService(AnyPoseGraphOptimizer optimizer)
+    explicit PgoService(AnyPoseGraphOptimizer optimizer, const Config& cfg = {})
         : ServiceBase("PgoService"), optimizer_(std::move(optimizer)) {
         optimizer_.setOwner(name());
+        if (cfg.has("correction")) correction_spec_ = loadTopicSpec(cfg, "correction");
+        if (cfg.has("keyframe")) keyframe_spec_ = loadTopicSpec(cfg, "keyframe");
+        if (cfg.has("loop")) loop_spec_ = loadTopicSpec(cfg, "loop");
     }
 
     void initialize(TopicHub& hub) override {
         correction_pub_ = hub.createPublisherImpl<CorrectionEvent>(
-            topic_names::kSlamCorrection);
+            correction_spec_.name, correction_spec_.qos);
         keyframe_sub_ = hub.subscribeImpl(
-            topic_names::kSlamKeyframe, &PgoService::onKeyframe, this);
+            keyframe_spec_.name, &PgoService::onKeyframe, this, keyframe_spec_.options);
         loop_sub_ = hub.subscribeImpl(
-            topic_names::kSlamLoop, &PgoService::onLoop, this);
+            loop_spec_.name, &PgoService::onLoop, this, loop_spec_.options);
     }
 
     void shutdown() override {
@@ -58,7 +61,9 @@ private:
                                event.T_match_query, Mat6d::Identity());
         auto result = optimizer_.optimize();
         if (result.converged && !result.optimized_poses.empty()) {
-            correction_pub_.publish(CorrectionEvent{result.optimized_poses});
+            correction_pub_.publish(CorrectionEvent{
+                CorrectionEvent::Level::OffsetAndRebuild,
+                result.optimized_poses});
         }
     }
 
@@ -66,6 +71,10 @@ private:
     Publisher<CorrectionEvent> correction_pub_;
     SubscriptionHandle keyframe_sub_;
     SubscriptionHandle loop_sub_;
+
+    TopicSpec correction_spec_{std::string(topic_names::kSlamCorrection), QoS::Event, {}};
+    TopicSpec keyframe_spec_{std::string(topic_names::kSlamKeyframe), QoS::Event, {}};
+    TopicSpec loop_spec_{std::string(topic_names::kSlamLoop), QoS::Event, {}};
 
     std::optional<uint64_t> last_keyframe_id_;
     std::optional<SE3d> last_keyframe_pose_;

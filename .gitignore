@@ -34,6 +34,11 @@ Review.md
 git.sh
 *.zip
 
+# 本地文档/配置（本地保留，不入库）
+/AGENTS.md
+/教学文档编写规范.md
+/Claude_Code_工具链配置文档.md
+
 # 系统文件
 .DS_Store
 Thumbs.db

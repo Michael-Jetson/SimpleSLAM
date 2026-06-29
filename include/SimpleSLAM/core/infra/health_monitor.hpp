@@ -5,11 +5,12 @@
 ///
 /// 与 OdometryResult::TrackingStatus（帧级前端状态）是不同层级：
 ///   - TrackingStatus: Initializing | Tracking | Degraded | Lost  （每帧输出）
-///   - SystemHealth:   OK | Degraded | Lost | Failed              （系统全局）
+///   - SystemHealth:   Healthy | Warning | Critical | Fatal       （系统全局）
 ///
+/// 两层使用不同词汇，消除歧义（Degraded/Lost 不再同时出现在两个枚举中）。
 /// 状态转移基于连续帧计数 + 可配置阈值。
-/// Failed 是终态，需要显式 reset() 恢复。
-/// 恢复是阶梯式：Lost → Degraded → OK（不直接跳级）。
+/// Fatal 是终态，需要显式 reset() 恢复。
+/// 恢复是阶梯式：Critical → Warning → Healthy（不直接跳级）。
 
 #include <SimpleSLAM/core/types/odometry_result.hpp>
 
@@ -19,10 +20,10 @@ namespace simpleslam {
 
 /// 系统级健康状态
 enum class SystemHealth : uint8_t {
-    OK,        ///< 正常运行
-    Degraded,  ///< 部分退化（如配准质量下降、协方差偏大）
-    Lost,      ///< 跟踪丢失（尝试恢复中）
-    Failed,    ///< 不可恢复故障（终态，需 reset）
+    Healthy,   ///< 正常运行
+    Warning,   ///< 部分退化（如配准质量下降、协方差偏大）
+    Critical,  ///< 跟踪丢失（尝试恢复中）
+    Fatal,     ///< 不可恢复故障（终态，需 reset）
 };
 
 /// 每帧健康指标——由 Odometry 输出或 Runner 收集
@@ -49,7 +50,7 @@ public:
 
     /// 输入一帧指标，更新状态机
     void update(const HealthMetrics& metrics) {
-        if (state_ == SystemHealth::Failed) return;
+        if (state_ == SystemHealth::Fatal) return;
 
         bool is_good_frame =
             metrics.tracking_status == TrackingStatus::Tracking &&
@@ -64,32 +65,32 @@ public:
         }
 
         switch (state_) {
-            case SystemHealth::OK:
+            case SystemHealth::Healthy:
                 if (consecutive_bad_frames_ >= thresholds_.degraded_frames_threshold) {
-                    state_ = SystemHealth::Degraded;
+                    state_ = SystemHealth::Warning;
                 }
                 break;
 
-            case SystemHealth::Degraded:
+            case SystemHealth::Warning:
                 if (consecutive_bad_frames_ >= thresholds_.lost_frames_threshold) {
-                    state_ = SystemHealth::Lost;
+                    state_ = SystemHealth::Critical;
                 } else if (consecutive_good_frames_ >= thresholds_.recovery_frames) {
-                    state_ = SystemHealth::OK;
+                    state_ = SystemHealth::Healthy;
                     consecutive_good_frames_ = 0;
                 }
                 break;
 
-            case SystemHealth::Lost:
+            case SystemHealth::Critical:
                 if (metrics.tracking_status == TrackingStatus::Lost &&
                     consecutive_bad_frames_ >= thresholds_.lost_frames_threshold * 2) {
-                    state_ = SystemHealth::Failed;
+                    state_ = SystemHealth::Fatal;
                 } else if (consecutive_good_frames_ >= thresholds_.recovery_frames) {
-                    state_ = SystemHealth::Degraded;
+                    state_ = SystemHealth::Warning;
                     consecutive_good_frames_ = 0;
                 }
                 break;
 
-            case SystemHealth::Failed:
+            case SystemHealth::Fatal:
                 break;
         }
     }
@@ -98,7 +99,7 @@ public:
 
     /// 重置到 OK 状态（从 Failed 恢复的唯一途径）
     void reset() {
-        state_ = SystemHealth::OK;
+        state_ = SystemHealth::Healthy;
         consecutive_bad_frames_ = 0;
         consecutive_good_frames_ = 0;
     }
@@ -109,7 +110,7 @@ public:
 
 private:
     HealthThresholds thresholds_;
-    SystemHealth state_{SystemHealth::OK};
+    SystemHealth state_{SystemHealth::Healthy};
     int consecutive_bad_frames_{0};
     int consecutive_good_frames_{0};
 };

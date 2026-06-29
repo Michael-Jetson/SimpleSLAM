@@ -25,8 +25,19 @@ class ConfigError final : public std::runtime_error {
 
 class Config final {
 public:
+    /// 空配置（root_ 为 null：has()→false、get(path,fallback)→fallback）
+    Config() = default;
+
     /// 从单个 YAML 文件加载
     static Config load(const std::string& path);
+
+    /// 用一个 YAML 节点直接构造 Config（子配置切片 / 测试用）
+    static Config fromNode(YAML::Node node) { return Config(std::move(node)); }
+
+    /// 取 dot-path 子树作为独立 Config（模块拿自己的配置段）
+    [[nodiscard]] Config sub(const std::string& dot_path) const {
+        return fromNode(node(dot_path));
+    }
 
     /// 从基础文件 + 多个覆盖层加载（后者优先级更高）
     static Config loadWithOverlays(const std::string& base_path,
@@ -73,6 +84,9 @@ public:
     const YAML::Node& root() const { return root_; }
 
 private:
+    /// 内部：用既有节点构造（fromNode 用）
+    explicit Config(YAML::Node root) : root_(std::move(root)) {}
+
     YAML::Node root_;
 
     /// 深度合并两个 YAML 节点（overlay 的值覆盖 base）

@@ -1,8 +1,9 @@
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -198,4 +199,138 @@ TEST_CASE("回调绑定：自由函数", "[topic]") {
     pub.publish(55);
     topic.drainOnce();
     REQUIRE(free_func_value == 55);
+}
+
+// ── 异常隔离（项目护城河）──
+
+/// RAII：临时替换全局订阅者异常钩子，析构时复原（避免污染其他测试）
+struct ErrorHandlerGuard {
+    SubscriberErrorHandler saved;
+    explicit ErrorHandlerGuard(SubscriberErrorHandler h)
+        : saved(subscriberErrorHandler()) {
+        subscriberErrorHandler() = std::move(h);
+    }
+    ~ErrorHandlerGuard() { subscriberErrorHandler() = std::move(saved); }
+};
+
+TEST_CASE("回调抛异常被隔离：离线 drain 不外抛、兄弟订阅者照常收、错误被上报", "[topic][isolation]") {
+    std::vector<std::string> errors;
+    ErrorHandlerGuard guard([&](const std::string& topic, const char* what) {
+        errors.push_back(topic + ": " + what);
+    });
+
+    Topic<int> topic("test/isolation_offline", QoS::Event);
+    Publisher<int> pub(&topic);
+
+    int good_count = 0;
+    auto sub_bad = topic.subscribe(
+        [](MsgPtr<int>) { throw std::runtime_error("subscriber boom"); });
+    auto sub_good = topic.subscribe([&](MsgPtr<int>) { ++good_count; });
+
+    pub.publish(1);
+    REQUIRE_NOTHROW(topic.drainOnce());  // drain 必须吞掉异常
+    REQUIRE(good_count == 1);            // 兄弟订阅者仍然送达
+    REQUIRE(errors.size() == 1);         // 非静默：错误被上报
+    REQUIRE(errors[0].find("subscriber boom") != std::string::npos);
+    REQUIRE(errors[0].find("test/isolation_offline") != std::string::npos);
+}
+
+TEST_CASE("回调抛异常被隔离：在线同步分发同样隔离", "[topic][isolation]") {
+    std::vector<std::string> errors;
+    ErrorHandlerGuard guard([&](const std::string&, const char* what) {
+        errors.emplace_back(what);
+    });
+
+    Topic<int> topic("test/isolation_online", QoS::Event);
+    topic.setOfflineMode(false);
+    Publisher<int> pub(&topic);
+
+    int good_count = 0;
+    auto sub_bad = topic.subscribe(
+        [](MsgPtr<int>) { throw std::runtime_error("subscriber boom"); });
+    auto sub_good = topic.subscribe([&](MsgPtr<int>) { ++good_count; });
+
+    REQUIRE_NOTHROW(pub.publish(7));  // publish→分发 不得外抛
+    REQUIRE(good_count == 1);
+    REQUIRE(errors.size() == 1);
+}
+
+// ── latching（QoS::Latest 迟到订阅者补发最后值）──
+
+TEST_CASE("QoS::Latest latching：迟到订阅者订阅即补发最后值，不重放", "[topic][latching]") {
+    Topic<int> topic("test/latching", QoS::Latest);
+    Publisher<int> pub(&topic);
+
+    pub.publish(42);
+    topic.drainOnce();  // 42 成为 latest（此时尚无订阅者）
+
+    int received = 0, calls = 0;
+    auto sub = topic.subscribe([&](MsgPtr<int> m) { received = *m; ++calls; });
+
+    REQUIRE(calls == 1);     // 订阅即补发 latest
+    REQUIRE(received == 42);
+
+    topic.drainOnce();       // 无新值 → 不重放
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("非 Latest 话题无 latching：迟到订阅者收不到旧值", "[topic][latching]") {
+    Topic<int> topic("test/no_latch", QoS::Event);
+    Publisher<int> pub(&topic);
+
+    pub.publish(42);
+    topic.drainOnce();
+
+    int calls = 0;
+    auto sub = topic.subscribe([&](MsgPtr<int>) { ++calls; });
+    REQUIRE(calls == 0);     // Event 话题不补发
+    topic.drainOnce();
+    REQUIRE(calls == 0);
+}
+
+TEST_CASE("QoS::Latest 合并：发布多次 drain 只推最新一次、不重放", "[topic][latest]") {
+    Topic<int> topic("test/latest_coalesce", QoS::Latest);
+    Publisher<int> pub(&topic);
+
+    int calls = 0, last = 0;
+    auto sub = topic.subscribe([&](MsgPtr<int> m) { ++calls; last = *m; });
+
+    pub.publish(1);
+    pub.publish(2);
+    pub.publish(3);
+    while (topic.hasPending()) topic.drainOnce();  // 一轮排空
+
+    REQUIRE(calls == 1);   // 只推一次（不是 3 次）—— 蓝图 §7.2.4 不重放中间帧
+    REQUIRE(last == 3);    // 推的是最新值
+}
+
+// ── skip-frame 节流（偷自高翔 AsyncMessageProcess）──
+
+TEST_CASE("skip-frame 节流：throttle_every=N 每 N 条处理 1 条", "[topic][throttle]") {
+    Topic<int> topic("test/throttle", QoS::Event);
+    Publisher<int> pub(&topic);
+
+    int calls = 0;
+    SubscribeOptions opts;
+    opts.throttle_every = 3;
+    auto sub = topic.subscribe([&](MsgPtr<int>) { ++calls; }, opts);
+
+    for (int i = 0; i < 9; ++i) {
+        pub.publish(i);
+        topic.drainOnce();
+    }
+    REQUIRE(calls == 3);  // 9 条，第 0/3/6 条处理 = 3 次
+}
+
+TEST_CASE("throttle_every=1 不跳帧（默认）", "[topic][throttle]") {
+    Topic<int> topic("test/throttle1", QoS::Event);
+    Publisher<int> pub(&topic);
+
+    int calls = 0;
+    auto sub = topic.subscribe([&](MsgPtr<int>) { ++calls; });  // 默认 throttle_every=1
+    for (int i = 0; i < 5; ++i) {
+        pub.publish(i);
+        topic.drainOnce();
+    }
+    REQUIRE(calls == 5);
 }

@@ -9,6 +9,4 @@
 #include <SimpleSLAM/core/infra/logger.hpp>
 #include <SimpleSLAM/core/infra/registry.hpp>
 #include <SimpleSLAM/core/infra/timing.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_hub.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm.hpp>
