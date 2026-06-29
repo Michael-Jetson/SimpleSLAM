@@ -196,6 +196,10 @@ target_link_libraries(test_icp_solver PRIVATE simpleslam_core Catch2::Catch2With
 add_executable(test_lo_icp_odometry unit/test_lo_icp_odometry.cpp)
 target_link_libraries(test_lo_icp_odometry PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
 
+add_executable(test_icp_robustness unit/test_icp_robustness.cpp)
+target_link_libraries(test_icp_robustness PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
 catch_discover_tests(test_voxel_hash_target)
 catch_discover_tests(test_icp_solver)
 catch_discover_tests(test_lo_icp_odometry)
+catch_discover_tests(test_icp_robustness)
