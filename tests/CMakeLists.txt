@@ -53,6 +53,9 @@ target_link_libraries(test_topic_hub PRIVATE simpleslam_core Catch2::Catch2WithM
 add_executable(test_topic_async unit/test_topic_async.cpp)
 target_link_libraries(test_topic_async PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
+add_executable(test_comm_concurrency unit/test_comm_concurrency.cpp)
+target_link_libraries(test_comm_concurrency PRIVATE simpleslam_core Catch2::Catch2WithMain)
+
 add_executable(test_service unit/test_service.cpp)
 target_link_libraries(test_service PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
@@ -76,6 +79,9 @@ target_link_libraries(test_trajectory PRIVATE simpleslam_resources Catch2::Catch
 
 add_executable(test_current_state unit/test_current_state.cpp)
 target_link_libraries(test_current_state PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
+add_executable(test_default_init unit/test_default_init.cpp)
+target_link_libraries(test_default_init PRIVATE simpleslam_resources Catch2::Catch2WithMain)
 
 add_executable(test_extrinsics_manager unit/test_extrinsics_manager.cpp)
 target_link_libraries(test_extrinsics_manager PRIVATE simpleslam_resources Catch2::Catch2WithMain)
@@ -101,6 +107,7 @@ catch_discover_tests(test_callback_slot)
 catch_discover_tests(test_topic)
 catch_discover_tests(test_topic_hub)
 catch_discover_tests(test_topic_async)
+catch_discover_tests(test_comm_concurrency)
 catch_discover_tests(test_service)
 catch_discover_tests(test_action)
 catch_discover_tests(test_comm_config)
@@ -109,6 +116,7 @@ catch_discover_tests(test_pose_graph)
 catch_discover_tests(test_keyframe_store)
 catch_discover_tests(test_trajectory)
 catch_discover_tests(test_current_state)
+catch_discover_tests(test_default_init)
 catch_discover_tests(test_extrinsics_manager)
 catch_discover_tests(test_pcd_io)
 catch_discover_tests(test_submap)
@@ -150,6 +158,9 @@ target_link_libraries(test_imu_buffer PRIVATE simpleslam_odometry Catch2::Catch2
 add_executable(test_submap_manager unit/test_submap_manager.cpp)
 target_link_libraries(test_submap_manager PRIVATE simpleslam_backend Catch2::Catch2WithMain)
 
+add_executable(test_release_guards unit/test_release_guards.cpp)
+target_link_libraries(test_release_guards PRIVATE simpleslam_backend simpleslam_odometry Catch2::Catch2WithMain)
+
 add_executable(test_loop_closure_service unit/test_loop_closure_service.cpp)
 target_link_libraries(test_loop_closure_service PRIVATE simpleslam_backend Catch2::Catch2WithMain)
 
@@ -160,6 +171,7 @@ catch_discover_tests(test_any_loop_detector)
 catch_discover_tests(test_any_pose_graph_optimizer)
 catch_discover_tests(test_imu_buffer)
 catch_discover_tests(test_submap_manager)
+catch_discover_tests(test_release_guards)
 catch_discover_tests(test_loop_closure_service)
 catch_discover_tests(test_pgo_service)
 
@@ -188,6 +200,10 @@ target_link_libraries(test_icp_solver PRIVATE simpleslam_core Catch2::Catch2With
 add_executable(test_lo_icp_odometry unit/test_lo_icp_odometry.cpp)
 target_link_libraries(test_lo_icp_odometry PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
 
+add_executable(test_icp_robustness unit/test_icp_robustness.cpp)
+target_link_libraries(test_icp_robustness PRIVATE simpleslam_odometry Catch2::Catch2WithMain)
+
 catch_discover_tests(test_voxel_hash_target)
 catch_discover_tests(test_icp_solver)
 catch_discover_tests(test_lo_icp_odometry)
+catch_discover_tests(test_icp_robustness)

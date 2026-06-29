@@ -49,6 +49,15 @@ TEST_CASE("不存在的路径抛出异常", "[config]") {
     REQUIRE_THROWS_AS(cfg.get<int>("nonexistent.key"), ConfigError);
 }
 
+TEST_CASE("get(fallback) 对存在但类型不符的值抛错而非静默退默认", "[config]") {
+    auto cfg = Config::load(kTestDataDir + "/configs/defaults.yaml");
+    // logging.console_level 存在且为字符串 "info"，按 int 读 = 类型不符
+    // 修前：静默返回 fallback（配置笔误被吞）；修后：抛 ConfigError
+    REQUIRE_THROWS_AS(cfg.get<int>("logging.console_level", 0), ConfigError);
+    // 真正不存在的键仍正常回退
+    REQUIRE(cfg.get<int>("nonexistent.key", 42) == 42);
+}
+
 TEST_CASE("YAML 深度合并", "[config]") {
     // 创建临时覆盖层文件
     std::string overlay_path = "/tmp/test_overlay.yaml";

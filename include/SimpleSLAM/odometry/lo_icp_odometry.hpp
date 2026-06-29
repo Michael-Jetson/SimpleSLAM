@@ -49,15 +49,27 @@ public:
         }
 
         // ICP 迭代：match → solve → 左更新位姿 → 收敛检查
+        bool degenerate = false;
         for (int i = 0; i < solver_.config().max_iterations; ++i) {
             result_.clear();
             target_.match(source, pose, result_);
-            if (result_.num_rows < 6) break;
+            if (result_.num_rows < 6) { degenerate = true; break; }  // 对应不足，几何不可观
 
             auto dx = solver_.solveOneStep(result_);
-            pose = SE3d::Tangent(dx).exp() * pose;
+            if (!dx.allFinite()) { degenerate = true; break; }  // 数值失败，弃此步、勿应用
 
+            pose = SE3d::Tangent(dx).exp() * pose;
             if (dx.norm() < solver_.config().convergence_threshold) break;
+        }
+
+        // 位姿非有限 → 跟踪丢失：绝不用它更新地图（防永久污染），回退恒速预测、上报 Lost
+        if (!pose.coeffs().allFinite()) {
+            OdometryResult lost;
+            lost.timestamp = scan.timestamp;
+            lost.pose = last_pose_ * delta_;  // 用上一帧外推（有限）；不写 last_pose_/delta_
+            lost.status = TrackingStatus::Lost;
+            publishResult(lost);
+            return lost;
         }
 
         // 用原始扫描更新地图（不是降采样后的——保证地图稠密度）
@@ -83,7 +95,7 @@ public:
         OdometryResult res;
         res.timestamp = scan.timestamp;
         res.pose = pose;
-        res.status = TrackingStatus::Tracking;
+        res.status = degenerate ? TrackingStatus::Degraded : TrackingStatus::Tracking;
         publishResult(res);
         return res;
     }

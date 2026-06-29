@@ -3,6 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <stdexcept>
+
 using namespace simpleslam;
 
 namespace {
@@ -47,6 +49,15 @@ public:
 
     void reset() override { process_count = 0; }
     [[nodiscard]] std::string_view name() const override { return "MockOdometry"; }
+};
+
+class ThrowingOdometry final : public OdometryBase {
+public:
+    OdometryResult processLidar(const LidarScan&) override {
+        throw std::runtime_error("boom");
+    }
+    void reset() override {}
+    [[nodiscard]] std::string_view name() const override { return "ThrowingOdometry"; }
 };
 
 class MockService final : public ServiceBase {
@@ -126,4 +137,16 @@ TEST_CASE("OfflineRunner 空数据源", "[offline_runner]") {
     REQUIRE(result.frames_processed == 0);
     REQUIRE(result.keyframes == 0);
     REQUIRE(runner.trajectory().empty());
+}
+
+TEST_CASE("OfflineRunner 隔离单帧 processLidar 异常并计数", "[offline_runner]") {
+    auto source = std::make_unique<MockSource>(3);
+    auto odom = std::make_unique<ThrowingOdometry>();
+
+    OfflineRunner runner(std::move(source), std::move(odom));
+    // 修前：首帧抛出即逸出 run()，跳过 service shutdown、丢失 RunResult
+    auto result = runner.run();
+
+    REQUIRE(result.frames_processed == 3);  // 全部帧仍被推进（异常被隔离）
+    REQUIRE(result.frames_failed == 3);     // 失败帧被计数、可观测
 }

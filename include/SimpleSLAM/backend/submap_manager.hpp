@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -38,7 +39,9 @@ public:
     }
 
     void addKeyframe(uint64_t keyframe_id) {
-        assert(active_index_.has_value());
+        if (!active_index_) {
+            throw std::logic_error("SubMapManager::addKeyframe: 无活动子图，请先 createSubmap()");
+        }
         submaps_[*active_index_].keyframe_ids.push_back(keyframe_id);
     }
 
@@ -48,7 +51,9 @@ public:
     }
 
     uint64_t freezeAndCreateNew(const SE3d& new_anchor) {
-        assert(active_index_.has_value());
+        if (!active_index_) {
+            throw std::logic_error("SubMapManager::freezeAndCreateNew: 无活动子图，请先 createSubmap()");
+        }
         submaps_[*active_index_].frozen = true;
         return createSubmap(new_anchor);
     }

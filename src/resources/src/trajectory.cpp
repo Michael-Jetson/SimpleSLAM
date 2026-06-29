@@ -61,14 +61,19 @@ std::optional<SE3d> Trajectory::poseAt(Timestamp ts) const {
 }
 
 void Trajectory::exportTUM(const std::string& path) const {
-    std::lock_guard lock(mutex_);
+    // 锁内快照，阻塞式文件 IO 在锁外执行——不卡住实时 append
+    const auto snapshot = [this] {
+        std::lock_guard lock(mutex_);
+        return poses_;
+    }();
+
     std::ofstream file(path);
     if (!file.is_open()) {
         throw std::runtime_error("Trajectory: cannot open " + path);
     }
     file << std::fixed << std::setprecision(9);
 
-    for (const auto& entry : poses_) {
+    for (const auto& entry : snapshot) {
         const auto& t = entry.pose.translation();
         const Eigen::Quaterniond q(entry.pose.rotation());
         // TUM 格式: timestamp tx ty tz qx qy qz qw
@@ -80,14 +85,19 @@ void Trajectory::exportTUM(const std::string& path) const {
 }
 
 void Trajectory::exportKITTI(const std::string& path) const {
-    std::lock_guard lock(mutex_);
+    // 锁内快照，阻塞式文件 IO 在锁外执行——不卡住实时 append
+    const auto snapshot = [this] {
+        std::lock_guard lock(mutex_);
+        return poses_;
+    }();
+
     std::ofstream file(path);
     if (!file.is_open()) {
         throw std::runtime_error("Trajectory: cannot open " + path);
     }
     file << std::fixed << std::setprecision(9);
 
-    for (const auto& entry : poses_) {
+    for (const auto& entry : snapshot) {
         // KITTI 格式: 3×4 变换矩阵的前 3 行，行优先，12 个数用空格分隔
         const Eigen::Matrix4d T = entry.pose.transform();
         for (int r = 0; r < 3; ++r) {

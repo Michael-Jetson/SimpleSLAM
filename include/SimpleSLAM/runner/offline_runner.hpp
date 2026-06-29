@@ -23,6 +23,7 @@ namespace simpleslam {
 struct RunResult {
     size_t frames_processed{0};
     size_t keyframes{0};
+    size_t frames_failed{0};   ///< processLidar 抛异常的帧数（>0 表示有帧被隔离丢弃）
     double elapsed_seconds{0.0};
 };
 

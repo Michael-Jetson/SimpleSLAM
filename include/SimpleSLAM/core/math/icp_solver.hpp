@@ -33,6 +33,7 @@ struct IcpConfig {
     double convergence_threshold = 1e-4; ///< δξ 范数收敛阈值
     RobustKernel kernel = RobustKernel::None;
     double kernel_scale = 1.0;           ///< 鲁棒核参数 σ（自适应阈值）
+    double damping = 1e-10;              ///< Tikhonov 阻尼 λ：floor 零特征值避免奇异主元（NaN/inf 兜底见 solveOneStep 守卫）
 };
 
 /// ICP Gauss-Newton 求解器
@@ -78,8 +79,18 @@ public:
             Jtr.noalias() += wi * (Ji.transpose() * ri);
         }
 
-        // LDLT 解 6×6 对称系统（允许半正定——退化场景安全）
-        return JtJ.ldlt().solve(-Jtr);
+        // Tikhonov 阻尼：退化/秩亏场景下稳定法方程，抑制零空间方向的增量爆炸
+        JtJ.diagonal().array() += config_.damping;
+
+        // LDLT 解 6×6 对称系统
+        Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt(JtJ);
+        Eigen::Matrix<double, 6, 1> dx = ldlt.solve(-Jtr);
+
+        // 分解失败或结果非有限 → 返回零增量（本步不动，交由外层判退化），绝不传播 NaN
+        if (ldlt.info() != Eigen::Success || !dx.allFinite()) {
+            return Eigen::Matrix<double, 6, 1>::Zero();
+        }
+        return dx;
     }
 
     [[nodiscard]] const IcpConfig& config() const { return config_; }

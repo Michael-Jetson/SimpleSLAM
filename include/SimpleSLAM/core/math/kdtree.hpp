@@ -82,7 +82,11 @@ public:
     void radiusSearch(const PointT& query, float radius,
                       std::vector<size_t>& indices,
                       std::vector<float>& squared_distances) const {
-        assert(index_ && "KDTree index not built");
+        if (!index_) {  // 空树（点数为 0）：安全返回空结果，勿解引用空 index_
+            indices.clear();
+            squared_distances.clear();
+            return;
+        }
         const float sq_radius = radius * radius;
 
         std::vector<nanoflann::ResultItem<size_t, float>> matches;

@@ -8,6 +8,8 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>
+#include <exception>
 
 namespace simpleslam {
 
@@ -46,7 +48,18 @@ RunResult OfflineRunner::run(size_t max_frames) {
         auto scan = source_->nextScan();
         if (!scan) continue;
 
-        auto odom_result = odometry_->processLidar(*scan);
+        // 单帧异常隔离：一帧 processLidar 抛出不应掀翻整轮（否则跳过 service shutdown、
+        // 丢失 RunResult、且无从知道是哪帧）。记录并计数，继续下一帧。
+        OdometryResult odom_result;
+        try {
+            odom_result = odometry_->processLidar(*scan);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[SimpleSLAM] 第 %zu 帧 processLidar 抛出: %s\n",
+                         result.frames_processed, e.what());
+            ++result.frames_failed;
+            ++result.frames_processed;
+            continue;
+        }
 
         if (odom_result.isTracking()) {
             trajectory_.append(odom_result.timestamp, odom_result.pose);

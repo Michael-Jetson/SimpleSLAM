@@ -57,8 +57,8 @@ TEST_CASE("KeyframeStore extension 扩展属性", "[keyframe_store]") {
     REQUIRE(store.hasExtension(1, "score"));
     REQUIRE_FALSE(store.hasExtension(1, "nonexistent"));
 
-    auto* val = store.getExtension<double>(1, "score");
-    REQUIRE(val != nullptr);
+    auto val = store.getExtension<double>(1, "score");
+    REQUIRE(val.has_value());
     REQUIRE(*val == 0.95);
 }
 
