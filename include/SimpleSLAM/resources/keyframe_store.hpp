@@ -39,15 +39,18 @@ public:
 
     void setExtension(uint64_t keyframe_id, const std::string& key, std::any value);
 
+    /// 返回扩展属性的【副本】（不是指针）——避免把指向 mutex 保护数据的裸指针
+    /// 泄漏到锁外被解引用（锁逃逸/并发 setExtension 重哈希 → UAF）。
     template <typename T>
-    [[nodiscard]] const T* getExtension(uint64_t keyframe_id,
-                                        const std::string& key) const {
+    [[nodiscard]] std::optional<T> getExtension(uint64_t keyframe_id,
+                                                const std::string& key) const {
         std::shared_lock lock(mutex_);
         auto kf_it = extensions_.find(keyframe_id);
-        if (kf_it == extensions_.end()) return nullptr;
+        if (kf_it == extensions_.end()) return std::nullopt;
         auto attr_it = kf_it->second.find(key);
-        if (attr_it == kf_it->second.end()) return nullptr;
-        return std::any_cast<T>(&attr_it->second);
+        if (attr_it == kf_it->second.end()) return std::nullopt;
+        if (const T* p = std::any_cast<T>(&attr_it->second)) return *p;  // 锁内拷贝出值
+        return std::nullopt;  // 类型不匹配
     }
 
     [[nodiscard]] bool hasExtension(uint64_t keyframe_id,
