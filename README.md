@@ -195,10 +195,11 @@ SimpleSLAM/
 │       ├── pgo_service.hpp         #   位姿图优化后端服务骨架
 │       ├── submap_manager.hpp      #   子图生命周期管理器
 │       └── submap/submap.hpp       #   子图数据容器
-├── core/src/                       # 核心库实现
-├── resources/src/                  # 资源层实现
-├── sensor_io/src/                  # 传感器 IO 实现
-├── runner/src/                     # Runner 实现
+├── src/                            # 各模块库实现（公共头文件见 include/，纯头模块仅 CMakeLists）
+│   ├── core/src/                   #   核心库实现
+│   ├── sensor_io/src/              #   传感器 IO 实现
+│   ├── resources/src/              #   资源层实现
+│   └── runner/src/                 #   Runner 实现
 ├── configs/                        # 参考配置
 ├── tests/unit/                     # 259 个单元测试
 ├── docker/                         # Docker 开发环境 + 预下载依赖

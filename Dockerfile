@@ -132,10 +132,8 @@ WORKDIR /workspace
 # Stage 3 — OPTIONAL in-image verification: configure, build, run ctest
 #   docker build --target verify -t simpleslam-ci .
 #
-# NOTE: this compiles the FULL source tree. The in-process comm module
-# (include/.../infra/topic.hpp, topic_hub.hpp + core/src/topic_hub.cpp) may be
-# under concurrent edit and can break this build — that is expected and does
-# not invalidate the toolchain. See docs/Docker.md.
+# NOTE: this compiles the FULL source tree (module libraries under src/,
+# public headers under include/). See docs/Docker.md.
 ###############################################################################
 FROM build-env AS verify
 COPY . /workspace

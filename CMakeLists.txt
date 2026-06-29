@@ -49,14 +49,8 @@ endif()
 # ── 可选依赖 ──
 option(SIMPLESLAM_USE_GTSAM "启用 GTSAM 集成" OFF)
 
-# ── 子目录 ──
-add_subdirectory(core)
-add_subdirectory(sensor_io)
-add_subdirectory(resources)
-add_subdirectory(adapters)
-add_subdirectory(backend)
-add_subdirectory(odometry)
-add_subdirectory(runner)
+# ── 源码（各模块库，实现在 src/，公共头文件在 include/）──
+add_subdirectory(src)
 
 # ── 测试（默认开启）──
 option(BUILD_TESTING "构建单元测试" ON)
