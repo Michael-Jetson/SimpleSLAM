@@ -19,8 +19,8 @@ public:
     /// Odometry 里程计位姿快照
     struct OdomSnapshot {
         Timestamp timestamp{0.0};
-        SE3d pose{};            ///< T_world_body（里程计输出）
-        Mat6d covariance{};
+        SE3d pose{SE3d::Identity()};       ///< T_world_body（里程计输出）
+        Mat6d covariance{Mat6d::Zero()};
     };
 
     // ── 里程计位姿（单写者：Odometry 线程）──
@@ -45,7 +45,7 @@ public:
 
     [[nodiscard]] SE3d readCorrection() const {
         std::lock_guard lock(correction_mutex_);
-        return correction_ ? *correction_ : SE3d{};
+        return correction_ ? *correction_ : SE3d::Identity();
     }
 
     // ── 最终校正后位姿 ──

@@ -77,6 +77,9 @@ target_link_libraries(test_trajectory PRIVATE simpleslam_resources Catch2::Catch
 add_executable(test_current_state unit/test_current_state.cpp)
 target_link_libraries(test_current_state PRIVATE simpleslam_resources Catch2::Catch2WithMain)
 
+add_executable(test_default_init unit/test_default_init.cpp)
+target_link_libraries(test_default_init PRIVATE simpleslam_resources Catch2::Catch2WithMain)
+
 add_executable(test_extrinsics_manager unit/test_extrinsics_manager.cpp)
 target_link_libraries(test_extrinsics_manager PRIVATE simpleslam_resources Catch2::Catch2WithMain)
 
@@ -109,6 +112,7 @@ catch_discover_tests(test_pose_graph)
 catch_discover_tests(test_keyframe_store)
 catch_discover_tests(test_trajectory)
 catch_discover_tests(test_current_state)
+catch_discover_tests(test_default_init)
 catch_discover_tests(test_extrinsics_manager)
 catch_discover_tests(test_pcd_io)
 catch_discover_tests(test_submap)

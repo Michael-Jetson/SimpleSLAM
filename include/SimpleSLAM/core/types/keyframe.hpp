@@ -23,7 +23,7 @@ namespace simpleslam {
 struct KeyframeData {
     uint64_t id{0};
     Timestamp timestamp{0.0};
-    SE3d pose{};                                    ///< T_world_body（关键帧时刻的最优估计）
+    SE3d pose{SE3d::Identity()};                    ///< T_world_body（关键帧时刻的最优估计）
 
     /// 传感器数据（shared_ptr<const> 零拷贝不可变共享，P2）
     std::shared_ptr<const LidarScan> scan;
