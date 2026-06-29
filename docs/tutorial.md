@@ -62,7 +62,7 @@ cd build && ctest --output-on-failure
 看到类似输出即成功：
 
 ```
-100% tests passed, 0 tests failed out of 182
+100% tests passed, 0 tests failed out of 259
 ```
 
 ---
