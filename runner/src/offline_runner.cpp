@@ -3,8 +3,8 @@
 
 #include <SimpleSLAM/runner/offline_runner.hpp>
 
-#include <SimpleSLAM/core/infra/comm_config.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/comm_config.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
 
 #include <cassert>
 #include <chrono>

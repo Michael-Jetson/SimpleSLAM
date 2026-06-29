@@ -151,19 +151,22 @@ SimpleSLAM/
 │   │   │   ├── scan_utils.hpp      #   extractByIndices, RangeImageView
 │   │   │   ├── lie_utils.hpp       #   hat/vee/perturb/Jacobian
 │   │   │   └── pcd_io.hpp          #   PCD 二进制读写
-│   │   └── infra/                  # 基础设施 + 通信
+│   │   └── infra/                  # 基础设施
+│   │       ├── comm/               #   通信子系统（话题 / 服务 / Action）
+│   │       │   ├── topic.hpp       #     Topic<T> + TopicHub：pub/sub、QoS、异常隔离、latching、节流、async、懒加载
+│   │       │   ├── topic_names.hpp #     话题名常量（跨模块接线契约）
+│   │       │   ├── service.hpp     #     进程内 typed 服务（request/reply）
+│   │       │   ├── action.hpp      #     进程内 Action（长任务/取消/反馈）
+│   │       │   └── comm_config.hpp #     通信参数运行期加载（YAML → QoS/SubscribeOptions）
+│   │       ├── comm.hpp            #   通信伞头文件（一行 include 全部机制）
+│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验 + fromNode/sub 切片
 │   │       ├── logger.hpp          #   spdlog 封装
-│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验
 │   │       ├── timing.hpp          #   RAII 计时 + 统计
 │   │       ├── clock.hpp           #   时钟抽象（系统/数据集）
-│   │       ├── topic.hpp           #   Topic<T> + TopicHub：pub/sub、QoS、异常隔离、latching、节流、async、懒加载
-│   │       ├── topic_names.hpp     #   话题名常量（跨模块接线契约）
-│   │       ├── service.hpp         #   进程内 typed 服务（request/reply）
-│   │       ├── action.hpp          #   进程内 Action（长任务/取消/反馈）
-│   │       ├── comm_config.hpp     #   通信参数运行期加载（YAML → QoS/SubscribeOptions）
-│   │       ├── comm.hpp            #   通信一行入口（伞头文件）
 │   │       ├── callback_slot.hpp   #   同步回调槽
-│   │       └── health_monitor.hpp  #   系统级健康状态机
+│   │       ├── health_monitor.hpp  #   系统级健康状态机
+│   │       ├── registry.hpp        #   类型擦除注册表（工厂 + REGISTER 宏）
+│   │       └── demangle.hpp        #   类型名 demangle 工具
 │   ├── resources/                  # 共享资源容器
 │   │   ├── current_state.hpp       #   T_odom + T_correction 双缓冲
 │   │   ├── pose_graph.hpp          #   关键帧节点 + 边（shared_mutex）

@@ -10,9 +10,9 @@
 
 #include <SimpleSLAM/backend/service_base.hpp>
 #include <SimpleSLAM/core/concepts/any_loop_detector.hpp>
-#include <SimpleSLAM/core/infra/comm_config.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/comm_config.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
 
 #include <utility>

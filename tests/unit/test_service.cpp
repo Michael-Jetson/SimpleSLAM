@@ -1,4 +1,4 @@
-#include <SimpleSLAM/core/infra/service.hpp>
+#include <SimpleSLAM/core/infra/comm/service.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <stdexcept>

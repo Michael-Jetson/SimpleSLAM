@@ -7,7 +7,7 @@
 ///
 /// 进程内、零序列化、header-only。需要细粒度时仍可单独 include 各头文件。
 
-#include <SimpleSLAM/core/infra/topic.hpp>        // Topic<T> + TopicHub + Publisher / MsgPtr / QoS
-#include <SimpleSLAM/core/infra/topic_names.hpp>  // 话题名常量
-#include <SimpleSLAM/core/infra/service.hpp>      // 进程内服务 request/reply
-#include <SimpleSLAM/core/infra/action.hpp>       // 进程内 Action（长任务/取消/反馈）
+#include <SimpleSLAM/core/infra/comm/topic.hpp>        // Topic<T> + TopicHub + Publisher / MsgPtr / QoS
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>  // 话题名常量
+#include <SimpleSLAM/core/infra/comm/service.hpp>      // 进程内服务 request/reply
+#include <SimpleSLAM/core/infra/comm/action.hpp>       // 进程内 Action（长任务/取消/反馈）

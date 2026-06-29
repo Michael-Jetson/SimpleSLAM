@@ -1,4 +1,4 @@
-#include <SimpleSLAM/core/infra/action.hpp>
+#include <SimpleSLAM/core/infra/comm/action.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <atomic>

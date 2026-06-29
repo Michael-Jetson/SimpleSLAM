@@ -1,4 +1,4 @@
-#include <SimpleSLAM/core/infra/comm_config.hpp>
+#include <SimpleSLAM/core/infra/comm/comm_config.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 

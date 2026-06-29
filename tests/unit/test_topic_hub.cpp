@@ -1,5 +1,5 @@
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

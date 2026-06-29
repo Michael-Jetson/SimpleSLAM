@@ -13,7 +13,7 @@
 ///   sub_ = TopicHub::createSubscriber<LidarScan>(in.name, &Mod::onScan, this, in.options);
 
 #include <SimpleSLAM/core/infra/config.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
 
 #include <string>
 #include <string_view>

@@ -8,10 +8,10 @@
 /// OdometryBase 提供公共基础设施，不含任何算法逻辑。
 
 #include <SimpleSLAM/core/infra/callback_slot.hpp>
-#include <SimpleSLAM/core/infra/comm_config.hpp>
+#include <SimpleSLAM/core/infra/comm/comm_config.hpp>
 #include <SimpleSLAM/core/infra/logger.hpp>
-#include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_names.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
+#include <SimpleSLAM/core/infra/comm/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
 #include <SimpleSLAM/core/types/keyframe.hpp>
 #include <SimpleSLAM/core/types/odometry_result.hpp>
