@@ -180,10 +180,11 @@ class AsyncSubscriber {
 public:
     using Callback = std::function<void(MsgPtr<T>)>;
 
-    AsyncSubscriber(Callback cb, SubscribeOptions opts, std::string topic)
+    AsyncSubscriber(Callback cb, SubscribeOptions opts, std::string topic, QoS qos)
         : cb_(std::move(cb)),
           opts_(opts),
           topic_(std::move(topic)),
+          qos_(qos),
           inbox_(opts.queue_depth ? opts.queue_depth : kDefaultDepth, opts.drop) {
         worker_ = std::thread([this] { loop(); });
     }
@@ -195,7 +196,11 @@ public:
 
     /// 发布侧：非阻塞入队 + 唤醒 worker
     void post(MsgPtr<T> msg) {
-        inbox_.push(std::move(msg));
+        if (inbox_.push(std::move(msg)) && qos_ == QoS::Event) {
+            // QoS::Event 承诺可靠传递：async Inbox 满导致的丢弃必须上报（法则4，不静默吞）。
+            // Stream/Latest 本就允许丢旧帧，不报。
+            subscriberErrorHandler()(topic_, "async Event inbox 满，消息被丢弃");
+        }
         {
             std::lock_guard<std::mutex> lk(wake_m_);
             updated_ = true;
@@ -245,6 +250,7 @@ private:
     Callback cb_;
     SubscribeOptions opts_;
     std::string topic_;
+    QoS qos_;
     Inbox<T> inbox_;
     std::thread worker_;
     std::mutex wake_m_;
@@ -293,16 +299,31 @@ public:
 
     void publish(MsgPtr<T> msg) {
         ++message_count_;
-        std::lock_guard lock(mutex_);
-        latest_value_ = msg;
-        if (offline_mode_) {
-            if (qos_ == QoS::Latest) {
-                latest_dirty_ = true;  // 合并：只标脏，不逐条入队（蓝图 §7.2.4 不重放）
-            } else {
-                pending_.push_back(std::move(msg));
+        std::vector<Callback> sync_cbs;
+        {
+            std::lock_guard lock(mutex_);
+            latest_value_ = msg;
+            if (offline_mode_) {
+                if (qos_ == QoS::Latest) {
+                    latest_dirty_ = true;  // 合并：只标脏，不逐条入队（蓝图 §7.2.4 不重放）
+                } else {
+                    pending_.push_back(std::move(msg));
+                }
+                return;  // 离线：留待 drainOnce 投递
             }
-        } else {
-            dispatchDirect(msg);
+            // 在线：async 投递非阻塞（仅入队+唤醒），留锁内安全（防并发 unsubscribe
+            // 销毁 worker 致 UAF）；同步回调仅快照、移锁外执行——不变量②（回调不持内部
+            // 锁），否则回调内向本话题 publish/latest 会自死锁非递归 mutex_。
+            for (auto& s : subscribers_) {
+                if (s.async) {
+                    s.async->post(msg);
+                } else if (s.shouldDeliver()) {
+                    sync_cbs.push_back(s.callback);
+                }
+            }
+        }
+        for (const auto& cb : sync_cbs) {
+            detail::invokeIsolated([&] { cb(msg); }, name_);
         }
     }
 
@@ -339,7 +360,7 @@ public:
                     aopts.queue_depth = 1;  // 在线 Latest 合并：Inbox 只留最新一条
                 }
                 entry.async = std::make_unique<AsyncSubscriber<T>>(
-                    entry.callback, aopts, name_);
+                    entry.callback, aopts, name_, qos_);
             }
             // latching：QoS::Latest 话题对迟到订阅者补发当前最后值
             // 仅当不脏时——若脏，即将到来的 drain 会投给它，避免重复
@@ -432,6 +453,15 @@ public:
         offline_mode_ = offline;
     }
 
+    /// 在尚无消息流动时采纳新 QoS——用于发布者纠正"订阅者首触按默认 Event 建话题"。
+    /// 一旦已有消息/pending/脏值则拒绝改动（语义已生效，不可中途切换）。
+    void adoptQoS(QoS q) {
+        std::lock_guard lock(mutex_);
+        if (message_count_ == 0 && pending_.empty() && !latest_dirty_) {
+            qos_ = q;
+        }
+    }
+
 private:
     /// RAII 退订实现
     class SubscriptionImpl : public SubscriptionBase {
@@ -459,16 +489,6 @@ private:
 
         std::unique_ptr<AsyncSubscriber<T>> async{};  ///< 非空 ⟺ async 投递（在线模式）
     };
-
-    void dispatchDirect(const MsgPtr<T>& msg) {
-        for (auto& s : subscribers_) {
-            if (s.async) {
-                s.async->post(msg);  // 非阻塞入队，worker 异步处理（自带节流/隔离）
-            } else if (s.shouldDeliver()) {
-                detail::invokeIsolated([&] { s.callback(msg); }, name_);
-            }
-        }
-    }
 
     std::string name_;
     QoS qos_;
@@ -606,21 +626,32 @@ public:
 
     // ── Offline BFS 协调 ──
 
-    /// 逐轮分发 pending 消息，回调中新 publish 进入下一轮
+    /// 逐轮分发 pending 消息，回调中新 publish 进入下一轮。
+    ///
+    /// 关键：每轮在锁内快照"有 pending 的话题指针"，【释放 hub 锁后】再 drainOnce——
+    /// 回调可安全重入 hub（getLatest/subscribe/createPublisher/listTopics），否则持
+    /// 非递归 mutex_ 跑回调会自死锁。话题条目从不擦除，故快照指针在锁外仍有效。
+    /// kMaxRounds 是回调发布环的无限循环兜底上限（蓝图 §7.2.4 BFS 深度约束）。
     size_t drainAll() {
+        static constexpr int kMaxRounds = 1000;
         size_t total = 0;
-        bool had_pending = true;
-        while (had_pending) {
-            had_pending = false;
-            std::lock_guard lock(mutex_);
-            for (auto& [_, entry] : topics_) {
-                if (entry.base->hasPending()) {
-                    entry.base->drainOnce();
-                    ++total;
-                    had_pending = true;
+        for (int round = 0; round < kMaxRounds; ++round) {
+            std::vector<ITopicBase*> ready;
+            {
+                std::lock_guard lock(mutex_);
+                for (auto& [_, entry] : topics_) {
+                    if (entry.base->hasPending()) ready.push_back(entry.base.get());
                 }
             }
+            if (ready.empty()) return total;  // 到达不动点
+            for (auto* t : ready) {
+                t->drainOnce();
+                ++total;
+            }
         }
+        std::fprintf(stderr,
+                     "[SimpleSLAM] drainAll 超过最大轮数 %d——疑似回调发布环，已中断\n",
+                     kMaxRounds);
         return total;
     }
 
@@ -704,7 +735,7 @@ public:
     template <typename T>
     Publisher<T> createPublisherImpl(std::string_view name,
                                     QoS qos = QoS::Event) {
-        auto* topic = getOrCreateTopic<T>(name, qos);
+        auto* topic = getOrCreateTopic<T>(name, qos, /*qos_explicit=*/true);
         return Publisher<T>(topic);
     }
 
@@ -714,7 +745,7 @@ public:
                                      Callable&& cb,
                                      SubscribeOptions opts = {}) {
         auto wrapped = detail::wrapCallback<T>(std::forward<Callable>(cb));
-        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event, /*qos_explicit=*/false);
         return topic->subscribe(std::move(wrapped), opts);
     }
 
@@ -724,7 +755,7 @@ public:
                                      void (Obj::*method)(const T&), Obj* obj,
                                      SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(method, obj);
-        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event, /*qos_explicit=*/false);
         return topic->subscribe(std::move(cb), opts);
     }
 
@@ -734,7 +765,7 @@ public:
                                      void (Obj::*method)(MsgPtr<T>), Obj* obj,
                                      SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(method, obj);
-        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event, /*qos_explicit=*/false);
         return topic->subscribe(std::move(cb), opts);
     }
 
@@ -757,11 +788,15 @@ public:
 private:
     struct TopicEntry {
         std::unique_ptr<ITopicBase> base;
-        std::any typed;  ///< Topic<T>*
+        std::any typed;             ///< Topic<T>*
+        bool qos_explicit = false;  ///< QoS 是否由发布者显式声明（订阅者默认不算）
     };
 
+    /// @param qos_explicit 调用方是否"明确"该 QoS（发布者=是，订阅者默认 Event=否）。
+    ///   防 QoS 首触者降级：订阅者先按默认 Event 建话题后，发布者显式 QoS 可纠正之；
+    ///   两处显式声明冲突则抛错（与类型不匹配同样响亮）。
     template <typename T>
-    Topic<T>* getOrCreateTopic(std::string_view name, QoS qos) {
+    Topic<T>* getOrCreateTopic(std::string_view name, QoS qos, bool qos_explicit) {
         std::lock_guard lock(mutex_);
         std::string key(name);
         auto it = topics_.find(key);
@@ -771,6 +806,17 @@ private:
                 throw std::runtime_error(
                     "TopicHub: type mismatch for topic: " + key);
             }
+            if (qos_explicit) {
+                if (it->second.qos_explicit && (*ptr)->qos() != qos) {
+                    throw std::runtime_error(
+                        "TopicHub: QoS 冲突 for topic '" + key +
+                        "'（两处显式声明了不同 QoS）");
+                }
+                if (!it->second.qos_explicit) {
+                    (*ptr)->adoptQoS(qos);  // 采纳发布者意图，纠正订阅者首触的默认 Event
+                }
+                it->second.qos_explicit = true;
+            }
             return *ptr;
         }
         auto topic = std::make_unique<Topic<T>>(key, qos);
@@ -779,6 +825,7 @@ private:
         TopicEntry entry;
         entry.base = std::move(topic);
         entry.typed = raw;
+        entry.qos_explicit = qos_explicit;
         topics_[key] = std::move(entry);
         return raw;
     }
