@@ -25,9 +25,19 @@ class TopicHub {
 public:
     // ── 全局单例 ──
 
-    static void init(bool offline_mode = true);
-    static void shutdown();
-    static TopicHub& instance();
+    static void init(bool offline_mode = true) {
+        std::lock_guard lock(global_mutex_);
+        global_instance_ = std::make_unique<TopicHub>(offline_mode);
+    }
+    static void shutdown() {
+        std::lock_guard lock(global_mutex_);
+        global_instance_.reset();
+    }
+    static TopicHub& instance() {
+        std::lock_guard lock(global_mutex_);
+        assert(global_instance_ && "TopicHub::init() not called");
+        return *global_instance_;
+    }
 
     // ── 静态 Publisher 创建（用默认 hub）──
 
@@ -67,11 +77,35 @@ public:
     // ── Offline BFS 协调 ──
 
     /// 逐轮分发 pending 消息，回调中新 publish 进入下一轮
-    size_t drainAll();
+    size_t drainAll() {
+        size_t total = 0;
+        bool had_pending = true;
+        while (had_pending) {
+            had_pending = false;
+            std::lock_guard lock(mutex_);
+            for (auto& [_, entry] : topics_) {
+                if (entry.base->hasPending()) {
+                    entry.base->drainOnce();
+                    ++total;
+                    had_pending = true;
+                }
+            }
+        }
+        return total;
+    }
 
     // ── 自省 ──
 
-    static std::vector<std::string> listTopics();
+    static std::vector<std::string> listTopics() {
+        auto& hub = instance();
+        std::lock_guard lock(hub.mutex_);
+        std::vector<std::string> names;
+        names.reserve(hub.topics_.size());
+        for (const auto& [name, _] : hub.topics_) {
+            names.push_back(name);
+        }
+        return names;
+    }
 
     struct TopicStats {
         std::string name;
@@ -79,11 +113,23 @@ public:
         size_t subscriber_count;
         uint64_t message_count;
     };
-    static TopicStats stats(std::string_view name);
+    static TopicStats stats(std::string_view name) {
+        auto& hub = instance();
+        std::lock_guard lock(hub.mutex_);
+        std::string key(name);
+        auto it = hub.topics_.find(key);
+        if (it == hub.topics_.end()) {
+            throw std::runtime_error("TopicHub: topic not found: " + key);
+        }
+        return {key,
+                it->second.base->publisherCount(),
+                it->second.base->subscriberCount(),
+                it->second.base->messageCount()};
+    }
 
     // ── 构造函数（隔离实例，测试用）──
 
-    explicit TopicHub(bool offline_mode);
+    explicit TopicHub(bool offline_mode) : offline_mode_(offline_mode) {}
     ~TopicHub() = default;
 
     TopicHub(const TopicHub&) = delete;
@@ -177,8 +223,8 @@ private:
     std::unordered_map<std::string, TopicEntry> topics_;
     bool offline_mode_{true};
 
-    static std::unique_ptr<TopicHub> global_instance_;
-    static std::mutex global_mutex_;
+    inline static std::unique_ptr<TopicHub> global_instance_;
+    inline static std::mutex global_mutex_;
 };
 
 }  // namespace simpleslam

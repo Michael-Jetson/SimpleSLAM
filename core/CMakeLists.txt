@@ -8,7 +8,6 @@ add_library(simpleslam_core
     src/point_ops.cpp
     src/normal_estimation.cpp
     src/pcd_io.cpp
-    src/topic_hub.cpp
 )
 
 target_compile_features(simpleslam_core PUBLIC cxx_std_20)

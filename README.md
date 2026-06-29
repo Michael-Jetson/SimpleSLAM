@@ -64,6 +64,7 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 | **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
 | **v1.0+ 工程扩展** | AnyLoopDetector、AnyPoseGraphOptimizer、LoopClosureService、PgoService、SubMapManager、ImuBuffer | **已完成** | 182 |
 | **v1.0 算法** | 纯 LO（VoxelHashTarget、IcpSolver-GN、LoIcpOdometry） | **已完成** | 202 |
+| **v1.0 通信增强** | header-only 进程内总线：每回调异常隔离、latching、skip-frame、异步 worker（Inbox）、服务 request/reply、ROS1 门面 NodeHandle | **已完成** | 245 |
 | v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
 | v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 | — |
 | v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
@@ -155,9 +156,11 @@ SimpleSLAM/
 │   │       ├── config.hpp          #   YAML 层级加载 + schema 校验
 │   │       ├── timing.hpp          #   RAII 计时 + 统计
 │   │       ├── clock.hpp           #   时钟抽象（系统/数据集）
-│   │       ├── topic.hpp           #   Topic<T> 发布-订阅（3 种 QoS）
-│   │       ├── topic_hub.hpp       #   TopicHub 全局单例 + BFS drain
+│   │       ├── topic.hpp           #   Topic<T> 发布-订阅：QoS/异常隔离/latching/节流/异步 worker
+│   │       ├── topic_hub.hpp       #   TopicHub 全局单例 + BFS drain（header-only）
 │   │       ├── topic_names.hpp     #   话题名常量
+│   │       ├── service.hpp         #   进程内 typed 服务（request/reply）
+│   │       ├── node_handle.hpp     #   类 ROS1 门面（advertise/subscribe/spin/service）
 │   │       ├── callback_slot.hpp   #   同步回调槽
 │   │       └── health_monitor.hpp  #   系统级健康状态机
 │   ├── resources/                  # 共享资源容器
