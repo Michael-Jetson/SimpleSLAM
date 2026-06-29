@@ -69,17 +69,30 @@ std::vector<EurocSource::ImageEntry> EurocSource::loadImageCsv(
     const std::filesystem::path& data_dir) {
     std::vector<ImageEntry> entries;
     std::ifstream file(csv_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("EurocSource: cannot open " + csv_path.string());
+    }
     std::string line;
+    size_t line_no = 0;
 
     while (std::getline(file, line)) {
+        ++line_no;
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // CRLF：否则文件名带尾 \r 打不开
         if (line.empty() || line[0] == '#') continue;
         std::istringstream iss(line);
         std::string ts_str, filename;
         if (std::getline(iss, ts_str, ',') && std::getline(iss, filename)) {
             // 去除前导空格
             while (!filename.empty() && filename[0] == ' ') filename.erase(0, 1);
-            // EuRoC 时间戳是纳秒
-            double ts_ns = std::stod(ts_str);
+            // EuRoC 时间戳是纳秒。stod 不守卫 → 非数字抛出无上下文、"123abc" 静默截断。
+            double ts_ns = 0.0;
+            try {
+                ts_ns = std::stod(ts_str);
+            } catch (const std::exception&) {
+                throw std::runtime_error(
+                    "EurocSource: " + csv_path.string() + " 第 " +
+                    std::to_string(line_no) + " 行时间戳解析失败: '" + ts_str + "'");
+            }
             entries.push_back({ts_ns * 1e-9, data_dir / filename});
         }
     }
@@ -95,24 +108,40 @@ std::vector<ImuSample> EurocSource::loadImuCsv(
     const std::filesystem::path& csv_path) {
     std::vector<ImuSample> samples;
     std::ifstream file(csv_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("EurocSource: cannot open " + csv_path.string());
+    }
     std::string line;
+    size_t line_no = 0;
 
     while (std::getline(file, line)) {
+        ++line_no;
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // CRLF
         if (line.empty() || line[0] == '#') continue;
         std::istringstream iss(line);
         std::string token;
         std::vector<double> values;
         while (std::getline(iss, token, ',')) {
-            values.push_back(std::stod(token));
+            try {
+                values.push_back(std::stod(token));
+            } catch (const std::exception&) {
+                throw std::runtime_error(
+                    "EurocSource: " + csv_path.string() + " 第 " +
+                    std::to_string(line_no) + " 行数值解析失败: '" + token + "'");
+            }
         }
-        // 格式：timestamp[ns], gx, gy, gz, ax, ay, az
-        if (values.size() >= 7) {
-            ImuSample s;
-            s.timestamp = values[0] * 1e-9;
-            s.gyro = Vec3d(values[1], values[2], values[3]);
-            s.acc = Vec3d(values[4], values[5], values[6]);
-            samples.push_back(s);
+        // 格式：timestamp[ns], gx, gy, gz, ax, ay, az。列数不足多半是分隔符错误——
+        // 静默跳过会让整文件无声变空 IMU，故报错。
+        if (values.size() < 7) {
+            throw std::runtime_error(
+                "EurocSource: " + csv_path.string() + " 第 " + std::to_string(line_no) +
+                " 行列数不足 (" + std::to_string(values.size()) + " < 7)——分隔符错误?");
         }
+        ImuSample s;
+        s.timestamp = values[0] * 1e-9;
+        s.gyro = Vec3d(values[1], values[2], values[3]);
+        s.acc = Vec3d(values[4], values[5], values[6]);
+        samples.push_back(s);
     }
 
     std::sort(samples.begin(), samples.end(),
