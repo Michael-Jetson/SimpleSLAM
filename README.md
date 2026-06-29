@@ -64,7 +64,7 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 | **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
 | **v1.0+ 工程扩展** | AnyLoopDetector、AnyPoseGraphOptimizer、LoopClosureService、PgoService、SubMapManager、ImuBuffer | **已完成** | 182 |
 | **v1.0 算法** | 纯 LO（VoxelHashTarget、IcpSolver-GN、LoIcpOdometry） | **已完成** | 202 |
-| **v1.0 通信增强** | header-only 进程内总线：异常隔离、latching、QoS::Latest 合并、skip-frame、异步 worker、服务、Action、配置驱动参数（YAML）| **已完成** | 256 |
+| **v1.0 通信增强** | header-only 进程内总线：异常隔离、latching、QoS::Latest 合并、skip-frame、异步 worker、服务、Action、配置驱动（YAML，模块 ctor 注入）、infra/comm 分组 | **已完成** | 259 |
 | v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
 | v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 | — |
 | v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
@@ -101,7 +101,7 @@ git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git dock
 # 2. 构建开发镜像
 docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
 
-# 3. 编译 + 测试（182 个测试）
+# 3. 编译 + 测试（259 个测试）
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
     bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
@@ -200,7 +200,7 @@ SimpleSLAM/
 ├── sensor_io/src/                  # 传感器 IO 实现
 ├── runner/src/                     # Runner 实现
 ├── configs/                        # 参考配置
-├── tests/unit/                     # 202 个单元测试
+├── tests/unit/                     # 259 个单元测试
 ├── docker/                         # Docker 开发环境 + 预下载依赖
 ├── scripts/                        # 工具脚本（evaluate.py 轨迹评测）
 └── docs/                           # 架构文档 + 教程
