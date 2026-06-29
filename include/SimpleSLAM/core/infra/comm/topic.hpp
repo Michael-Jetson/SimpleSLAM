@@ -370,10 +370,14 @@ public:
             }
         }
 
-        // 创建 RAII 句柄：析构时调用 unsubscribe
+        // 创建 RAII 句柄：析构时调用 unsubscribe。捕获生命期令牌——若话题已先于句柄
+        // 销毁（如 TopicHub::shutdown 后模块才析构），lock() 失败则 no-op，杜绝 UAF。
         auto* self = this;
+        std::weak_ptr<int> life = life_;
         auto handle = std::make_shared<SubscriptionImpl>(
-            [self, id]() { self->unsubscribe(id); });
+            [self, id, life]() {
+                if (life.lock()) self->unsubscribe(id);
+            });
 
         // 补发在锁外执行（不变量②：回调不持内部锁），并做异常隔离
         if (backfill) {
@@ -462,6 +466,10 @@ public:
         }
     }
 
+    /// 生命期令牌——句柄/Publisher 持其 weak_ptr，本话题销毁后 lock()/expired() 即可
+    /// 安全 no-op，杜绝句柄/Publisher 活过话题时析构触及已释放内存（拆解 UAF）。
+    [[nodiscard]] std::weak_ptr<int> lifeToken() const { return life_; }
+
 private:
     /// RAII 退订实现
     class SubscriptionImpl : public SubscriptionBase {
@@ -501,6 +509,7 @@ private:
     std::atomic<size_t> publisher_count_{0};
     size_t next_sub_id_{0};
     bool offline_mode_{true};
+    std::shared_ptr<int> life_{std::make_shared<int>(0)};  ///< 生命期令牌（见 lifeToken）
 };
 
 // ── Publisher<T> 句柄 ──
@@ -512,55 +521,65 @@ public:
     Publisher() = default;
 
     explicit Publisher(Topic<T>* topic) : topic_(topic) {
-        if (topic_) topic_->addPublisher();
+        if (topic_) {
+            life_ = topic_->lifeToken();
+            topic_->addPublisher();
+        }
     }
 
     ~Publisher() {
-        if (topic_) topic_->removePublisher();
+        if (alive()) topic_->removePublisher();  // 话题已亡则不触及（拆解 UAF 防护）
     }
 
-    Publisher(const Publisher& other) : topic_(other.topic_) {
-        if (topic_) topic_->addPublisher();
+    Publisher(const Publisher& other) : topic_(other.topic_), life_(other.life_) {
+        if (alive()) topic_->addPublisher();
     }
 
     Publisher& operator=(const Publisher& other) {
         if (this != &other) {
-            if (topic_) topic_->removePublisher();
+            if (alive()) topic_->removePublisher();
             topic_ = other.topic_;
-            if (topic_) topic_->addPublisher();
+            life_ = other.life_;
+            if (alive()) topic_->addPublisher();
         }
         return *this;
     }
 
-    Publisher(Publisher&& other) noexcept : topic_(other.topic_) {
+    Publisher(Publisher&& other) noexcept
+        : topic_(other.topic_), life_(std::move(other.life_)) {
         other.topic_ = nullptr;
     }
 
     Publisher& operator=(Publisher&& other) noexcept {
         if (this != &other) {
-            if (topic_) topic_->removePublisher();
+            if (alive()) topic_->removePublisher();
             topic_ = other.topic_;
+            life_ = std::move(other.life_);
             other.topic_ = nullptr;
         }
         return *this;
     }
 
-    void publish(MsgPtr<T> msg) { assert(topic_); topic_->publish(std::move(msg)); }
-    void publish(T&& msg) { assert(topic_); topic_->publish(std::move(msg)); }
-    void publish(const T& msg) { assert(topic_); topic_->publish(msg); }
+    void publish(MsgPtr<T> msg) { if (alive()) topic_->publish(std::move(msg)); }
+    void publish(T&& msg) { if (alive()) topic_->publish(std::move(msg)); }
+    void publish(const T& msg) { if (alive()) topic_->publish(msg); }
 
     template <typename... Args>
-    void emplace(Args&&... args) { assert(topic_); topic_->emplace(std::forward<Args>(args)...); }
+    void emplace(Args&&... args) { if (alive()) topic_->emplace(std::forward<Args>(args)...); }
 
-    [[nodiscard]] bool valid() const { return topic_ != nullptr; }
-    [[nodiscard]] size_t subscriberCount() const { return topic_ ? topic_->subscriberCount() : 0; }
+    [[nodiscard]] bool valid() const { return alive(); }
+    [[nodiscard]] size_t subscriberCount() const { return alive() ? topic_->subscriberCount() : 0; }
     [[nodiscard]] const std::string& topicName() const {
         assert(topic_);
         return topic_->name();
     }
 
 private:
+    /// 话题指针非空且其生命期令牌未过期（话题仍存活）。
+    [[nodiscard]] bool alive() const { return topic_ != nullptr && !life_.expired(); }
+
     Topic<T>* topic_{nullptr};
+    std::weak_ptr<int> life_;
 };
 
 // ── TopicHub：命名话题注册表 + BFS 协调分发 ──

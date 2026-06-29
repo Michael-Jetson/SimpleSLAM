@@ -137,3 +137,21 @@ TEST_CASE("async Event Inbox 满丢弃时上报（不静默）", "[comm][async]"
     gate.store(true);            // 放行 worker（务必在 REQUIRE 前，否则 join 挂起）
     REQUIRE(observed > 0);       // 修前：丢弃静默 → observed==0
 }
+
+// ── Fix 5：拆解期 UAF（话题先于句柄/Publisher 销毁）──
+
+TEST_CASE("拆解：话题先于句柄/Publisher 销毁不 UAF", "[comm][lifetime]") {
+    SubscriptionHandle h;
+    Publisher<int> p;
+    {
+        TopicHub hub(/*offline=*/true);
+        p = hub.createPublisherImpl<int>("t", QoS::Event);
+        h = hub.subscribeImpl<int>("t", [](MsgPtr<int>) {});
+    }  // hub 析构 → 话题释放，但 h/p 仍存活
+
+    // 死话题上操作：liveness 令牌过期 → no-op，不触及已释放内存
+    p.publish(mk(1));
+    CHECK_FALSE(p.valid());
+    // 作用域末 h、p 析构：修前 self->unsubscribe / removePublisher 触及已死话题 → UAF
+    SUCCEED();
+}
