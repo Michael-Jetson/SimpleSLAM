@@ -3,7 +3,7 @@
 
 #include <SimpleSLAM/runner/offline_runner.hpp>
 
-#include <SimpleSLAM/core/infra/topic_hub.hpp>
+#include <SimpleSLAM/core/infra/topic.hpp>
 
 #include <cassert>
 #include <chrono>

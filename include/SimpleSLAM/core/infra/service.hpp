@@ -38,10 +38,10 @@ public:
     ServiceRegistry(const ServiceRegistry&) = delete;
     ServiceRegistry& operator=(const ServiceRegistry&) = delete;
 
-    /// 注册服务，返回 RAII 句柄。重复注册同名服务抛异常。
+    /// 注册服务（实例版，隔离用），返回 RAII 句柄。重复注册同名服务抛异常。
     template <class Req, class Resp>
-    ServiceServer advertiseService(std::string_view name,
-                                   std::function<Resp(const Req&)> handler) {
+    ServiceServer advertiseServiceImpl(std::string_view name,
+                                       std::function<Resp(const Req&)> handler) {
         std::string key(name);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -59,9 +59,9 @@ public:
         return std::make_shared<Server>([self, key]() { self->remove(key); });
     }
 
-    /// 同步调用服务。无此服务 / 类型不匹配抛异常；handler 自身异常向上传播。
+    /// 同步调用服务（实例版）。无此服务 / 类型不匹配抛异常；handler 异常向上传播。
     template <class Req, class Resp>
-    Resp call(std::string_view name, const Req& req) {
+    Resp callImpl(std::string_view name, const Req& req) {
         std::function<Resp(const Req&)> handler;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -83,15 +83,30 @@ public:
         return handler(req);
     }
 
-    [[nodiscard]] bool hasService(std::string_view name) const {
+    [[nodiscard]] bool hasServiceImpl(std::string_view name) const {
         std::lock_guard<std::mutex> lock(mutex_);
         return services_.count(std::string(name)) > 0;
     }
 
-    /// 进程级单例（应用便捷用；与 TopicHub::init 无关，懒构造）。
+    /// 进程级单例（懒加载：首次访问自动创建，无需 init）。
     static ServiceRegistry& instance() {
         static ServiceRegistry global;
         return global;
+    }
+
+    // ── 全局静态糖（用懒加载单例，免写 instance()）──
+
+    template <class Req, class Resp>
+    static ServiceServer advertiseService(std::string_view name,
+                                          std::function<Resp(const Req&)> handler) {
+        return instance().advertiseServiceImpl<Req, Resp>(name, std::move(handler));
+    }
+    template <class Req, class Resp>
+    static Resp call(std::string_view name, const Req& req) {
+        return instance().callImpl<Req, Resp>(name, req);
+    }
+    static bool hasService(std::string_view name) {
+        return instance().hasServiceImpl(name);
     }
 
 private:
@@ -127,8 +142,8 @@ public:
                            ServiceRegistry* reg = &ServiceRegistry::instance())
         : name_(std::move(name)), reg_(reg) {}
 
-    Resp call(const Req& req) { return reg_->template call<Req, Resp>(name_, req); }
-    [[nodiscard]] bool exists() const { return reg_->hasService(name_); }
+    Resp call(const Req& req) { return reg_->template callImpl<Req, Resp>(name_, req); }
+    [[nodiscard]] bool exists() const { return reg_->hasServiceImpl(name_); }
     [[nodiscard]] const std::string& name() const { return name_; }
 
 private:

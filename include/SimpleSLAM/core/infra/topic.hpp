@@ -10,6 +10,7 @@
 /// 四种回调绑定：成员函数(const T&)、成员函数(MsgPtr)、自由函数、lambda
 
 #include <algorithm>
+#include <any>
 #include <atomic>
 #include <cassert>
 #include <condition_variable>
@@ -21,9 +22,12 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -292,7 +296,11 @@ public:
         std::lock_guard lock(mutex_);
         latest_value_ = msg;
         if (offline_mode_) {
-            pending_.push_back(std::move(msg));
+            if (qos_ == QoS::Latest) {
+                latest_dirty_ = true;  // 合并：只标脏，不逐条入队（蓝图 §7.2.4 不重放）
+            } else {
+                pending_.push_back(std::move(msg));
+            }
         } else {
             dispatchDirect(msg);
         }
@@ -326,11 +334,16 @@ public:
             // async 投递：在线模式下为该订阅者起一个 worker 线程
             // （离线模式保持单线程确定性，忽略 async）
             if (opts.delivery == DeliveryMode::Async && !offline_mode_) {
+                SubscribeOptions aopts = opts;
+                if (qos_ == QoS::Latest) {
+                    aopts.queue_depth = 1;  // 在线 Latest 合并：Inbox 只留最新一条
+                }
                 entry.async = std::make_unique<AsyncSubscriber<T>>(
-                    entry.callback, opts, name_);
+                    entry.callback, aopts, name_);
             }
             // latching：QoS::Latest 话题对迟到订阅者补发当前最后值
-            if (qos_ == QoS::Latest && latest_value_) {
+            // 仅当不脏时——若脏，即将到来的 drain 会投给它，避免重复
+            if (qos_ == QoS::Latest && latest_value_ && !latest_dirty_) {
                 backfill = latest_value_;
                 backfill_cb = entry.callback;
             }
@@ -387,7 +400,7 @@ public:
 
     [[nodiscard]] bool hasPending() const override {
         std::lock_guard lock(mutex_);
-        return !pending_.empty();
+        return !pending_.empty() || latest_dirty_;
     }
 
     void drainOnce() override {
@@ -395,9 +408,15 @@ public:
         std::vector<Callback> callbacks;
         {
             std::lock_guard lock(mutex_);
-            if (pending_.empty()) return;
-            msg = std::move(pending_.front());
-            pending_.pop_front();
+            if (qos_ == QoS::Latest && latest_dirty_) {
+                msg = latest_value_;      // 只投最新值一次（合并中间帧）
+                latest_dirty_ = false;
+            } else if (!pending_.empty()) {
+                msg = std::move(pending_.front());
+                pending_.pop_front();
+            } else {
+                return;
+            }
             callbacks.reserve(subscribers_.size());
             for (auto& s : subscribers_) {
                 if (s.shouldDeliver()) callbacks.push_back(s.callback);
@@ -457,6 +476,7 @@ private:
     std::vector<SubscriberEntry> subscribers_;
     std::deque<MsgPtr<T>> pending_;
     MsgPtr<T> latest_value_;
+    bool latest_dirty_{false};  ///< QoS::Latest：有未投递的新值（合并标志）
     std::atomic<uint64_t> message_count_{0};
     std::atomic<size_t> publisher_count_{0};
     size_t next_sub_id_{0};
@@ -521,6 +541,255 @@ public:
 
 private:
     Topic<T>* topic_{nullptr};
+};
+
+// ── TopicHub：命名话题注册表 + BFS 协调分发 ──
+
+/// 命名话题注册表。**懒加载全局单例**（免 init 直接用），也可建隔离实例供测试。
+class TopicHub {
+public:
+    // ── 全局单例（懒加载：首次访问自动创建，无需先 init）──
+
+    /// 显式设置全局实例模式（覆盖懒加载默认）。一般不需要——直接用即可。
+    static void init(bool offline_mode = true) {
+        std::lock_guard<std::mutex> lock(global_mutex_);
+        default_offline_mode_ = offline_mode;
+        global_instance_ = std::make_unique<TopicHub>(offline_mode);
+    }
+    static void shutdown() {
+        std::lock_guard<std::mutex> lock(global_mutex_);
+        global_instance_.reset();
+    }
+    /// 全局实例：未创建则按 default_offline_mode_ 懒构造（免 init）。
+    static TopicHub& instance() {
+        std::lock_guard<std::mutex> lock(global_mutex_);
+        if (!global_instance_) {
+            global_instance_ = std::make_unique<TopicHub>(default_offline_mode_);
+        }
+        return *global_instance_;
+    }
+
+    // ── 静态 Publisher 创建（用默认 hub）──
+
+    template <typename T>
+    static Publisher<T> createPublisher(std::string_view name,
+                                       QoS qos = QoS::Event) {
+        return instance().createPublisherImpl<T>(name, qos);
+    }
+
+    // ── 静态 Subscriber 创建：成员函数 ──
+
+    template <typename T, typename Obj, typename Method>
+    static SubscriptionHandle createSubscriber(std::string_view name,
+                                               Method method, Obj* obj,
+                                               SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(method, obj);
+        return instance().subscribeImpl<T>(name, std::move(cb), opts);
+    }
+
+    // ── 静态 Subscriber 创建：lambda / 自由函数 / std::function ──
+
+    template <typename T, typename Callable>
+    static SubscriptionHandle createSubscriber(std::string_view name,
+                                               Callable&& callback,
+                                               SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(std::forward<Callable>(callback));
+        return instance().subscribeImpl<T>(name, std::move(cb), opts);
+    }
+
+    // ── 最新值查询 ──
+
+    template <typename T>
+    static MsgPtr<T> getLatest(std::string_view name) {
+        return instance().getLatestImpl<T>(name);
+    }
+
+    // ── Offline BFS 协调 ──
+
+    /// 逐轮分发 pending 消息，回调中新 publish 进入下一轮
+    size_t drainAll() {
+        size_t total = 0;
+        bool had_pending = true;
+        while (had_pending) {
+            had_pending = false;
+            std::lock_guard lock(mutex_);
+            for (auto& [_, entry] : topics_) {
+                if (entry.base->hasPending()) {
+                    entry.base->drainOnce();
+                    ++total;
+                    had_pending = true;
+                }
+            }
+        }
+        return total;
+    }
+
+    // ── 自省 ──
+
+    static std::vector<std::string> listTopics() {
+        auto& hub = instance();
+        std::lock_guard lock(hub.mutex_);
+        std::vector<std::string> names;
+        names.reserve(hub.topics_.size());
+        for (const auto& [name, _] : hub.topics_) {
+            names.push_back(name);
+        }
+        return names;
+    }
+
+    struct TopicStats {
+        std::string name;
+        size_t publisher_count;
+        size_t subscriber_count;
+        uint64_t message_count;
+    };
+    static TopicStats stats(std::string_view name) {
+        auto& hub = instance();
+        std::lock_guard lock(hub.mutex_);
+        std::string key(name);
+        auto it = hub.topics_.find(key);
+        if (it == hub.topics_.end()) {
+            throw std::runtime_error("TopicHub: topic not found: " + key);
+        }
+        return {key,
+                it->second.base->publisherCount(),
+                it->second.base->subscriberCount(),
+                it->second.base->messageCount()};
+    }
+
+    // ── 连通性检查（抓名字错配：只发无订 / 只订无发）──
+
+    struct DanglingTopic {
+        std::string name;
+        size_t publisher_count;
+        size_t subscriber_count;
+    };
+
+    /// 返回悬空话题（恰好一端缺）—— 多半是发布/订阅名字打错。
+    std::vector<DanglingTopic> findDanglingTopics() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<DanglingTopic> out;
+        for (const auto& [name, entry] : topics_) {
+            const size_t p = entry.base->publisherCount();
+            const size_t s = entry.base->subscriberCount();
+            if ((p == 0) != (s == 0)) {  // 恰好一端为 0
+                out.push_back({name, p, s});
+            }
+        }
+        return out;
+    }
+
+    /// 全局实例连通性检查 + 写警告（Runner 接线后调一次）。返回悬空话题数。
+    static size_t checkWiring() {
+        auto dangling = instance().findDanglingTopics();
+        for (const auto& d : dangling) {
+            std::fprintf(
+                stderr,
+                "[SimpleSLAM] 话题 '%s' 悬空（pub=%zu sub=%zu）—— 疑似名字错配\n",
+                d.name.c_str(), d.publisher_count, d.subscriber_count);
+        }
+        return dangling.size();
+    }
+
+    // ── 构造函数（隔离实例，测试用）──
+
+    explicit TopicHub(bool offline_mode) : offline_mode_(offline_mode) {}
+    ~TopicHub() = default;
+
+    TopicHub(const TopicHub&) = delete;
+    TopicHub& operator=(const TopicHub&) = delete;
+
+    // ── 实例方法（测试/隔离用）──
+
+    template <typename T>
+    Publisher<T> createPublisherImpl(std::string_view name,
+                                    QoS qos = QoS::Event) {
+        auto* topic = getOrCreateTopic<T>(name, qos);
+        return Publisher<T>(topic);
+    }
+
+    /// 订阅：lambda / 自由函数 / std::function
+    template <typename T, typename Callable>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     Callable&& cb,
+                                     SubscribeOptions opts = {}) {
+        auto wrapped = detail::wrapCallback<T>(std::forward<Callable>(cb));
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        return topic->subscribe(std::move(wrapped), opts);
+    }
+
+    /// 订阅：成员函数 void(Obj::*)(const T&)——自动推导 T
+    template <typename T, typename Obj>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     void (Obj::*method)(const T&), Obj* obj,
+                                     SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(method, obj);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        return topic->subscribe(std::move(cb), opts);
+    }
+
+    /// 订阅：成员函数 void(Obj::*)(MsgPtr<T>)——自动推导 T
+    template <typename T, typename Obj>
+    SubscriptionHandle subscribeImpl(std::string_view name,
+                                     void (Obj::*method)(MsgPtr<T>), Obj* obj,
+                                     SubscribeOptions opts = {}) {
+        auto cb = detail::wrapCallback<T>(method, obj);
+        auto* topic = getOrCreateTopic<T>(name, QoS::Event);
+        return topic->subscribe(std::move(cb), opts);
+    }
+
+    template <typename T>
+    MsgPtr<T> getLatestImpl(std::string_view name) {
+        std::lock_guard lock(mutex_);
+        std::string key(name);
+        auto it = topics_.find(key);
+        if (it == topics_.end()) return nullptr;
+        auto* typed = std::any_cast<Topic<T>*>(&it->second.typed);
+        if (!typed) return nullptr;
+        return (*typed)->latest();
+    }
+
+    [[nodiscard]] bool hasTopic(std::string_view name) const {
+        std::lock_guard lock(mutex_);
+        return topics_.count(std::string(name)) > 0;
+    }
+
+private:
+    struct TopicEntry {
+        std::unique_ptr<ITopicBase> base;
+        std::any typed;  ///< Topic<T>*
+    };
+
+    template <typename T>
+    Topic<T>* getOrCreateTopic(std::string_view name, QoS qos) {
+        std::lock_guard lock(mutex_);
+        std::string key(name);
+        auto it = topics_.find(key);
+        if (it != topics_.end()) {
+            auto* ptr = std::any_cast<Topic<T>*>(&it->second.typed);
+            if (!ptr) {
+                throw std::runtime_error(
+                    "TopicHub: type mismatch for topic: " + key);
+            }
+            return *ptr;
+        }
+        auto topic = std::make_unique<Topic<T>>(key, qos);
+        topic->setOfflineMode(offline_mode_);
+        auto* raw = topic.get();
+        TopicEntry entry;
+        entry.base = std::move(topic);
+        entry.typed = raw;
+        topics_[key] = std::move(entry);
+        return raw;
+    }
+
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, TopicEntry> topics_;
+    bool offline_mode_{true};
+
+    inline static std::unique_ptr<TopicHub> global_instance_;
+    inline static std::mutex global_mutex_;
+    inline static bool default_offline_mode_{true};
 };
 
 }  // namespace simpleslam

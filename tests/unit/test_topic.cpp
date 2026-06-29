@@ -288,6 +288,22 @@ TEST_CASE("非 Latest 话题无 latching：迟到订阅者收不到旧值", "[to
     REQUIRE(calls == 0);
 }
 
+TEST_CASE("QoS::Latest 合并：发布多次 drain 只推最新一次、不重放", "[topic][latest]") {
+    Topic<int> topic("test/latest_coalesce", QoS::Latest);
+    Publisher<int> pub(&topic);
+
+    int calls = 0, last = 0;
+    auto sub = topic.subscribe([&](MsgPtr<int> m) { ++calls; last = *m; });
+
+    pub.publish(1);
+    pub.publish(2);
+    pub.publish(3);
+    while (topic.hasPending()) topic.drainOnce();  // 一轮排空
+
+    REQUIRE(calls == 1);   // 只推一次（不是 3 次）—— 蓝图 §7.2.4 不重放中间帧
+    REQUIRE(last == 3);    // 推的是最新值
+}
+
 // ── skip-frame 节流（偷自高翔 AsyncMessageProcess）──
 
 TEST_CASE("skip-frame 节流：throttle_every=N 每 N 条处理 1 条", "[topic][throttle]") {

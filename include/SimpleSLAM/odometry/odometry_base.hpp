@@ -10,7 +10,7 @@
 #include <SimpleSLAM/core/infra/callback_slot.hpp>
 #include <SimpleSLAM/core/infra/logger.hpp>
 #include <SimpleSLAM/core/infra/topic.hpp>
-#include <SimpleSLAM/core/infra/topic_hub.hpp>
+#include <SimpleSLAM/core/infra/topic.hpp>
 #include <SimpleSLAM/core/infra/topic_names.hpp>
 #include <SimpleSLAM/core/types/event_types.hpp>
 #include <SimpleSLAM/core/types/keyframe.hpp>
