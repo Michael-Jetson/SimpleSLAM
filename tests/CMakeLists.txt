@@ -154,6 +154,9 @@ target_link_libraries(test_imu_buffer PRIVATE simpleslam_odometry Catch2::Catch2
 add_executable(test_submap_manager unit/test_submap_manager.cpp)
 target_link_libraries(test_submap_manager PRIVATE simpleslam_backend Catch2::Catch2WithMain)
 
+add_executable(test_release_guards unit/test_release_guards.cpp)
+target_link_libraries(test_release_guards PRIVATE simpleslam_backend simpleslam_odometry Catch2::Catch2WithMain)
+
 add_executable(test_loop_closure_service unit/test_loop_closure_service.cpp)
 target_link_libraries(test_loop_closure_service PRIVATE simpleslam_backend Catch2::Catch2WithMain)
 
@@ -164,6 +167,7 @@ catch_discover_tests(test_any_loop_detector)
 catch_discover_tests(test_any_pose_graph_optimizer)
 catch_discover_tests(test_imu_buffer)
 catch_discover_tests(test_submap_manager)
+catch_discover_tests(test_release_guards)
 catch_discover_tests(test_loop_closure_service)
 catch_discover_tests(test_pgo_service)
 

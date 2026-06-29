@@ -40,7 +40,7 @@ public:
     }
 
     [[nodiscard]] std::vector<ImuSample> query(Timestamp t_start, Timestamp t_end) const {
-        assert(t_start <= t_end);
+        if (t_start > t_end) return {};  // 反向区间：安全返回空，勿让迭代器越过 end()
         std::lock_guard lock(mutex_);
 
         if (buffer_.empty()) return {};
