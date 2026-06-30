@@ -8,6 +8,7 @@
 
 #include <SimpleSLAM/core/types/common.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
+#include <SimpleSLAM/core/types/graph_epoch.hpp>
 #include <SimpleSLAM/core/types/keyframe.hpp>
 #include <SimpleSLAM/core/types/sensor_data.hpp>
 
@@ -49,6 +50,9 @@ struct CorrectionEvent {
         OffsetAndInject = 3,  ///< 更新偏移 + 注入状态
     };
 
+    /// 本批校正所基于的 PoseGraph 版本（不变量4）。消费者拒绝过期 epoch。
+    /// 默认 0；真实后端应设为优化所基于的图版本（对标 GTSAM update_count_）。
+    GraphEpoch epoch{};
     Level level = Level::OffsetAndRebuild;
     std::unordered_map<uint64_t, SE3d> corrected_poses;  ///< kf_id → 校正后的 T_world_body
 };

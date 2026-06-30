@@ -85,3 +85,28 @@ TEST_CASE("SubMapManager applyCorrections 更新锚点位姿", "[submap_manager]
     REQUIRE(t.y() == Catch::Approx(2.0));
     REQUIRE(t.z() == Catch::Approx(3.0));
 }
+
+TEST_CASE("SubMapManager applyCorrections 拒绝过期 epoch（不变量4）", "[submap_manager]") {
+    SubMapManager mgr;
+    uint64_t id0 = mgr.createSubmap(SE3d::Identity());
+
+    SE3d pose_v5(Vec3d(1.0, 2.0, 3.0), Eigen::Quaterniond::Identity());
+    std::unordered_map<uint64_t, SE3d> c5{{id0, pose_v5}};
+    REQUIRE(mgr.applyCorrections(c5, GraphEpoch{5}));        // 新版本：应用
+    REQUIRE(epochValue(mgr.appliedEpoch()) == 5);
+    REQUIRE(mgr.getSubmap(id0)->T_world_submap.translation().x() == Catch::Approx(1.0));
+
+    // 过期校正（epoch 3 < 已应用 5）：拒绝，位姿与 epoch 均不变
+    SE3d pose_v3(Vec3d(9.0, 9.0, 9.0), Eigen::Quaterniond::Identity());
+    std::unordered_map<uint64_t, SE3d> c3{{id0, pose_v3}};
+    REQUIRE_FALSE(mgr.applyCorrections(c3, GraphEpoch{3}));  // 过期：拒
+    REQUIRE(mgr.getSubmap(id0)->T_world_submap.translation().x() == Catch::Approx(1.0));
+    REQUIRE(epochValue(mgr.appliedEpoch()) == 5);
+
+    // 更新版本（6 >= 5）：应用
+    SE3d pose_v6(Vec3d(4.0, 5.0, 6.0), Eigen::Quaterniond::Identity());
+    std::unordered_map<uint64_t, SE3d> c6{{id0, pose_v6}};
+    REQUIRE(mgr.applyCorrections(c6, GraphEpoch{6}));
+    REQUIRE(epochValue(mgr.appliedEpoch()) == 6);
+    REQUIRE(mgr.getSubmap(id0)->T_world_submap.translation().x() == Catch::Approx(4.0));
+}

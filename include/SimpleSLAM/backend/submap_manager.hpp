@@ -10,6 +10,7 @@
 /// PGO 校正只更新锚点位姿 T_world_submap（FUTURE_ONLY 策略）。
 
 #include <SimpleSLAM/backend/submap/submap.hpp>
+#include <SimpleSLAM/core/types/graph_epoch.hpp>
 
 #include <cassert>
 #include <cstdint>
@@ -86,6 +87,20 @@ public:
         }
     }
 
+    /// 带 epoch 的校正（不变量4）：过期校正（基于比已应用更旧的图版本）被拒，返回 false——
+    /// 绝不用旧版本校正覆盖更新的地图。epoch-less 重载是低层路径，正常应走此入口。
+    bool applyCorrections(const std::unordered_map<uint64_t, SE3d>& corrections,
+                          GraphEpoch epoch) {
+        if (epochValue(epoch) < epochValue(applied_epoch_)) {
+            return false;
+        }
+        applyCorrections(corrections);
+        applied_epoch_ = epoch;
+        return true;
+    }
+
+    [[nodiscard]] GraphEpoch appliedEpoch() const { return applied_epoch_; }
+
     [[nodiscard]] size_t submapCount() const { return submaps_.size(); }
 
 private:
@@ -93,6 +108,7 @@ private:
     std::vector<Submap> submaps_;
     uint64_t next_id_{0};
     std::optional<size_t> active_index_;
+    GraphEpoch applied_epoch_{};   ///< 最近应用的校正图版本（不变量4 拒过期基准）
 };
 
 }  // namespace simpleslam
