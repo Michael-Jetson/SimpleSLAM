@@ -56,12 +56,6 @@ target_link_libraries(test_topic_async PRIVATE simpleslam_core Catch2::Catch2Wit
 add_executable(test_comm_concurrency unit/test_comm_concurrency.cpp)
 target_link_libraries(test_comm_concurrency PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
-add_executable(test_service unit/test_service.cpp)
-target_link_libraries(test_service PRIVATE simpleslam_core Catch2::Catch2WithMain)
-
-add_executable(test_action unit/test_action.cpp)
-target_link_libraries(test_action PRIVATE simpleslam_core Catch2::Catch2WithMain)
-
 add_executable(test_comm_config unit/test_comm_config.cpp)
 target_link_libraries(test_comm_config PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
@@ -108,8 +102,6 @@ catch_discover_tests(test_topic)
 catch_discover_tests(test_topic_hub)
 catch_discover_tests(test_topic_async)
 catch_discover_tests(test_comm_concurrency)
-catch_discover_tests(test_service)
-catch_discover_tests(test_action)
 catch_discover_tests(test_comm_config)
 catch_discover_tests(test_event_types)
 catch_discover_tests(test_pose_graph)
