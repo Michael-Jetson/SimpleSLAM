@@ -32,9 +32,9 @@ public:
     /// 基类实现创建 odom/keyframe Publisher，派生类应先调用基类再做自身初始化
     virtual void initialize(TopicHub& hub) {
         log_ = Logger::get(std::string(name()));
-        odom_pub_ = hub.createPublisherImpl<OdometryResult>(
+        odom_pub_ = hub.createPublisher<OdometryResult>(
             odom_spec_.name, odom_spec_.qos);
-        keyframe_pub_ = hub.createPublisherImpl<KeyframeEvent>(
+        keyframe_pub_ = hub.createPublisher<KeyframeEvent>(
             keyframe_spec_.name, keyframe_spec_.qos);
     }
 

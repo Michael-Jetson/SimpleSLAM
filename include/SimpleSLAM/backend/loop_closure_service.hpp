@@ -29,9 +29,9 @@ public:
     }
 
     void initialize(TopicHub& hub) override {
-        loop_pub_ = hub.createPublisherImpl<LoopDetectedEvent>(
+        loop_pub_ = hub.createPublisher<LoopDetectedEvent>(
             loop_spec_.name, loop_spec_.qos);
-        keyframe_sub_ = hub.subscribeImpl(
+        keyframe_sub_ = hub.subscribe(
             keyframe_spec_.name, &LoopClosureService::onKeyframe, this,
             keyframe_spec_.options);
     }

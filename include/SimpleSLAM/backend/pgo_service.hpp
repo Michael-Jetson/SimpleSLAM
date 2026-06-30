@@ -32,11 +32,11 @@ public:
     }
 
     void initialize(TopicHub& hub) override {
-        correction_pub_ = hub.createPublisherImpl<CorrectionEvent>(
+        correction_pub_ = hub.createPublisher<CorrectionEvent>(
             correction_spec_.name, correction_spec_.qos);
-        keyframe_sub_ = hub.subscribeImpl(
+        keyframe_sub_ = hub.subscribe(
             keyframe_spec_.name, &PgoService::onKeyframe, this, keyframe_spec_.options);
-        loop_sub_ = hub.subscribeImpl(
+        loop_sub_ = hub.subscribe(
             loop_spec_.name, &PgoService::onLoop, this, loop_spec_.options);
     }
 

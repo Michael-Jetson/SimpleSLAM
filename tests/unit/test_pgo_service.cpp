@@ -85,7 +85,7 @@ TEST_CASE("PgoService 两个连续 keyframe 产生 odometry edge", "[pgo_service
     PgoService svc(AnyPoseGraphOptimizer(std::move(mock)));
     svc.initialize(hub);
 
-    auto kf_pub = hub.createPublisherImpl<KeyframeEvent>(
+    auto kf_pub = hub.createPublisher<KeyframeEvent>(
         topic_names::kSlamKeyframe);
     kf_pub.publish(makeKeyframeEvent(1, 0.0));
     kf_pub.publish(makeKeyframeEvent(2, 1.0));
@@ -100,13 +100,13 @@ TEST_CASE("PgoService loop 事件触发 optimize 并发布 CorrectionEvent", "[p
     svc.initialize(hub);
 
     int correction_count = 0;
-    auto sub = hub.subscribeImpl<CorrectionEvent>(
+    auto sub = hub.subscribe<CorrectionEvent>(
         topic_names::kSlamCorrection,
         [&](MsgPtr<CorrectionEvent>) { ++correction_count; });
 
-    auto kf_pub = hub.createPublisherImpl<KeyframeEvent>(
+    auto kf_pub = hub.createPublisher<KeyframeEvent>(
         topic_names::kSlamKeyframe);
-    auto loop_pub = hub.createPublisherImpl<LoopDetectedEvent>(
+    auto loop_pub = hub.createPublisher<LoopDetectedEvent>(
         topic_names::kSlamLoop);
 
     kf_pub.publish(makeKeyframeEvent(1, 0.0));
@@ -127,11 +127,11 @@ TEST_CASE("PgoService optimize 不收敛时无 CorrectionEvent", "[pgo_service]"
     svc.initialize(hub);
 
     int correction_count = 0;
-    auto sub = hub.subscribeImpl<CorrectionEvent>(
+    auto sub = hub.subscribe<CorrectionEvent>(
         topic_names::kSlamCorrection,
         [&](MsgPtr<CorrectionEvent>) { ++correction_count; });
 
-    auto loop_pub = hub.createPublisherImpl<LoopDetectedEvent>(
+    auto loop_pub = hub.createPublisher<LoopDetectedEvent>(
         topic_names::kSlamLoop);
     loop_pub.publish(makeLoopEvent(2, 1));
     hub.drainAll();

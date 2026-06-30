@@ -44,16 +44,16 @@ TEST_CASE("QoS 首触者：订阅者默认 Event 建话题，发布者显式 Lat
     TopicHub hub(/*offline=*/true);
 
     int got1 = 0;
-    auto sub1 = hub.subscribeImpl<int>("t", [&](MsgPtr<int> m) { got1 = *m; });
+    auto sub1 = hub.subscribe<int>("t", [&](MsgPtr<int> m) { got1 = *m; });
 
-    auto pub = hub.createPublisherImpl<int>("t", QoS::Latest);  // 应采纳 Latest
+    auto pub = hub.createPublisher<int>("t", QoS::Latest);  // 应采纳 Latest
     pub.publish(mk(42));
     hub.drainAll();
     REQUIRE(got1 == 42);
 
     // 迟到订阅者应收到 latching 补发——仅 Latest 话题有此行为
     int got2 = 0;
-    auto sub2 = hub.subscribeImpl<int>("t", [&](MsgPtr<int> m) { got2 = *m; });
+    auto sub2 = hub.subscribe<int>("t", [&](MsgPtr<int> m) { got2 = *m; });
     REQUIRE(got2 == 42);  // 修前：话题仍 Event → 无 latching → got2==0
 }
 
@@ -61,11 +61,11 @@ TEST_CASE("QoS 首触者：订阅者默认 Event 建话题，发布者显式 Lat
 
 TEST_CASE("drainAll：回调中重入 hub（getLatest）不死锁", "[comm][drain]") {
     TopicHub hub(/*offline=*/true);
-    auto pub = hub.createPublisherImpl<int>("t", QoS::Event);
+    auto pub = hub.createPublisher<int>("t", QoS::Event);
 
     int seen = 0;
-    auto sub = hub.subscribeImpl<int>("t", [&](MsgPtr<int> m) {
-        (void)hub.getLatestImpl<int>("t");  // 重入 hub：修前持 hub 锁跑回调 → 死锁挂起
+    auto sub = hub.subscribe<int>("t", [&](MsgPtr<int> m) {
+        (void)hub.getLatest<int>("t");  // 重入 hub：修前持 hub 锁跑回调 → 死锁挂起
         seen = *m;
     });
 
@@ -76,11 +76,11 @@ TEST_CASE("drainAll：回调中重入 hub（getLatest）不死锁", "[comm][drai
 
 TEST_CASE("drainAll：回调发布环有轮数上限，不无限循环", "[comm][drain]") {
     TopicHub hub(/*offline=*/true);
-    auto pubA = hub.createPublisherImpl<int>("A", QoS::Event);
-    auto pubB = hub.createPublisherImpl<int>("B", QoS::Event);
+    auto pubA = hub.createPublisher<int>("A", QoS::Event);
+    auto pubB = hub.createPublisher<int>("B", QoS::Event);
 
-    auto subA = hub.subscribeImpl<int>("A", [&](MsgPtr<int> m) { pubB.publish(mk(*m + 1)); });
-    auto subB = hub.subscribeImpl<int>("B", [&](MsgPtr<int> m) { pubA.publish(mk(*m + 1)); });
+    auto subA = hub.subscribe<int>("A", [&](MsgPtr<int> m) { pubB.publish(mk(*m + 1)); });
+    auto subB = hub.subscribe<int>("B", [&](MsgPtr<int> m) { pubA.publish(mk(*m + 1)); });
 
     pubA.publish(mk(0));
     size_t total = hub.drainAll();  // 修前：A↔B 无限循环挂起；修后：上限后中断返回
@@ -145,8 +145,8 @@ TEST_CASE("拆解：话题先于句柄/Publisher 销毁不 UAF", "[comm][lifetim
     Publisher<int> p;
     {
         TopicHub hub(/*offline=*/true);
-        p = hub.createPublisherImpl<int>("t", QoS::Event);
-        h = hub.subscribeImpl<int>("t", [](MsgPtr<int>) {});
+        p = hub.createPublisher<int>("t", QoS::Event);
+        h = hub.subscribe<int>("t", [](MsgPtr<int>) {});
     }  // hub 析构 → 话题释放，但 h/p 仍存活
 
     // 死话题上操作：liveness 令牌过期 → no-op，不触及已释放内存

@@ -1,5 +1,5 @@
 /// @file offline_runner.cpp
-/// OfflineRunner 实现——离线主循环 + TopicHub 生命周期管理
+/// OfflineRunner 实现——离线主循环 + 持有注入式 TopicHub 实例（ADR-001）
 
 #include <SimpleSLAM/runner/offline_runner.hpp>
 
@@ -16,17 +16,17 @@ namespace simpleslam {
 OfflineRunner::OfflineRunner(std::unique_ptr<ISensorSource> source,
                              std::unique_ptr<OdometryBase> odometry,
                              const Config& cfg)
-    : source_(std::move(source)), odometry_(std::move(odometry)) {
+    : hub_(loadOfflineMode(cfg)),
+      source_(std::move(source)),
+      odometry_(std::move(odometry)) {
     assert(source_ && "ISensorSource must not be null");
     assert(odometry_ && "OdometryBase must not be null");
 
-    TopicHub::init(loadOfflineMode(cfg));
-    odometry_->initialize(TopicHub::instance());
+    odometry_->initialize(hub_);
 }
 
 OfflineRunner::~OfflineRunner() {
     odometry_->shutdown();
-    TopicHub::shutdown();
 }
 
 void OfflineRunner::addService(std::unique_ptr<ServiceBase> service) {
@@ -36,7 +36,7 @@ void OfflineRunner::addService(std::unique_ptr<ServiceBase> service) {
 
 RunResult OfflineRunner::run(size_t max_frames) {
     for (auto& svc : services_) {
-        svc->initialize(TopicHub::instance());
+        svc->initialize(hub_);
     }
 
     RunResult result;
@@ -69,7 +69,7 @@ RunResult OfflineRunner::run(size_t max_frames) {
             ++result.keyframes;
         }
 
-        TopicHub::instance().drainAll();
+        hub_.drainAll();
         ++result.frames_processed;
     }
 

@@ -8,9 +8,9 @@
 /// （名字、QoS、队列深度、丢弃、节流、投递模式）运行期从 YAML 读。
 ///
 /// 依赖 config.hpp（yaml-cpp），故单独成文件，`topic.hpp` 保持纯 std、零依赖。
-/// 用法（模块在自己 ctor 里，对自己的 config 段）：
-///   auto in = loadTopicSpec(cfg.node("input"));
-///   sub_ = TopicHub::createSubscriber<LidarScan>(in.name, &Mod::onScan, this, in.options);
+/// 用法（模块 ctor 读 spec，initialize(hub) 里用注入的 hub 订阅）：
+///   auto in = loadTopicSpec(cfg.node("input"));                                  // ctor
+///   sub_ = hub.subscribe<LidarScan>(in.name, &Mod::onScan, this, in.options);    // initialize(hub)
 
 #include <SimpleSLAM/core/infra/config.hpp>
 #include <SimpleSLAM/core/infra/comm/topic.hpp>
