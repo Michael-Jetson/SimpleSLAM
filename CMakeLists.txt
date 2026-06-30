@@ -52,6 +52,9 @@ option(SIMPLESLAM_USE_GTSAM "启用 GTSAM 集成" OFF)
 # ── 源码（各模块库，实现在 src/，公共头文件在 include/）──
 add_subdirectory(src)
 
+# ── 应用入口（L1 配置驱动可执行）──
+add_subdirectory(apps)
+
 # ── 测试（默认开启）──
 option(BUILD_TESTING "构建单元测试" ON)
 if(BUILD_TESTING)

@@ -371,7 +371,7 @@ public:
         }
 
         // 创建 RAII 句柄：析构时调用 unsubscribe。捕获生命期令牌——若话题已先于句柄
-        // 销毁（如 TopicHub::shutdown 后模块才析构），lock() 失败则 no-op，杜绝 UAF。
+        // 销毁（如 hub 先于持有句柄的模块析构），lock() 失败则 no-op，杜绝 UAF。
         auto* self = this;
         std::weak_ptr<int> life = life_;
         auto handle = std::make_shared<SubscriptionImpl>(
@@ -587,61 +587,8 @@ private:
 /// 命名话题注册表。**懒加载全局单例**（免 init 直接用），也可建隔离实例供测试。
 class TopicHub {
 public:
-    // ── 全局单例（懒加载：首次访问自动创建，无需先 init）──
-
-    /// 显式设置全局实例模式（覆盖懒加载默认）。一般不需要——直接用即可。
-    static void init(bool offline_mode = true) {
-        std::lock_guard<std::mutex> lock(global_mutex_);
-        default_offline_mode_ = offline_mode;
-        global_instance_ = std::make_unique<TopicHub>(offline_mode);
-    }
-    static void shutdown() {
-        std::lock_guard<std::mutex> lock(global_mutex_);
-        global_instance_.reset();
-    }
-    /// 全局实例：未创建则按 default_offline_mode_ 懒构造（免 init）。
-    static TopicHub& instance() {
-        std::lock_guard<std::mutex> lock(global_mutex_);
-        if (!global_instance_) {
-            global_instance_ = std::make_unique<TopicHub>(default_offline_mode_);
-        }
-        return *global_instance_;
-    }
-
-    // ── 静态 Publisher 创建（用默认 hub）──
-
-    template <typename T>
-    static Publisher<T> createPublisher(std::string_view name,
-                                       QoS qos = QoS::Event) {
-        return instance().createPublisherImpl<T>(name, qos);
-    }
-
-    // ── 静态 Subscriber 创建：成员函数 ──
-
-    template <typename T, typename Obj, typename Method>
-    static SubscriptionHandle createSubscriber(std::string_view name,
-                                               Method method, Obj* obj,
-                                               SubscribeOptions opts = {}) {
-        auto cb = detail::wrapCallback<T>(method, obj);
-        return instance().subscribeImpl<T>(name, std::move(cb), opts);
-    }
-
-    // ── 静态 Subscriber 创建：lambda / 自由函数 / std::function ──
-
-    template <typename T, typename Callable>
-    static SubscriptionHandle createSubscriber(std::string_view name,
-                                               Callable&& callback,
-                                               SubscribeOptions opts = {}) {
-        auto cb = detail::wrapCallback<T>(std::forward<Callable>(callback));
-        return instance().subscribeImpl<T>(name, std::move(cb), opts);
-    }
-
-    // ── 最新值查询 ──
-
-    template <typename T>
-    static MsgPtr<T> getLatest(std::string_view name) {
-        return instance().getLatestImpl<T>(name);
-    }
+    // 注入式 comm：无全局单例（ADR-001）。Runner 持有 TopicHub 实例，
+    // 经 initialize(hub) 注入各模块。隔离/L3 用法：`TopicHub hub; hub.createPublisher<T>(...)`。
 
     // ── Offline BFS 协调 ──
 
@@ -658,9 +605,16 @@ public:
             std::vector<ITopicBase*> ready;
             {
                 std::lock_guard lock(mutex_);
-                for (auto& [_, entry] : topics_) {
-                    if (entry.base->hasPending()) ready.push_back(entry.base.get());
+                // 按话题名排序后 drain：unordered_map 迭代是哈希序（跨平台/编译器不定），
+                // 排序保证离线回放分发顺序确定、可复现（蓝图 A.3 / ADR-R1b）。
+                std::vector<std::string> ready_names;
+                ready_names.reserve(topics_.size());
+                for (auto& [name, entry] : topics_) {
+                    if (entry.base->hasPending()) ready_names.push_back(name);
                 }
+                std::sort(ready_names.begin(), ready_names.end());
+                ready.reserve(ready_names.size());
+                for (auto& n : ready_names) ready.push_back(topics_[n].base.get());
             }
             if (ready.empty()) return total;  // 到达不动点
             for (auto* t : ready) {
@@ -676,12 +630,11 @@ public:
 
     // ── 自省 ──
 
-    static std::vector<std::string> listTopics() {
-        auto& hub = instance();
-        std::lock_guard lock(hub.mutex_);
+    std::vector<std::string> listTopics() const {
+        std::lock_guard lock(mutex_);
         std::vector<std::string> names;
-        names.reserve(hub.topics_.size());
-        for (const auto& [name, _] : hub.topics_) {
+        names.reserve(topics_.size());
+        for (const auto& [name, _] : topics_) {
             names.push_back(name);
         }
         return names;
@@ -693,12 +646,11 @@ public:
         size_t subscriber_count;
         uint64_t message_count;
     };
-    static TopicStats stats(std::string_view name) {
-        auto& hub = instance();
-        std::lock_guard lock(hub.mutex_);
+    TopicStats stats(std::string_view name) const {
+        std::lock_guard lock(mutex_);
         std::string key(name);
-        auto it = hub.topics_.find(key);
-        if (it == hub.topics_.end()) {
+        auto it = topics_.find(key);
+        if (it == topics_.end()) {
             throw std::runtime_error("TopicHub: topic not found: " + key);
         }
         return {key,
@@ -729,9 +681,9 @@ public:
         return out;
     }
 
-    /// 全局实例连通性检查 + 写警告（Runner 接线后调一次）。返回悬空话题数。
-    static size_t checkWiring() {
-        auto dangling = instance().findDanglingTopics();
+    /// 连通性检查 + 写警告（Runner 接线后调一次）。返回悬空话题数。
+    size_t checkWiring() const {
+        auto dangling = findDanglingTopics();
         for (const auto& d : dangling) {
             std::fprintf(
                 stderr,
@@ -743,7 +695,7 @@ public:
 
     // ── 构造函数（隔离实例，测试用）──
 
-    explicit TopicHub(bool offline_mode) : offline_mode_(offline_mode) {}
+    explicit TopicHub(bool offline_mode = true) : offline_mode_(offline_mode) {}
     ~TopicHub() = default;
 
     TopicHub(const TopicHub&) = delete;
@@ -752,7 +704,7 @@ public:
     // ── 实例方法（测试/隔离用）──
 
     template <typename T>
-    Publisher<T> createPublisherImpl(std::string_view name,
+    Publisher<T> createPublisher(std::string_view name,
                                     QoS qos = QoS::Event) {
         auto* topic = getOrCreateTopic<T>(name, qos, /*qos_explicit=*/true);
         return Publisher<T>(topic);
@@ -760,7 +712,7 @@ public:
 
     /// 订阅：lambda / 自由函数 / std::function
     template <typename T, typename Callable>
-    SubscriptionHandle subscribeImpl(std::string_view name,
+    SubscriptionHandle subscribe(std::string_view name,
                                      Callable&& cb,
                                      SubscribeOptions opts = {}) {
         auto wrapped = detail::wrapCallback<T>(std::forward<Callable>(cb));
@@ -770,7 +722,7 @@ public:
 
     /// 订阅：成员函数 void(Obj::*)(const T&)——自动推导 T
     template <typename T, typename Obj>
-    SubscriptionHandle subscribeImpl(std::string_view name,
+    SubscriptionHandle subscribe(std::string_view name,
                                      void (Obj::*method)(const T&), Obj* obj,
                                      SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(method, obj);
@@ -780,7 +732,7 @@ public:
 
     /// 订阅：成员函数 void(Obj::*)(MsgPtr<T>)——自动推导 T
     template <typename T, typename Obj>
-    SubscriptionHandle subscribeImpl(std::string_view name,
+    SubscriptionHandle subscribe(std::string_view name,
                                      void (Obj::*method)(MsgPtr<T>), Obj* obj,
                                      SubscribeOptions opts = {}) {
         auto cb = detail::wrapCallback<T>(method, obj);
@@ -789,7 +741,7 @@ public:
     }
 
     template <typename T>
-    MsgPtr<T> getLatestImpl(std::string_view name) {
+    MsgPtr<T> getLatest(std::string_view name) {
         std::lock_guard lock(mutex_);
         std::string key(name);
         auto it = topics_.find(key);
@@ -852,10 +804,6 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, TopicEntry> topics_;
     bool offline_mode_{true};
-
-    inline static std::unique_ptr<TopicHub> global_instance_;
-    inline static std::mutex global_mutex_;
-    inline static bool default_offline_mode_{true};
 };
 
 }  // namespace simpleslam

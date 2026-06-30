@@ -122,7 +122,7 @@ TEST_CASE("OdometryBase publishResult 发布到 Topic", "[odometry_base]") {
     odom.initialize(hub);
 
     int topic_count = 0;
-    auto sub = hub.subscribeImpl<OdometryResult>(
+    auto sub = hub.subscribe<OdometryResult>(
         topic_names::kSlamOdometry,
         [&](MsgPtr<OdometryResult>) { ++topic_count; });
 

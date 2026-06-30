@@ -3,6 +3,7 @@
 
 add_library(simpleslam_runner
     src/offline_runner.cpp
+    src/offline_app.cpp
 )
 
 target_compile_features(simpleslam_runner PUBLIC cxx_std_20)

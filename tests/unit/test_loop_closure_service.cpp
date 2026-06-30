@@ -67,14 +67,14 @@ TEST_CASE("LoopClosureService AlwaysDetect 发布 LoopDetectedEvent", "[loop_clo
 
     int loop_count = 0;
     uint64_t match_id = 0;
-    auto sub = hub.subscribeImpl<LoopDetectedEvent>(
+    auto sub = hub.subscribe<LoopDetectedEvent>(
         topic_names::kSlamLoop,
         [&](MsgPtr<LoopDetectedEvent> msg) {
             ++loop_count;
             match_id = msg->match_keyframe_id;
         });
 
-    auto kf_pub = hub.createPublisherImpl<KeyframeEvent>(
+    auto kf_pub = hub.createPublisher<KeyframeEvent>(
         topic_names::kSlamKeyframe);
     kf_pub.publish(makeKeyframeEvent(1, 0.0));
     hub.drainAll();
@@ -89,11 +89,11 @@ TEST_CASE("LoopClosureService NeverDetect 无 LoopDetectedEvent", "[loop_closure
     svc.initialize(hub);
 
     int loop_count = 0;
-    auto sub = hub.subscribeImpl<LoopDetectedEvent>(
+    auto sub = hub.subscribe<LoopDetectedEvent>(
         topic_names::kSlamLoop,
         [&](MsgPtr<LoopDetectedEvent>) { ++loop_count; });
 
-    auto kf_pub = hub.createPublisherImpl<KeyframeEvent>(
+    auto kf_pub = hub.createPublisher<KeyframeEvent>(
         topic_names::kSlamKeyframe);
     kf_pub.publish(makeKeyframeEvent(1, 0.0));
     hub.drainAll();
@@ -107,11 +107,11 @@ TEST_CASE("LoopClosureService 多关键帧连续检测", "[loop_closure_service]
     svc.initialize(hub);
 
     int loop_count = 0;
-    auto sub = hub.subscribeImpl<LoopDetectedEvent>(
+    auto sub = hub.subscribe<LoopDetectedEvent>(
         topic_names::kSlamLoop,
         [&](MsgPtr<LoopDetectedEvent>) { ++loop_count; });
 
-    auto kf_pub = hub.createPublisherImpl<KeyframeEvent>(
+    auto kf_pub = hub.createPublisher<KeyframeEvent>(
         topic_names::kSlamKeyframe);
     kf_pub.publish(makeKeyframeEvent(1, 0.0));
     kf_pub.publish(makeKeyframeEvent(2, 1.0));

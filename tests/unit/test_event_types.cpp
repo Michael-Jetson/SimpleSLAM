@@ -28,6 +28,14 @@ TEST_CASE("CorrectionEvent 携带多个位姿", "[event_types]") {
     REQUIRE(event.corrected_poses.size() == 2);
 }
 
+TEST_CASE("CorrectionEvent 携带 GraphEpoch（默认0，可设，可比较）", "[event_types]") {
+    CorrectionEvent event;
+    REQUIRE(epochValue(event.epoch) == 0);    // 默认 0
+    event.epoch = GraphEpoch{7};
+    REQUIRE(epochValue(event.epoch) == 7);
+    REQUIRE(GraphEpoch{3} < GraphEpoch{5});    // 强类型原生支持比较（拒过期靠它）
+}
+
 TEST_CASE("ShutdownEvent 带原因", "[event_types]") {
     ShutdownEvent event{"user request"};
     REQUIRE(event.reason == "user request");

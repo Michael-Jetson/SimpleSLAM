@@ -1,0 +1,22 @@
+# SimpleSLAM 纯 LO baseline —— 对标 KISS-ICP（VoxelHashTarget + GN-LDLT ICP）
+# L1 用法：simpleslam_run configs/lo_kissicp.yaml
+schema_version: 1
+
+dataset:
+  # KITTI 序列目录（含 velodyne/*.bin + times.txt）
+  path: "/data/kitti/sequences/00"
+
+output:
+  dir: "output/lo_kissicp"        # 轨迹 trajectory.tum + resolved_config.yaml 落此
+
+runtime:
+  offline_mode: true              # 离线确定性（drainAll 按话题名有序，逐位可复现）
+  max_frames: 0                   # 0 = 处理全部帧
+
+odometry:
+  downsample_voxel_size: 1.5      # 配准用降采样体素（米）
+  target:
+    voxel_size: 1.0               # 地图体素边长（米）
+    max_correspondence_dist: 3.0  # match() 有效对应最大距离（米）
+  solver:
+    max_iterations: 50            # ICP 每帧最大迭代

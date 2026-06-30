@@ -10,11 +10,11 @@ using namespace simpleslam;
 // 每个测试用隔离实例，不依赖全局单例状态
 TEST_CASE("TopicHub 隔离实例 Publisher + Subscriber", "[topic_hub]") {
     TopicHub hub(true);
-    auto pub = hub.createPublisherImpl<int>("test/int");
+    auto pub = hub.createPublisher<int>("test/int");
     REQUIRE(hub.hasTopic("test/int"));
 
     int received = 0;
-    auto sub = hub.subscribeImpl<int>("test/int",
+    auto sub = hub.subscribe<int>("test/int",
         [&](MsgPtr<int> msg) { received = *msg; });
 
     pub.publish(42);
@@ -24,24 +24,24 @@ TEST_CASE("TopicHub 隔离实例 Publisher + Subscriber", "[topic_hub]") {
 
 TEST_CASE("TopicHub 类型不匹配抛异常", "[topic_hub]") {
     TopicHub hub(true);
-    hub.createPublisherImpl<int>("test/typed");
-    REQUIRE_THROWS(hub.createPublisherImpl<std::string>("test/typed"));
+    hub.createPublisher<int>("test/typed");
+    REQUIRE_THROWS(hub.createPublisher<std::string>("test/typed"));
 }
 
 TEST_CASE("TopicHub drainAll BFS 顺序", "[topic_hub]") {
     TopicHub hub(true);
-    auto pub_a = hub.createPublisherImpl<int>("a");
-    auto pub_b = hub.createPublisherImpl<int>("b");
+    auto pub_a = hub.createPublisher<int>("a");
+    auto pub_b = hub.createPublisher<int>("b");
 
     std::vector<std::string> order;
 
     // topic a 的回调向 topic b 发布——应在下一轮处理
-    auto sub_a = hub.subscribeImpl<int>("a",
+    auto sub_a = hub.subscribe<int>("a",
         [&](MsgPtr<int> msg) {
             order.push_back("a:" + std::to_string(*msg));
             pub_b.publish(*msg + 100);
         });
-    auto sub_b = hub.subscribeImpl<int>("b",
+    auto sub_b = hub.subscribe<int>("b",
         [&](MsgPtr<int> msg) {
             order.push_back("b:" + std::to_string(*msg));
         });
@@ -55,27 +55,45 @@ TEST_CASE("TopicHub drainAll BFS 顺序", "[topic_hub]") {
     REQUIRE(order[1] == "b:101");
 }
 
-TEST_CASE("TopicHub 全局单例 init/shutdown", "[topic_hub]") {
-    TopicHub::init(true);
+TEST_CASE("drainAll 按话题名有序分发（确定性回放，ADR-R1b）", "[topic_hub][determinism]") {
+    TopicHub hub(true);
+    std::vector<std::string> order;
 
-    auto pub = TopicHub::createPublisher<int>("global/test");
+    // 故意逆序创建——验证 drain 按话题名排序，而非创建序/哈希序
+    auto pc = hub.createPublisher<int>("c");
+    auto pa = hub.createPublisher<int>("a");
+    auto pb = hub.createPublisher<int>("b");
+    auto sc = hub.subscribe<int>("c", [&](MsgPtr<int>) { order.push_back("c"); });
+    auto sa = hub.subscribe<int>("a", [&](MsgPtr<int>) { order.push_back("a"); });
+    auto sb = hub.subscribe<int>("b", [&](MsgPtr<int>) { order.push_back("b"); });
+
+    pc.publish(1);
+    pa.publish(1);
+    pb.publish(1);
+    hub.drainAll();
+
+    REQUIRE(order == std::vector<std::string>{"a", "b", "c"});  // 名字升序，确定
+}
+
+TEST_CASE("TopicHub listTopics / stats 自省", "[topic_hub]") {
+    TopicHub hub(true);
+
+    auto pub = hub.createPublisher<int>("introspect/test");
     int received = 0;
-    auto sub = TopicHub::createSubscriber<int>("global/test",
+    auto sub = hub.subscribe<int>("introspect/test",
         [&](const int& v) { received = v; });
 
     pub.publish(77);
-    TopicHub::instance().drainAll();
+    hub.drainAll();
     REQUIRE(received == 77);
 
-    auto names = TopicHub::listTopics();
+    auto names = hub.listTopics();
     REQUIRE_FALSE(names.empty());
 
-    auto s = TopicHub::stats("global/test");
+    auto s = hub.stats("introspect/test");
     REQUIRE(s.publisher_count == 1);
     REQUIRE(s.subscriber_count == 1);
     REQUIRE(s.message_count == 1);
-
-    TopicHub::shutdown();
 }
 
 TEST_CASE("TopicHub 成员函数订阅", "[topic_hub]") {
@@ -85,11 +103,11 @@ TEST_CASE("TopicHub 成员函数订阅", "[topic_hub]") {
     };
 
     TopicHub hub(true);
-    auto pub = hub.createPublisherImpl<int>("test/member");
+    auto pub = hub.createPublisher<int>("test/member");
 
     Handler handler;
     auto cb = detail::wrapCallback<int>(&Handler::onMessage, &handler);
-    auto sub = hub.subscribeImpl<int>("test/member", std::move(cb));
+    auto sub = hub.subscribe<int>("test/member", std::move(cb));
 
     pub.publish(33);
     hub.drainAll();
@@ -98,59 +116,62 @@ TEST_CASE("TopicHub 成员函数订阅", "[topic_hub]") {
 
 TEST_CASE("TopicHub getLatest", "[topic_hub]") {
     TopicHub hub(true);
-    auto pub = hub.createPublisherImpl<int>("test/latest", QoS::Latest);
+    auto pub = hub.createPublisher<int>("test/latest", QoS::Latest);
 
     // 发布前为 nullptr
-    REQUIRE(hub.getLatestImpl<int>("test/latest") == nullptr);
+    REQUIRE(hub.getLatest<int>("test/latest") == nullptr);
 
     pub.publish(10);
     pub.publish(20);
     hub.drainAll();
 
-    auto val = hub.getLatestImpl<int>("test/latest");
+    auto val = hub.getLatest<int>("test/latest");
     REQUIRE(val != nullptr);
     REQUIRE(*val == 20);
 }
 
-TEST_CASE("TopicHub 静态 createSubscriber 成员函数绑定", "[topic_hub]") {
+TEST_CASE("TopicHub 成员函数指针订阅", "[topic_hub]") {
     struct Recv {
         std::string data;
         void onMsg(const std::string& s) { data = s; }
     };
 
-    TopicHub::init(true);
+    TopicHub hub(true);
     Recv recv;
 
-    auto pub = TopicHub::createPublisher<std::string>("test/static_member");
-    auto sub = TopicHub::createSubscriber<std::string>(
-        "test/static_member", &Recv::onMsg, &recv);
+    auto pub = hub.createPublisher<std::string>("test/member_ptr");
+    auto sub = hub.subscribe<std::string>("test/member_ptr", &Recv::onMsg, &recv);
 
     pub.publish(std::string("hello"));
-    TopicHub::instance().drainAll();
+    hub.drainAll();
     REQUIRE(recv.data == "hello");
-
-    TopicHub::shutdown();
 }
 
-TEST_CASE("TopicHub 懒加载：免 init 直接用", "[topic_hub]") {
-    TopicHub::shutdown();  // 清掉可能存在的全局实例
-    // 不调用 init() —— 直接构建发布者就能用
-    auto pub = TopicHub::createPublisher<int>("lazy/test");
-    int got = 0;
-    auto sub = TopicHub::createSubscriber<int>("lazy/test",
-                                               [&](const int& v) { got = v; });
-    pub.publish(123);
-    TopicHub::instance().drainAll();
-    REQUIRE(got == 123);
-    TopicHub::shutdown();
+TEST_CASE("两个 TopicHub 实例互不串扰（无全局共享，ADR-001）", "[topic_hub][injection]") {
+    TopicHub hubA(true);
+    TopicHub hubB(true);
+
+    int gotA = 0, gotB = 0;
+    auto pubA = hubA.createPublisher<int>("x");
+    auto subA = hubA.subscribe<int>("x", [&](MsgPtr<int> m) { gotA = *m; });
+    auto subB = hubB.subscribe<int>("x", [&](MsgPtr<int> m) { gotB = *m; });
+
+    pubA.publish(42);
+    hubA.drainAll();
+    hubB.drainAll();
+
+    REQUIRE(gotA == 42);            // 自己 hub 收到
+    REQUIRE(gotB == 0);            // 另一 hub 完全不可见——证明无全局共享态
+    REQUIRE(hubA.hasTopic("x"));
+    REQUIRE(hubB.hasTopic("x"));   // 各自有独立的 "x" 注册表，互不相干（非同一全局话题）
 }
 
 TEST_CASE("连通性检查：抓只发无订 / 只订无发（名字错配兜底）", "[topic_hub][wiring]") {
     TopicHub hub(true);
-    auto pub = hub.createPublisherImpl<int>("only_pub");                 // 发无订
-    auto sub = hub.subscribeImpl<int>("only_sub", [](MsgPtr<int>) {});   // 订无发
-    auto pub2 = hub.createPublisherImpl<int>("connected");
-    auto sub2 = hub.subscribeImpl<int>("connected", [](MsgPtr<int>) {}); // 两端齐
+    auto pub = hub.createPublisher<int>("only_pub");                 // 发无订
+    auto sub = hub.subscribe<int>("only_sub", [](MsgPtr<int>) {});   // 订无发
+    auto pub2 = hub.createPublisher<int>("connected");
+    auto sub2 = hub.subscribe<int>("connected", [](MsgPtr<int>) {}); // 两端齐
 
     auto dangling = hub.findDanglingTopics();
     bool has_only_pub = false, has_only_sub = false, has_connected = false;

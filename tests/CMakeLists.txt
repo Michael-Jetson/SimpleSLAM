@@ -56,12 +56,6 @@ target_link_libraries(test_topic_async PRIVATE simpleslam_core Catch2::Catch2Wit
 add_executable(test_comm_concurrency unit/test_comm_concurrency.cpp)
 target_link_libraries(test_comm_concurrency PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
-add_executable(test_service unit/test_service.cpp)
-target_link_libraries(test_service PRIVATE simpleslam_core Catch2::Catch2WithMain)
-
-add_executable(test_action unit/test_action.cpp)
-target_link_libraries(test_action PRIVATE simpleslam_core Catch2::Catch2WithMain)
-
 add_executable(test_comm_config unit/test_comm_config.cpp)
 target_link_libraries(test_comm_config PRIVATE simpleslam_core Catch2::Catch2WithMain)
 
@@ -108,8 +102,6 @@ catch_discover_tests(test_topic)
 catch_discover_tests(test_topic_hub)
 catch_discover_tests(test_topic_async)
 catch_discover_tests(test_comm_concurrency)
-catch_discover_tests(test_service)
-catch_discover_tests(test_action)
 catch_discover_tests(test_comm_config)
 catch_discover_tests(test_event_types)
 catch_discover_tests(test_pose_graph)
@@ -207,3 +199,10 @@ catch_discover_tests(test_voxel_hash_target)
 catch_discover_tests(test_icp_solver)
 catch_discover_tests(test_lo_icp_odometry)
 catch_discover_tests(test_icp_robustness)
+
+# ── L1 walking skeleton（配置驱动离线入口）──
+
+add_executable(test_offline_app unit/test_offline_app.cpp)
+target_link_libraries(test_offline_app PRIVATE simpleslam_runner Catch2::Catch2WithMain)
+
+catch_discover_tests(test_offline_app)

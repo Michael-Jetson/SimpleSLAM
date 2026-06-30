@@ -32,11 +32,11 @@ public:
     }
 
     void initialize(TopicHub& hub) override {
-        correction_pub_ = hub.createPublisherImpl<CorrectionEvent>(
+        correction_pub_ = hub.createPublisher<CorrectionEvent>(
             correction_spec_.name, correction_spec_.qos);
-        keyframe_sub_ = hub.subscribeImpl(
+        keyframe_sub_ = hub.subscribe(
             keyframe_spec_.name, &PgoService::onKeyframe, this, keyframe_spec_.options);
-        loop_sub_ = hub.subscribeImpl(
+        loop_sub_ = hub.subscribe(
             loop_spec_.name, &PgoService::onLoop, this, loop_spec_.options);
     }
 
@@ -61,9 +61,11 @@ private:
                                event.T_match_query, Mat6d::Identity());
         auto result = optimizer_.optimize();
         if (result.converged && !result.optimized_poses.empty()) {
+            // epoch 暂留默认 0：PgoService 是脚手架，无 canonical PoseGraph 版本源
+            // （真实 epoch 由 R3 后端底物设置）。消费端 SubMapManager 已按 epoch 拒过期。
             correction_pub_.publish(CorrectionEvent{
-                CorrectionEvent::Level::OffsetAndRebuild,
-                result.optimized_poses});
+                .level = CorrectionEvent::Level::OffsetAndRebuild,
+                .corrected_poses = result.optimized_poses});
         }
     }
 

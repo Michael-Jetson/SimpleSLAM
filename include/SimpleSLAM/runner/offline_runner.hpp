@@ -5,9 +5,10 @@
 ///
 /// 单线程顺序执行：拉数据 → processLidar → drainAll → 循环。
 /// 确定性、可断点调试、不丢帧。
-/// 管理 TopicHub 全局单例的生命周期（init/shutdown）。
+/// 持有 TopicHub 实例（注入式，无全局单例——ADR-001）。
 
 #include <SimpleSLAM/backend/service_base.hpp>
+#include <SimpleSLAM/core/infra/comm/topic.hpp>
 #include <SimpleSLAM/core/infra/config.hpp>
 #include <SimpleSLAM/odometry/odometry_base.hpp>
 #include <SimpleSLAM/resources/trajectory.hpp>
@@ -30,13 +31,13 @@ struct RunResult {
 /// 离线 Runner——从数据源拉取数据，驱动 Odometry，协调后端服务
 class OfflineRunner final {
 public:
-    /// 构造时初始化 TopicHub 全局单例并初始化 Odometry。
+    /// 构造时创建 TopicHub 实例并注入初始化 Odometry。
     /// cfg 提供 runtime.offline_mode（缺省 true=离线确定性）。
     OfflineRunner(std::unique_ptr<ISensorSource> source,
                   std::unique_ptr<OdometryBase> odometry,
                   const Config& cfg = {});
 
-    /// 析构时关闭 Odometry 并销毁 TopicHub 全局单例
+    /// 析构时关闭 Odometry
     ~OfflineRunner();
 
     /// 注册后端服务（在 run() 之前调用）
@@ -54,6 +55,7 @@ public:
     OfflineRunner& operator=(OfflineRunner&&) = delete;
 
 private:
+    TopicHub hub_;   ///< 本 Runner 私有的 comm 中枢（注入给 odometry/services），声明在先，先构造
     std::unique_ptr<ISensorSource> source_;
     std::unique_ptr<OdometryBase> odometry_;
     std::vector<std::unique_ptr<ServiceBase>> services_;
