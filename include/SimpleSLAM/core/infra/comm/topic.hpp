@@ -605,9 +605,16 @@ public:
             std::vector<ITopicBase*> ready;
             {
                 std::lock_guard lock(mutex_);
-                for (auto& [_, entry] : topics_) {
-                    if (entry.base->hasPending()) ready.push_back(entry.base.get());
+                // 按话题名排序后 drain：unordered_map 迭代是哈希序（跨平台/编译器不定），
+                // 排序保证离线回放分发顺序确定、可复现（蓝图 A.3 / ADR-R1b）。
+                std::vector<std::string> ready_names;
+                ready_names.reserve(topics_.size());
+                for (auto& [name, entry] : topics_) {
+                    if (entry.base->hasPending()) ready_names.push_back(name);
                 }
+                std::sort(ready_names.begin(), ready_names.end());
+                ready.reserve(ready_names.size());
+                for (auto& n : ready_names) ready.push_back(topics_[n].base.get());
             }
             if (ready.empty()) return total;  // 到达不动点
             for (auto* t : ready) {

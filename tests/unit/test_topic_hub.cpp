@@ -55,6 +55,26 @@ TEST_CASE("TopicHub drainAll BFS 顺序", "[topic_hub]") {
     REQUIRE(order[1] == "b:101");
 }
 
+TEST_CASE("drainAll 按话题名有序分发（确定性回放，ADR-R1b）", "[topic_hub][determinism]") {
+    TopicHub hub(true);
+    std::vector<std::string> order;
+
+    // 故意逆序创建——验证 drain 按话题名排序，而非创建序/哈希序
+    auto pc = hub.createPublisher<int>("c");
+    auto pa = hub.createPublisher<int>("a");
+    auto pb = hub.createPublisher<int>("b");
+    auto sc = hub.subscribe<int>("c", [&](MsgPtr<int>) { order.push_back("c"); });
+    auto sa = hub.subscribe<int>("a", [&](MsgPtr<int>) { order.push_back("a"); });
+    auto sb = hub.subscribe<int>("b", [&](MsgPtr<int>) { order.push_back("b"); });
+
+    pc.publish(1);
+    pa.publish(1);
+    pb.publish(1);
+    hub.drainAll();
+
+    REQUIRE(order == std::vector<std::string>{"a", "b", "c"});  // 名字升序，确定
+}
+
 TEST_CASE("TopicHub listTopics / stats 自省", "[topic_hub]") {
     TopicHub hub(true);
 
