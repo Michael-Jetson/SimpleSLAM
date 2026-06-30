@@ -207,3 +207,10 @@ catch_discover_tests(test_voxel_hash_target)
 catch_discover_tests(test_icp_solver)
 catch_discover_tests(test_lo_icp_odometry)
 catch_discover_tests(test_icp_robustness)
+
+# ── L1 walking skeleton（配置驱动离线入口）──
+
+add_executable(test_offline_app unit/test_offline_app.cpp)
+target_link_libraries(test_offline_app PRIVATE simpleslam_runner Catch2::Catch2WithMain)
+
+catch_discover_tests(test_offline_app)
