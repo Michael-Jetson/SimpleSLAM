@@ -53,23 +53,33 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 | 层级 | 用户画像 | 使用方式 |
 |------|---------|---------|
-| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML：选管线、算法和它允许替换的步骤（新栈的 YAML 入口还在施工） |
+| L1 — YAML 驱动 | 算法评测、快速验证 | 写一份任务 YAML：哪个系统、哪份数据、离线还是在线、做实验还是只出结果 |
 | L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，直接构造组件、按接口组装 |
 | L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用，比如 `algo/` 里的滤波与配准地图 |
 
-插件的选择长这样（目录与严格校验已经实现，YAML 接入随第一个方案一起完成）：
+一次运行是一个**任务**：用哪个 SLAM 系统、处理哪份数据、离线还是在线、做实验还是只出结果。它由两份 YAML 描述，系统写一次，换数据、换运行方式只改任务（简化自 `configs/systems/my_lio.yaml` 与 `configs/tasks/kitti_odometry.yaml`）：
 
 ```yaml
+# 系统：管线、模块与插件。带 type 的节点选一个实现，其余键是它的参数，槽可以嵌套
+pipeline: odometry
 modules:
   odometry:
-    plugin:
-      type: lo_icp
-      registration_filter: {type: voxel_downsample, voxel_size_m: 1.5}
-      map: {type: voxel_point_map, voxel_size_m: 1.0, max_points_per_voxel: 20}
+    plugin: {type: my_lio, keyframe_distance_m: 1.5}
 ```
 
+```yaml
+# 任务：在 KITTI 00 上离线跑这个系统，并对真值评测
+task: {name: kitti-00, purpose: experiment, mode: offline}
+system: ../systems/my_lio.yaml
+data:
+  source: {type: kitti_odometry, path: /data/kitti/odometry/sequences/00}
+evaluation: {alignment: se3}
+```
+
+命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个任务档案目录：还原后的完整任务、身份与哈希、运行结局、三条轨迹、评测报告；同一个任务原样重跑，得到同一个任务哈希。
+
 写错了在运行之前就报，带完整路径和可选项，例如
-`modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
+`system.modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
 
 ## 当前状态
 
@@ -78,24 +88,29 @@ modules:
 仓库里有两套代码，迁移是施工项，两套不得在同一翻译单元混用：
 
 - **新栈**（2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、录制回放、配置三层工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
-  - **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
+  - **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，YAML 里按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
+  - **任务与执行器**（`app/`）：一份任务 YAML 引用一份系统 YAML；执行器还原任务、打开数据、按管线装配、离线跑完、写任务档案、评测并过基线门禁。用户的入口只有几行：登记自己的实现，再交给执行器。任务也能用 Python 写，方便按传感器参数计算配置、批量生成扫参任务（`configs/tasks/example.py`）。
   - **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
 
-  **目前还没有真实算法跑过**：插件槽还没接进 YAML 加载器，第一个方案还在写。
+  **目前还没有真实算法跑过**：示例里只有占位的 `MyLio`，第一个方案还在写。
 - **旧栈**：基础设施、点云原语与纯 LO（`configs/lo_kissicp.yaml` 可跑），精度基线验收待做。
 
 接下来：
 
-1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上和旧栈 LO 对比轨迹；插件槽同时接进 YAML。
+1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上和旧栈 LO 对比轨迹。
 2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
 3. LIO：复用同一个地图接口。
+4. 执行器：在线运行与多段序列。
 
 手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；不下载数据集也能冒烟测试整条链路：
 
 ```bash
 python3 scripts/make_kitti_fixture.py --out /tmp/fx          # 合成最小 KITTI 夹具
-build/examples/simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \
-    dataset.path=/tmp/fx/odometry/sequences/00
+build/examples/simpleslam-lio-skeleton configs/tasks/kitti_odometry.yaml \
+    data.source.path=/tmp/fx/odometry/sequences/00 outputs.dir=/tmp/fx/run
+build/examples/simpleslam-lio-skeleton dump configs/tasks/kitti_odometry.yaml   # 还原后的完整任务
+PYTHONPATH=python python3 -m simpleslam --tool build/examples/simpleslam-lio-skeleton \
+    config render configs/tasks/example.py -o /tmp/fx/example.yaml          # Python 写的任务
 ```
 
 ## 快速开始
@@ -143,13 +158,16 @@ include/SimpleSLAM/   # 公共头文件
          plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
          modules/（模块层：把插件接到总线与资源上）
          eval/（评测）、record/（录制回放）、config/（配置、插件槽与目录）
-         app/（入口层：配置换成运行期类型与装配选项）
+         app/（入口层：目录、任务还原、执行器与任务档案）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
 apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
-tools/                # simpleslam-config（配置 schema / 校验 / 哈希）、simpleslam-eval（精度与基线门禁）
-examples/lio_skeleton # 能跑的新栈入口：数据集 → 装配 → 跑完 → 导出 → 评测；算法在 my_lio.hpp
-python/simpleslam/    # Python 侧：配置渲染、轨迹读写、指标（schema 读自 C++，不重写）
-configs/  tests/  docker/  scripts/
+tools/                # simpleslam（任务入口，只带内置实现）、simpleslam-config（schema / check / dump / hash）、simpleslam-eval（精度与基线门禁）
+examples/lio_skeleton # 用户入口的范例：登记 my_lio，再交给执行器；算法在 my_lio.hpp
+python/simpleslam/    # Python 侧：任务渲染与扫参、轨迹读写、指标（schema 读自入口，不重写）
+configs/systems/      # 系统 YAML：管线、模块、插件与参数
+configs/tasks/        # 任务 YAML 与 Python 写的任务
+configs/*.yaml        # 旧栈的配置
+tests/  docker/  scripts/
 ```
 
 ## 依赖
