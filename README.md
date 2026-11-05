@@ -1,16 +1,21 @@
 # SimpleSLAM
 
-面向视觉-激光-惯性三模态的**模块化 C++20 SLAM 框架**，兼顾定位与建图。
+面向视觉、激光、IMU、GNSS 四种模态及其组合的**模块化 C++20 SLAM 框架**，兼顾定位与建图。
 
 ## 项目定位
 
-SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能快速验证算法组合的构建框架。通过 YAML 配置切换 LIO / VIO / LIVO 方案，在每种方案内部替换子算法，无需修改框架代码。
+SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能快速验证算法组合的构建框架。
+
+- **有限自由内的任意组合**：用一份 YAML 装配完整系统，选管线、选算法（LO / LIO / VIO / LIVO 等）、选每一步的实现。每个算法声明自己哪几步可以替换、每一步要求什么接口；满足接口的实现都能换上，比如换一种地图表示，或者换掉预处理、去畸变、初始化、视觉前端里的某一步。在这个范围之内任意组合都成立。用户自己写的模块和插件也一样用 YAML 装配，满足约束即可；约束在装配时核对。换实现只改配置，不改框架代码；超出范围的选择在运行之前就报错。
+- **模态**：视觉（单目、双目 RGB、深度相机）、激光（点云）、IMU、GNSS，以及它们的组合。
+- **运行形态**：一个可执行文件，相当于 ROS 的一个节点。内部按模块分线程，模块之间用自带的进程内通信，只求轻量和实时；对外接 ROS 等系统时，经可选的适配模块。
+- **扩展表征**：几何地图之外，支持 3DGS、语义、场景图等表征。它们都由关键帧和位姿图派生，回环后随之更新。
 
 **SimpleSLAM 不是什么**：
 - 不是万能机器人框架——专注 SLAM，不做导航规划和运动控制
 - 不重新发明优化器——后端使用 GTSAM / Ceres 等成熟因子图库
 - 不依赖 ROS 编译——核心库纯 C++20，ROS 2 集成是可选适配层
-- 不追求"任意模块自由替换"——模块化边界由 SLAM 的数学结构决定
+- 不追求不受约束的任意替换——可替换的范围由算法按 SLAM 的数学结构声明，紧耦合的地方不拆；范围之内任意组合
 
 ## 架构概览
 
@@ -30,32 +35,58 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 - **Odometry** — 前端里程计，输出实时位姿（ESIKF / 滑窗 BA / ICP 求解）
 - **Backend** — 一组可独立启停的后端服务（回环检测、位姿图优化、重定位等）
 - **Resources** — 被动的共享数据容器（关键帧、位姿图、外参等）
-- **Infrastructure** — 日志、配置、计时、时钟等非算法功能
+- **Infrastructure** — 通信运行时、配置、评测、录制回放等非算法功能
+
+一个算法由三类东西组成：**模块**负责线程、总线和生命周期；**插件**是按帧调用的纯算法，比如一个完整的里程计方案；**算法库**里是插件内部可以替换的步骤，比如扫描滤波和配准地图。
 
 ## 核心设计法则
 
 1. **模块化边界跟随数学接缝** — 在真正存在多种实现的地方设可替换边界，紧耦合的地方拒绝拆分
 2. **经 profile 确认的热路径必须单态** — 逐元素循环保证内联和向量化；跨模块插件边界每帧仅常数次虚分派
-3. **永不"停止世界"** — 回环校正通过 FUTURE_ONLY + per-submap 变换实现，不阻塞前端
+3. **永不"停止世界"** — 后端优化不持有前端需要的锁，前端不等全局优化，校正在帧边界生效
 4. **故障隔离** — 后端故障不传播到前端，Odometry 始终继续输出位姿
-5. **架构是重构出来的** — 先让算法跑通，再根据实际需求引入抽象
-
-约束性全文见 `docs/architecture.md`。
+5. **设计先行** — 先研究清楚，经过充分分析得到 v1 方案再施工；执行中只做小的优化（v2），不先草草设计、再大量返工
+6. **冗余只为应急和必要的安全** — 队列为突发留足余量；持续跟不上要优化算法，不靠框架兜底
+7. **简洁与功能统一** — 功能用简洁的结构实现，不为了功能堆出难以维护、难以开发的复杂架构
 
 ## 三层使用深度
 
 | 层级 | 用户画像 | 使用方式 |
 |------|---------|---------|
-| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML，运行 `simpleslam_run` |
-| L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，自由组装组件 |
-| L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用 |
+| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML：选管线、算法和它允许替换的步骤（新栈的 YAML 入口还在施工） |
+| L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，直接构造组件、按接口组装 |
+| L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用，比如 `algo/` 里的滤波与配准地图 |
+
+插件的选择长这样（目录与严格校验已经实现，YAML 接入随第一个方案一起完成）：
+
+```yaml
+modules:
+  odometry:
+    plugin:
+      type: lo_icp
+      registration_filter: {type: voxel_downsample, voxel_size_m: 1.5}
+      map: {type: voxel_point_map, voxel_size_m: 1.0, max_points_per_voxel: 20}
+```
+
+写错了在运行之前就报，带完整路径和可选项，例如
+`modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
 
 ## 当前状态
 
 仓库里有两套代码，迁移是施工项，两套不得在同一翻译单元混用：
 
-- **新栈**（`feat/comm-runtime` 分支，2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、录制回放、配置三层工程设施，设计见 `docs/design/README.md`。目标是写算法的人只实现算法接口，其余工程事务由框架承担。**目前只有占位算法，还没有真实算法跑过。**
+- **新栈**（2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、录制回放、配置三层工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
+  - **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
+  - **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
+
+  **目前还没有真实算法跑过**：插件槽还没接进 YAML 加载器，第一个方案还在写。
 - **旧栈**：v0 基础设施、v0.5 点云原语、v1.0 纯 LO（`configs/lo_kissicp.yaml` 可跑）。精度基线验收待做，验收后版本号才进位 1.0.0。
+
+接下来：
+
+1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上和旧栈 LO 对比轨迹；插件槽同时接进 YAML。
+2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
+3. LIO：复用同一个地图接口。
 
 手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；不下载数据集也能冒烟测试整条链路：
 
@@ -65,20 +96,18 @@ build/examples/simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \
     dataset.path=/tmp/fx/odometry/sequences/00
 ```
 
-路线图、版本与不做的事见 `docs/future/roadmap.md`，未决问题见 `docs/backlog.md`。
-
 ## 快速开始
 
 ### 环境要求
 
 - Docker（推荐）或 Ubuntu 24.04+
-- GCC 13+（C++20 支持；基线见 `docs/engineering.md` 第 3.11 节）
+- GCC 13+（C++20）
 
 ### Docker 构建
 
 ```bash
 # 1. 构建开发镜像（Ubuntu 24.04；源码依赖由镜像的 deps-builder 阶段自行从 GitHub 拉取，
-#    受限网络用 --network=host，详见 docs/guides/docker.md）
+#    网络受限时加 --network=host）
 docker build -t simpleslam-dev .
 
 # 2. 编译 + 测试
@@ -100,26 +129,25 @@ cmake --build build -j
 cd build && ctest --output-on-failure
 ```
 
+依赖不全时可以只构建新栈：`cmake -B build -DSIMPLESLAM_NEW_STACK_ONLY=ON`。
+
 ## 目录结构
 
 ```
 include/SimpleSLAM/   # 公共头文件
   旧栈： core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
-  新栈： comm/（通信运行时）、framework/（框架契约与资源）、plugins/（算法插件——写算法只碰这里）
-         modules/（模块层：把插件接到总线与资源上）、eval/（评测）、record/（录制回放）、config/（配置）
+  新栈： comm/（通信运行时）、framework/（框架契约与资源）
+         algo/（可替换的步骤：扫描滤波、配准地图）
+         plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
+         modules/（模块层：把插件接到总线与资源上）
+         eval/（评测）、record/（录制回放）、config/（配置、插件槽与目录）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
-apps/                 # simpleslam_run（L1 入口，YAML 驱动离线回放）
+apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
 tools/                # simpleslam-config（配置 schema / 校验 / 哈希）、simpleslam-eval（精度与基线门禁）
 examples/lio_skeleton # 能跑的新栈入口：数据集 → 装配 → 跑完 → 导出 → 评测；算法在 my_lio.hpp
 python/simpleslam/    # Python 侧：配置渲染、轨迹读写、指标（schema 读自 C++，不重写）
-configs/  tests/  docker/  scripts/  docs/
+configs/  tests/  docker/  scripts/
 ```
-
-每个新栈代码目录的设计与文件表，在 `docs/design/` 下同名的文档里。
-
-## 文档
-
-从 [`docs/README.md`](docs/README.md) 开始：它按你要做的事指路，并说明文档怎么组织。
 
 ## 依赖
 
@@ -133,9 +161,35 @@ configs/  tests/  docker/  scripts/  docs/
 | tsl::robin_map | 体素哈希 | header-only | 旧栈 |
 | Catch2 3.x | 单元测试 | 编译库 | 测试 |
 
-依赖不全时可以只构建新栈：`cmake -B build -DSIMPLESLAM_NEW_STACK_ONLY=ON`。按版本引入的可选依赖（GTSAM、small_gicp、Ceres、OpenCV）见 `docs/engineering.md` 第 7.6 节，镜像见 `docs/guides/docker.md`。
+按阶段引入的可选依赖：GTSAM 4.3+（因子图优化）、small_gicp（回环验证 ICP）、Ceres 2.1+（滑窗 BA）、OpenCV 4.5+（视觉前端）。
 
-编码规范与完整工程规范（版本与发布、变更控制、代码、构建与 CI、测试、文档、依赖、安全、完成定义）见 `docs/engineering.md`。
+## 编码规范
+
+| 类目 | 规范 | 示例 |
+|------|------|------|
+| 文件名 | `snake_case`，一个类型一个文件 | `voxel_point_map.hpp` |
+| 类型 | `PascalCase` | `VoxelPointMap` |
+| 函数 / 方法 | `camelCase` | `linearize()` |
+| 变量 | `snake_case`，成员加尾下划线 | `voxel_size_m`、`config_` |
+| 常量 | `kPascalCase` | `kTypeName` |
+| 具体类 | 标注 `final` | `class VoxelPointMap final` |
+| 接口 | 公开入口非虚，先查输入输出再调私有虚函数（NVI） | `ScanFilter::apply()` |
+| 头文件 | `#pragma once`；首两行是 SPDX 许可证与版权 | |
+| 格式 | clang-format：Google 基线、4 空格、100 列 | `.clang-format` |
+| 语言标准 | C++20 | |
+
+## 技术栈
+
+```
+Eigen + manif — 基础数学层（李群、矩阵运算）
+    │
+    ├── ESIKF / IMU 预积分 — 手写，只依赖 Eigen + manif
+    │   (纯 LIO 路径在此层完全自洽)
+    │
+    ├── Ceres（可选）— 局部滑窗 BA / VIO
+    │
+    └── GTSAM（可选）— 全局因子图 / 回环优化
+```
 
 ## Star History
 

@@ -5,7 +5,7 @@ project(SimpleSLAM
     DESCRIPTION "模块化 C++20 SLAM 框架"
     LANGUAGES CXX
 )
-# 版本轴规则（docs/README.md）：路线图里程碑即软件版本，但里程碑以验收证据为准。
+# 版本轴规则：路线图里程碑即软件版本，但里程碑以验收证据为准。
 # v1.0 的验收（标准数据集精度基线 + 对比表入仓）未完成前，版本保持 0.99.0（即 1.0.0-rc）。
 
 # ── C++20 全局设置 ──
@@ -105,9 +105,17 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
-# ── 文档校验（scripts/doc_lint.py，约定见 docs/README.md）──
-add_custom_target(docs-verify
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_lint.py
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMENT "文档检查"
-)
+# ── 文档校验 ──
+# 内部文档和检查脚本只在本地，不随仓库发布。检出里没有它们时（公开仓库、Docker 的
+# verify 阶段：.dockerignore 排除了 docs/），这个目标只报一声跳过，不让构建失败。
+if(EXISTS "${PROJECT_SOURCE_DIR}/scripts/doc_lint.py" AND EXISTS "${PROJECT_SOURCE_DIR}/docs/README.md")
+    add_custom_target(docs-verify
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_lint.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        COMMENT "文档检查"
+    )
+else()
+    add_custom_target(docs-verify
+        COMMAND ${CMAKE_COMMAND} -E echo "docs-verify：这份检出里没有内部文档，跳过"
+    )
+endif()

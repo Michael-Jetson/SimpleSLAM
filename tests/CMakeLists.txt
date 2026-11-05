@@ -20,6 +20,13 @@ foreach(t framework_time framework_resources framework_packetizer)
     catch_discover_tests(test_${t})
 endforeach()
 
+# 插件槽与目录、算法库：只依赖框架的数据类型
+foreach(t config_plugin algo_filter algo_map)
+    add_executable(test_${t} unit/test_${t}.cpp)
+    target_link_libraries(test_${t} PRIVATE simpleslam_algo Catch2::Catch2WithMain)
+    catch_discover_tests(test_${t})
+endforeach()
+
 add_executable(test_slam_system unit/test_slam_system.cpp)
 target_link_libraries(test_slam_system PRIVATE simpleslam_modules Catch2::Catch2WithMain)
 catch_discover_tests(test_slam_system)

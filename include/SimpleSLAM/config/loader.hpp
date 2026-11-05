@@ -22,6 +22,7 @@
 
 #include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/config/config.hpp>
+#include <SimpleSLAM/config/error.hpp>
 
 #include <map>
 #include <stdexcept>
@@ -29,11 +30,6 @@
 #include <vector>
 
 namespace simpleslam::config {
-
-class ConfigError : public std::runtime_error {
-public:
-    explicit ConfigError(const std::string& what) : std::runtime_error(what) {}
-};
 
 /// schema 里一个字段的描述。导出给 Python、给文档、给命令行补全。
 struct FieldSchema {

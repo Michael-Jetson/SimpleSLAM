@@ -24,6 +24,9 @@ logs/
 
 # 内部文档（蓝图、调研报告等，不对外发布）
 docs/
+# 只服务内部文档的检查工具，跟着文档留在本地
+/.githooks/
+/scripts/doc_lint.py
 
 # Docker 预下载依赖（由 scripts/install_deps.sh 或手动下载）
 docker/deps/
