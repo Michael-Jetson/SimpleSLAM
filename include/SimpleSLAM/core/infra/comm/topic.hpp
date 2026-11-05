@@ -584,12 +584,10 @@ private:
 
 // ── TopicHub：命名话题注册表 + BFS 协调分发 ──
 
-/// 命名话题注册表。**懒加载全局单例**（免 init 直接用），也可建隔离实例供测试。
+/// 命名话题注册表。注入式 comm：无全局单例（ADR-001）。Runner 持有 TopicHub 实例，
+/// 经 initialize(hub) 注入各模块。隔离/L3 用法：`TopicHub hub; hub.createPublisher<T>(...)`。
 class TopicHub {
 public:
-    // 注入式 comm：无全局单例（ADR-001）。Runner 持有 TopicHub 实例，
-    // 经 initialize(hub) 注入各模块。隔离/L3 用法：`TopicHub hub; hub.createPublisher<T>(...)`。
-
     // ── Offline BFS 协调 ──
 
     /// 逐轮分发 pending 消息，回调中新 publish 进入下一轮。

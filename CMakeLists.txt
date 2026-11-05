@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(SimpleSLAM
-    VERSION 0.1.0
+    VERSION 0.99.0
     DESCRIPTION "模块化 C++20 SLAM 框架"
     LANGUAGES CXX
 )
+# 版本轴规则（docs/README.md）：路线图里程碑即软件版本，但里程碑以验收证据为准。
+# v1.0 的验收（标准数据集精度基线 + 对比表入仓）未完成前，版本保持 0.99.0（即 1.0.0-rc）。
 
 # ── C++20 全局设置 ──
 set(CMAKE_CXX_STANDARD 20)
@@ -61,3 +63,11 @@ if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# ── 文档校验（scripts/doc_lint.py + doc_drift.py，规则见 docs/README.md）──
+add_custom_target(docs-verify
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_lint.py
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_drift.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    COMMENT "文档 lint + 漂移检测"
+)

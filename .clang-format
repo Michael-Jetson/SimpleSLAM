@@ -8,7 +8,7 @@ AllowShortLoopsOnASingleLine: false
 BreakBeforeBraces: Attach
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: '^<simpleslam/'
+  - Regex: '^<SimpleSLAM/'
     Priority: 1
   - Regex: '^<(Eigen|manif|spdlog|yaml-cpp|fmt|catch2)/'
     Priority: 2

@@ -5,8 +5,7 @@
 # The dependency set is taken 1:1 from scripts/install_deps.sh:
 #   apt    : build-essential cmake git libeigen3-dev libspdlog-dev
 #            libyaml-cpp-dev libfmt-dev
-#   source : Catch2 v3.4.0, manif 0.0.5, nanoflann v1.6.1, robin-map v1.3.0,
-#            eventpp (pinned commit), SPSCQueue (pinned commit)
+#   source : Catch2 v3.4.0, manif 0.0.5, nanoflann v1.6.1, robin-map v1.3.0
 #
 # Stages:
 #   deps-builder  compile the from-source libraries, install into /usr/local
@@ -26,10 +25,6 @@ ARG CATCH2_REF=v3.4.0
 ARG MANIF_REF=0.0.5
 ARG NANOFLANN_REF=v1.6.1
 ARG ROBINMAP_REF=v1.3.0
-# eventpp / SPSCQueue have no upstream release tags; pin to the exact commits
-# the project already vendors under docker/deps/ for byte-stable reproducibility.
-ARG EVENTPP_REF=1224dd6c9bd4577d686ac42334fc545997f5ece1
-ARG SPSCQUEUE_REF=1053918dbd251fbff69b24ef27fa5d51c29ec2af
 
 
 ###############################################################################
@@ -52,8 +47,6 @@ ARG CATCH2_REF
 ARG MANIF_REF
 ARG NANOFLANN_REF
 ARG ROBINMAP_REF
-ARG EVENTPP_REF
-ARG SPSCQUEUE_REF
 
 WORKDIR /tmp/deps
 
@@ -85,21 +78,6 @@ RUN git clone --branch ${ROBINMAP_REF} --depth 1 https://github.com/Tessil/robin
     && cmake --install robin-map/build \
     && rm -rf robin-map
 
-# eventpp — header-only event dispatcher (reserved for v1.5 Topic backend)
-RUN git clone https://github.com/wqking/eventpp.git eventpp \
-    && git -C eventpp checkout ${EVENTPP_REF} \
-    && cmake -S eventpp -B eventpp/build -DEVENTPP_INSTALL=ON \
-    && cmake --build eventpp/build -j"$(nproc)" \
-    && cmake --install eventpp/build \
-    && rm -rf eventpp
-
-# SPSCQueue — single-header wait-free queue (reserved for v1.5 Topic backend)
-RUN git clone https://github.com/rigtorp/SPSCQueue.git SPSCQueue \
-    && git -C SPSCQueue checkout ${SPSCQUEUE_REF} \
-    && cmake -S SPSCQueue -B SPSCQueue/build \
-    && cmake --build SPSCQueue/build -j"$(nproc)" \
-    && cmake --install SPSCQueue/build \
-    && rm -rf SPSCQueue
 
 
 ###############################################################################
@@ -118,6 +96,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libspdlog-dev \
         libyaml-cpp-dev \
         libfmt-dev \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring in the from-source libraries built in stage 1 (headers, CMake configs,
@@ -139,7 +118,8 @@ FROM build-env AS verify
 COPY . /workspace
 RUN cmake -B build -DBUILD_TESTING=ON \
     && cmake --build build -j"$(nproc)" \
-    && ctest --test-dir build --output-on-failure
+    && ctest --test-dir build --output-on-failure \
+    && cmake --build build --target docs-verify
 
 
 ###############################################################################

@@ -41,44 +41,35 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 ## 核心设计法则
 
 1. **模块化边界跟随数学接缝** — 在真正存在多种实现的地方设可替换边界，紧耦合的地方拒绝拆分
-2. **热路径必须单态** — C++20 concept 约束的模板保证内联和向量化，运行时多态只在启动期使用
+2. **经 profile 确认的热路径必须单态** — 逐元素循环保证内联和向量化；跨模块插件边界每帧仅常数次虚分派
 3. **永不"停止世界"** — 回环校正通过 FUTURE_ONLY + per-submap 变换实现，不阻塞前端
 4. **故障隔离** — 后端故障不传播到前端，Odometry 始终继续输出位姿
 5. **架构是重构出来的** — 先让算法跑通，再根据实际需求引入抽象
+
+约束性全文见 `docs/architecture.md`。
 
 ## 三层使用深度
 
 | 层级 | 用户画像 | 使用方式 |
 |------|---------|---------|
-| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML，运行 `run_slam_offline` |
+| L1 — YAML 驱动 | 算法评测、快速验证 | 编辑 YAML，运行 `simpleslam_run` |
 | L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，自由组装组件 |
 | L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用 |
 
 ## 当前状态
 
-| 版本 | 内容 | 状态 | 测试 |
-|------|------|------|------|
-| **v0** | 基础设施（日志、配置、计时、时钟、几何类型） | **已完成** | 16 |
-| **v0.5** | 点云工具 + Sensor IO（KDTree、VoxelGrid、降采样、KittiSource） | **已完成** | 54 |
-| **v1.0 基础设施** | Topic 通信、共享资源、Concept 定义、PCD IO、EuRoC、后端框架 | **已完成** | 113 |
-| **v1.0 框架层** | OdometryBase、KeyframeSelector、AnyRegistrationTarget、HealthMonitor、OfflineRunner | **已完成** | 147 |
-| **v1.0+ 工程扩展** | AnyLoopDetector、AnyPoseGraphOptimizer、LoopClosureService、PgoService、SubMapManager、ImuBuffer | **已完成** | 182 |
-| **v1.0 算法** | 纯 LO（VoxelHashTarget、IcpSolver-GN、LoIcpOdometry） | **已完成** | 202 |
-| **v1.0 通信增强** | header-only 进程内总线：异常隔离、latching、QoS::Latest 合并、skip-frame、异步 worker、服务、Action、配置驱动（YAML，模块 ctor 注入）、infra/comm 分组 | **已完成** | 259 |
-| v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 | — |
-| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 | — |
-| v2.5 | 回环扩展（STD、KISS-Matcher）+ 基础稠密地图 + 重定位策略链 | 计划中 | — |
-| v3.0 | 视觉特征组件（ORB、DBoW2、FeatureMapTarget） | 计划中 | — |
-| v3.5 | VIO Baseline（Ceres 滑窗 BA、ORB-SLAM3 风格） | 计划中 | — |
-| v4.0 | 第二 VIO（KLT 光流、VINS 风格紧耦合） | 计划中 | — |
-| v4.5 | LiDAR-视觉紧耦合（FAST-LIVO2 风格 LIVO） | 计划中 | — |
-| v5.0 | 传感器扩展（GNSS/UWB/轮速计因子、在线外参标定、dlopen） | 计划中 | — |
-| v5.5 | 地图持久化（.smap 格式）+ 分页（Hot/Warm/Cold）+ 定位模式 | 计划中 | — |
-| v6.0 | 重定位增强 + Pangolin/Rerun 可视化 + TSDF/高程图 | 计划中 | — |
-| v7.0 | Python 绑定（pybind11）+ CLI + Jupyter 教程 + 自动化评测 CI | 计划中 | — |
-| v8.0 | 语义地图（分割融合、动态物体过滤、语义约束因子） | 计划中 | — |
-| v8.5 | 拓扑地图 + 3D 场景图 + 自然语言空间查询 | 计划中 | — |
-| v9.0+ | 连续时间轨迹、多机器人、GPU 加速、NeRF/3DGS 建图 | 探索中 | — |
+代码完成：v0 基础设施、v0.5 点云原语、v1.0 纯 LO（`configs/lo_kissicp.yaml` 可跑；精度基线验收待做，验收后版本号才进位 1.0.0）。下一步 v1.5 LIO 核心。
+
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| v1.0 | 纯 LO（VoxelHashTarget、IcpSolver、LoIcpOdometry） | 代码完成，精度基线验收待做 |
+| v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 |
+| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 |
+| v2.5 | 回环扩展 + 基础稠密地图 + 重定位 | 计划中 |
+| v3.0–v4.5 | 视觉特征 → VIO → LIVO | 计划中 |
+| v5.0+ | Research Backlog（GNSS/持久化/可视化/Python 绑定等） | 单独立项后进入主线 |
+
+版本轴唯一：路线图里程碑即软件版本，完整路线图与阶段 Not-Doing 清单见 `docs/blueprint.md` §17。
 
 精度目标：v1.0 KITTI ATE 达 KISS-ICP 级，v1.5 达 FAST-LIO2 级（EuRoC ATE < 0.12m）
 
@@ -86,22 +77,17 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 ### 环境要求
 
-- Docker（推荐）或 Ubuntu 22.04+
-- GCC 11+（C++20 支持）
+- Docker（推荐）或 Ubuntu 24.04+
+- GCC 13+（C++20 支持；基线见 `docs/blueprint.md` §14.4）
 
 ### Docker 构建
 
 ```bash
-# 1. 预下载依赖源码（容器内 GitHub 访问可能不稳定）
-git clone --branch v3.4.0 --depth 1 https://github.com/catchorg/Catch2.git docker/deps/catch2
-git clone --branch master --depth 1 https://github.com/artivis/manif.git docker/deps/manif
-git clone --branch v1.6.1 --depth 1 https://github.com/jlblancoc/nanoflann.git docker/deps/nanoflann
-git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git docker/deps/robin-map
+# 1. 构建开发镜像（Ubuntu 24.04；源码依赖由镜像的 deps-builder 阶段自行从 GitHub 拉取，
+#    受限网络用 --network=host，详见 docs/Docker.md）
+docker build -t simpleslam-dev .
 
-# 2. 构建开发镜像
-docker build -f docker/Dockerfile.ubuntu2204 -t simpleslam-dev .
-
-# 3. 编译 + 测试（259 个测试）
+# 2. 编译 + 测试
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
     bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
 ```
@@ -123,89 +109,13 @@ cd build && ctest --output-on-failure
 ## 目录结构
 
 ```
-SimpleSLAM/
-├── include/SimpleSLAM/
-│   ├── core.hpp                    # 核心模块 umbrella header
-│   ├── resources.hpp               # 共享资源 umbrella header
-│   ├── core/
-│   │   ├── convention.hpp          # 框架公约（ENU、T_world_body、精度约定）
-│   │   ├── types/                  # 核心数据类型
-│   │   │   ├── common.hpp          #   Timestamp, PointXYZI
-│   │   │   ├── geometry.hpp        #   SE3d, SO3d, Vec3d (manif 别名)
-│   │   │   ├── sensor_data.hpp     #   LidarScan (SOA), ImageFrame, ImuSample
-│   │   │   ├── odometry_result.hpp #   OdometryResult, TrackingStatus
-│   │   │   ├── keyframe.hpp        #   KeyframeData
-│   │   │   └── event_types.hpp     #   KeyframeEvent, LoopDetectedEvent...
-│   │   ├── concepts/               # C++20 concept 接口定义 + 类型擦除
-│   │   │   ├── registration_target.hpp  # RegistrationTarget + MatchResult
-│   │   │   ├── any_registration_target.hpp # Sean Parent 类型擦除包装
-│   │   │   ├── loop_detector.hpp        # LoopDetector + LoopCandidate
-│   │   │   ├── any_loop_detector.hpp    # LoopDetector 类型擦除包装
-│   │   │   ├── pose_graph_optimizer.hpp # PoseGraphOptimizer + OptimizationResult
-│   │   │   └── any_pose_graph_optimizer.hpp # PoseGraphOptimizer 类型擦除包装
-│   │   ├── math/                   # 数学工具
-│   │   │   ├── kdtree.hpp          #   nanoflann 零拷贝 KDTree3f
-│   │   │   ├── voxel_grid.hpp      #   VoxelMap (FNV + Morton)
-│   │   │   ├── point_ops.hpp       #   降采样、过滤、变换、SOR
-│   │   │   ├── normal_estimation.hpp#  KNN PCA 法向量估计
-│   │   │   ├── scan_utils.hpp      #   extractByIndices, RangeImageView
-│   │   │   ├── lie_utils.hpp       #   hat/vee/perturb/Jacobian
-│   │   │   └── pcd_io.hpp          #   PCD 二进制读写
-│   │   └── infra/                  # 基础设施
-│   │       ├── comm/               #   通信子系统（话题 / 服务 / Action）
-│   │       │   ├── topic.hpp       #     Topic<T> + TopicHub：pub/sub、QoS、异常隔离、latching、节流、async、懒加载
-│   │       │   ├── topic_names.hpp #     话题名常量（跨模块接线契约）
-│   │       │   ├── service.hpp     #     进程内 typed 服务（request/reply）
-│   │       │   ├── action.hpp      #     进程内 Action（长任务/取消/反馈）
-│   │       │   └── comm_config.hpp #     通信参数运行期加载（YAML → QoS/SubscribeOptions）
-│   │       ├── comm.hpp            #   通信伞头文件（一行 include 全部机制）
-│   │       ├── config.hpp          #   YAML 层级加载 + schema 校验 + fromNode/sub 切片
-│   │       ├── logger.hpp          #   spdlog 封装
-│   │       ├── timing.hpp          #   RAII 计时 + 统计
-│   │       ├── clock.hpp           #   时钟抽象（系统/数据集）
-│   │       ├── callback_slot.hpp   #   同步回调槽
-│   │       ├── health_monitor.hpp  #   系统级健康状态机
-│   │       ├── registry.hpp        #   类型擦除注册表（工厂 + REGISTER 宏）
-│   │       └── demangle.hpp        #   类型名 demangle 工具
-│   ├── resources/                  # 共享资源容器
-│   │   ├── current_state.hpp       #   T_odom + T_correction 双缓冲
-│   │   ├── pose_graph.hpp          #   关键帧节点 + 边（shared_mutex）
-│   │   ├── keyframe_store.hpp      #   关键帧存储（写后不可变）
-│   │   ├── extrinsics_manager.hpp  #   传感器外参管理
-│   │   └── trajectory.hpp          #   位姿历史 + TUM/KITTI 导出
-│   ├── sensor_io/                  # 传感器接入
-│   │   ├── sensor_source.hpp       #   ISensorSource 接口
-│   │   ├── kitti_source.hpp        #   KITTI 数据集读取器
-│   │   ├── euroc_source.hpp        #   EuRoC MAV 数据集读取器
-│   │   └── sensor_mux.hpp          #   多源时间排序合并
-│   ├── odometry/                   # 里程计框架 + 算法实现
-│   │   ├── odometry_base.hpp       #   前端里程计抽象基类
-│   │   ├── keyframe_selector.hpp   #   关键帧选择策略
-│   │   ├── imu_buffer.hpp          #   线程安全 IMU 数据缓冲区
-│   │   ├── voxel_hash_target.hpp   #   体素哈希配准地图（对标 KISS-ICP）
-│   │   └── lo_icp_odometry.hpp     #   纯 LO 里程计（VoxelHash + GN-ICP）
-│   ├── runner/                     # 运行模式编排器
-│   │   └── offline_runner.hpp      #   离线数据集回放主循环
-│   ├── adapters/                   # 类型转换桥接
-│   │   └── gtsam_bridge.hpp        #   manif ↔ GTSAM（条件编译）
-│   ├── backend.hpp                 # 后端模块 umbrella header
-│   └── backend/                    # 后端服务框架
-│       ├── service_base.hpp        #   可选生命周期基类
-│       ├── loop_closure_service.hpp#   回环检测后端服务骨架
-│       ├── pgo_service.hpp         #   位姿图优化后端服务骨架
-│       ├── submap_manager.hpp      #   子图生命周期管理器
-│       └── submap/submap.hpp       #   子图数据容器
-├── src/                            # 各模块库实现（公共头文件见 include/，纯头模块仅 CMakeLists）
-│   ├── core/src/                   #   核心库实现
-│   ├── sensor_io/src/              #   传感器 IO 实现
-│   ├── resources/src/              #   资源层实现
-│   └── runner/src/                 #   Runner 实现
-├── configs/                        # 参考配置
-├── tests/unit/                     # 259 个单元测试
-├── docker/                         # Docker 开发环境 + 预下载依赖
-├── scripts/                        # 工具脚本（evaluate.py 轨迹评测）
-└── docs/                           # 架构文档 + 教程
+include/SimpleSLAM/   # 公共头文件：core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
+src/                  # 各模块库实现（纯头模块仅 CMakeLists）
+apps/                 # simpleslam_run（L1 入口，YAML 驱动离线回放）
+configs/  tests/  docker/  scripts/  docs/
 ```
+
+概念到头文件、测试、架构锚点的逐条映射见 `docs/map.md`；文档体系（约束性架构 / ADR / 提案 / 调研 / 课程）见 `docs/README.md`。
 
 ## 依赖
 
@@ -242,7 +152,9 @@ SimpleSLAM/
 | 常量 | `kPascalCase` | `kMaxSamples` |
 | 所有具体类 | 标注 `final` | `class SystemClock final` |
 | 头文件保护 | `#pragma once` | |
-| 技术标准 | C++20（不使用 C++23） | |
+| 技术标准 | 语言锁 C++20；库特性允许 C++23 的 `std::expected` | 政策见蓝图 §14.4 |
+
+完整工程规范（版本与发布、变更控制、代码、构建与 CI、测试、文档、依赖、安全、完成定义）见 `docs/engineering.md`。
 
 ## 技术栈
 

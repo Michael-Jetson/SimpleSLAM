@@ -3,7 +3,7 @@
 /// @file odometry_base.hpp
 /// 前端里程计抽象基类——提供回调槽、Topic 发布器、生命周期管理
 ///
-/// 具体实现（LoIcpOdometry、LioIekfOdometry 等）继承此类，
+/// 具体实现（LoIcpOdometry、LioEsikfOdometry 等）继承此类，
 /// 通过 C++20 concept 约束的内部组件获得零开销配准性能。
 /// OdometryBase 提供公共基础设施，不含任何算法逻辑。
 

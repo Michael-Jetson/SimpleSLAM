@@ -42,3 +42,9 @@ git.sh
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 代理会话数据
+.claude/
+.codex/
+.agents/
+.kimi-code/

@@ -22,7 +22,7 @@ enum class TrackingStatus : uint8_t {
 /// 一帧 Odometry 输出
 struct OdometryResult {
     Timestamp timestamp{0.0};
-    SE3d pose{SE3d::Identity()};       ///< T_world_body（含已应用的后端校正）
+    SE3d pose{SE3d::Identity()};       ///< T_world_body（前端里程计估计；后端校正经 CorrectionEvent/CurrentState 的规划链路，未接入本字段）
     Mat6d covariance{Mat6d::Zero()};   ///< 6x6 协方差（切空间 [tx ty tz rx ry rz] 顺序）
     TrackingStatus status{TrackingStatus::Initializing};
     bool is_keyframe{false};
