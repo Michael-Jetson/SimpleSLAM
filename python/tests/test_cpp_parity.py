@@ -1,11 +1,13 @@
 """Python 与 C++ 两份实现的逐字节 / 逐数字比对。
 
-配置的规范化导出与哈希、轨迹指标，在两边各有一份实现。重复是刻意的
-（Python 侧不该为了算个哈希去起子进程），但只在能自动比对的前提下成立——
-这个文件就是那个前提。两边一旦漂移，这里立刻红。
+任务配置的规范化导出与哈希（含插件节点的还原）、轨迹指标，在两边各有一份实现。
+重复是刻意的（扫参时 Python 侧不该为每个变体起一次子进程），但只在能自动比对的
+前提下成立——这个文件就是那个前提。两边一旦漂移，这里立刻红。
 
-需要先构建工具：
-    cmake --build <build> --target simpleslam_config_tool simpleslam_eval_tool
+配置比对要一个登记了里程计的入口：内置目录里没有里程计（算法由用户写），
+simpleslam-config 还原不了任何完整的任务。示例入口 simpleslam-lio-skeleton 登记了
+my_lio，就用它。需要先构建：
+    cmake --build <build> --target simpleslam_lio_skeleton simpleslam_eval_tool
 然后
     SIMPLESLAM_BUILD_DIR=<build> python3 -m unittest discover -s python/tests
 找不到工具时整组跳过（而不是假装通过）。
@@ -15,6 +17,7 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,25 +27,41 @@ from simpleslam.metrics import absolute_trajectory_error, relative_pose_error
 from simpleslam.schema import Schema
 from simpleslam.trajectory import Pose, Trajectory, write_trajectory
 
+REPO = Path(__file__).resolve().parents[2]
+LIO = "system.modules.odometry.plugin"
+SOURCE = "data.source"
 
-def find_tool(name: str, env: str) -> str | None:
+
+def find_tool(name: str, env: str, subdir: str = "tools") -> str | None:
     from_env = os.environ.get(env)
     if from_env and Path(from_env).exists():
         return from_env
     build_dir = os.environ.get("SIMPLESLAM_BUILD_DIR")
     if build_dir:
-        candidate = Path(build_dir) / "tools" / name
+        candidate = Path(build_dir) / subdir / name
         if candidate.exists():
             return str(candidate)
     return shutil.which(name)
 
 
-CONFIG_TOOL = find_tool("simpleslam-config", "SIMPLESLAM_CONFIG_TOOL")
+TASK_TOOL = find_tool("simpleslam-lio-skeleton", "SIMPLESLAM_TASK_TOOL", "examples")
 EVAL_TOOL = find_tool("simpleslam-eval", "SIMPLESLAM_EVAL_TOOL")
 
 
 def run(tool: str, *args: str) -> str:
-    result = subprocess.run([tool, *args], capture_output=True, text=True, check=True)
+    result = subprocess.run([tool, *args], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise AssertionError(f"{tool} {' '.join(args)} 退出码 {result.returncode}: {result.stderr}")
+    return result.stdout
+
+
+def run_python(*args: str) -> str:
+    """跑 python -m simpleslam 或仓库里的脚本，包从源码树里取。"""
+    env = {**os.environ, "PYTHONPATH": str(REPO / "python")}
+    result = subprocess.run([sys.executable, *args], capture_output=True, text=True,
+                            check=False, env=env)
+    if result.returncode != 0:
+        raise AssertionError(f"python {' '.join(args)} 退出码 {result.returncode}: {result.stderr}")
     return result.stdout
 
 
@@ -58,45 +77,124 @@ def curved(count: int, transform=None, scale: float = 1.0) -> Trajectory:
     return trajectory
 
 
-@unittest.skipIf(CONFIG_TOOL is None, "没有 simpleslam-config，跳过配置比对")
+@unittest.skipIf(TASK_TOOL is None,
+                 "没有登记了里程计的入口（simpleslam-lio-skeleton），跳过配置比对")
 class ConfigParityTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.schema = Schema.from_json(run(CONFIG_TOOL, "schema"))
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = Schema.from_json(run(TASK_TOOL, "schema"))
 
-    def test_schema_is_not_empty(self):
-        self.assertGreater(len(self.schema), 20)
-        self.assertIn("odometry.max_iterations", self.schema)
+    @staticmethod
+    def base(**sections) -> Config:
+        config = Config({LIO: {"type": "my_lio"},
+                         SOURCE: {"type": "kitti_odometry", "path": "/nonexistent/kitti"}})
+        return config.update(**sections)
 
-    def test_default_dump_matches_byte_for_byte(self):
-        self.assertEqual(Config().canonical(self.schema), run(CONFIG_TOOL, "default"))
-
-    def test_canonical_and_hash_match(self):
-        cases = [
-            Config(),
-            Config(name="demo"),
-            Config(name="demo", seed=17, **{"odometry.max_iterations": 40}),
-            Config(**{
-                "packetizer.imu_required": False,
-                "packetizer.post_support_s": 0.02,
-                "backend.loop_score_threshold": 0.75,
-                "odometry.voxel_size_m": 1.0 / 3.0,
-            }),
-            Config(**{"evaluation.output": "/tmp/est.tum", "runtime.spin_budget": 1024}),
-        ]
+    def assertSameAsCpp(self, config: Config, label: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            for index, config in enumerate(cases):
-                path = Path(directory) / f"config_{index}.yaml"
+            path = Path(directory) / "task.yaml"
+            path.write_text(config.to_yaml(self.schema), encoding="utf-8")
+            self.assertEqual(config.canonical(self.schema), run(TASK_TOOL, "dump", str(path)),
+                             f"{label}：规范化导出不一致")
+            check = run(TASK_TOOL, "check", str(path))
+            self.assertIn(f"任务哈希: {config.hash(self.schema)}\n", check, f"{label}：任务哈希")
+            self.assertIn(f"系统哈希: {config.system_hash(self.schema)}\n", check,
+                          f"{label}：系统哈希")
+
+    def test_schema_lists_fields_slots_and_plugins(self):
+        self.assertGreater(len(self.schema), 30)
+        self.assertIn("system.modules.graph_optimizer.odometry_translation_weight", self.schema)
+        self.assertEqual(self.schema.slot_interface(LIO), "OdometryBase")
+        self.assertEqual(self.schema.slot_interface(SOURCE), "DatasetReader")
+        self.assertIn("my_lio", self.schema.implementations("OdometryBase"))
+        self.assertEqual(self.schema.implementations("DatasetReader"),
+                         ["kitti_odometry", "kitti_raw", "replay"])
+
+    def test_canonical_and_hashes_match(self):
+        nasty = 'a # b: "c" \\ d\n\te'
+        tuned = self.base()
+        tuned[LIO].update(keyframe_distance_m=1 / 3, keyframe_rotation_deg=20)
+        tuned[SOURCE].update(sequence="00", skip_scans=5, groundtruth_frame="camera")
+        raw = self.base(data={"calibration": nasty, "sequences": ["00", nasty]})
+        raw[SOURCE] = {"type": "kitti_raw", "path": nasty, "repair_scan_timing": True}
+        cases = {
+            "最小任务": self.base(),
+            "任务节": self.base(task={"name": "demo", "seed": 17, "purpose": "run"}),
+            "系统节": self.base(system={
+                "pipeline": "mapping",
+                "runtime": {"spin_budget": 1024, "online_max_in_flight": 0},
+                "packetizer": {"source_policy": "config", "imu_required": False,
+                               "post_support_s": 0.02},
+                "modules": {
+                    "place_recognizer": {"plugin": {"type": "none"}},
+                    "graph_optimizer": {"plugin": {"type": "none"},
+                                        "odometry_translation_weight": 1 / 3,
+                                        "odometry_rotation_weight": 7},
+                },
+            }),
+            "插件参数": tuned,
+            "难缠的字符串": raw,
+            "评测与产出": self.base(
+                task={"name": nasty},
+                evaluation={"alignment": "sim3", "association": "interpolate",
+                            "rpe_delta_m": 0, "rpe_delta_s": 1.5, "baselines": "b.yaml"},
+                outputs={"dir": "/tmp/elsewhere", "record": True},
+            ),
+        }
+        for label, config in cases.items():
+            self.assertSameAsCpp(config, label)
+
+    def test_outputs_do_not_change_the_task_hash(self):
+        a, b = self.base(), self.base(outputs={"dir": "/tmp/elsewhere"})
+        self.assertEqual(a.hash(self.schema), b.hash(self.schema))
+        with tempfile.TemporaryDirectory() as directory:
+            hashes = []
+            for index, config in enumerate((a, b)):
+                path = Path(directory) / f"task_{index}.yaml"
                 path.write_text(config.to_yaml(self.schema), encoding="utf-8")
-                self.assertEqual(
-                    config.canonical(self.schema),
-                    run(CONFIG_TOOL, "dump", str(path)),
-                    f"第 {index} 个配置的规范化导出不一致",
-                )
-                self.assertEqual(
-                    config.hash(self.schema),
-                    run(CONFIG_TOOL, "hash", str(path)).strip(),
-                    f"第 {index} 个配置的哈希不一致",
-                )
+                hashes.append(run(TASK_TOOL, "hash", str(path)).strip())
+        self.assertEqual(hashes, [a.hash(self.schema)] * 2)
+
+    def test_repo_tasks_load_through_cpp(self):
+        for name in ("kitti_odometry.yaml", "kitti_raw.yaml"):
+            path = REPO / "configs" / "tasks" / name
+            loaded = Config.load(path, TASK_TOOL, self.schema)
+            self.assertEqual(loaded.canonical(self.schema), run(TASK_TOOL, "dump", str(path)), name)
+            self.assertEqual(loaded.hash(self.schema), run(TASK_TOOL, "hash", str(path)).strip())
+
+    def test_system_file_and_overrides_go_through_cpp(self):
+        config = Config(task={"name": "py"}, system=str(REPO / "configs/systems/my_lio.yaml"),
+                        data={"source": {"type": "kitti_odometry", "path": "/nonexistent"}})
+        config.override(f"{LIO}.keyframe_distance_m", 2.5)
+        config.override(f"{SOURCE}.sequence", "07")
+        complete = config.through_cpp(tool=TASK_TOOL, schema=self.schema)
+        self.assertEqual(complete[LIO]["keyframe_distance_m"], 2.5)
+        self.assertEqual(complete[SOURCE]["sequence"], "07")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "task.yaml"
+            path.write_text(config.to_yaml(self.schema), encoding="utf-8")
+            self.assertEqual(complete.hash(self.schema), run(TASK_TOOL, "hash", str(path)).strip())
+
+    def test_repo_python_example(self):
+        example = str(REPO / "configs" / "tasks" / "example.py")
+        with tempfile.TemporaryDirectory() as directory:
+            rendered = Path(directory) / "nested" / "example.yaml"
+            rendered.parent.mkdir()
+            run_python("-m", "simpleslam", "--tool", TASK_TOOL, "config", "render", example,
+                       "-o", str(rendered))
+            # 渲染出的文件挪了位置，引用的系统文件仍然找得到
+            cpp_hash = run(TASK_TOOL, "hash", str(rendered)).strip()
+            check = run_python("-m", "simpleslam", "--tool", TASK_TOOL, "config", "check", example)
+            self.assertIn(f"任务哈希: {cpp_hash}\n", check)
+
+            # 扫参的变体：每个都能加载，改的是系统，系统哈希各不相同
+            listed = run_python(example, str(Path(directory) / "sweep")).split()
+            self.assertEqual(len(listed), 3)
+            system_hashes = set()
+            for path in listed:
+                check = run(TASK_TOOL, "check", path)
+                system_hashes.add(check.split("系统哈希: ")[1].strip())
+            self.assertEqual(len(system_hashes), 3)
 
 
 @unittest.skipIf(EVAL_TOOL is None, "没有 simpleslam-eval，跳过指标比对")

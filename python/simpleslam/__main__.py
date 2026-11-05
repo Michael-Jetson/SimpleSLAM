@@ -1,8 +1,12 @@
-"""``python -m simpleslam``：配置渲染与校验、轨迹格式转换、精度速查。
+"""``python -m simpleslam``：任务渲染与校验、轨迹格式转换、精度速查。
 
-配置可以写成 ``.py``：文件里构造一个名为 ``config`` 的
+任务可以写成 ``.py``：文件里构造一个名为 ``config`` 的
 :class:`~simpleslam.config.Config`（或提供 ``build()`` 返回它），
-``render`` 把它变成 C++ 能加载的 YAML。
+``render`` 把它变成 C++ 能加载的 YAML。``.py`` 里 ``system`` 的相对路径
+相对这个文件所在的目录，和 YAML 任务相对任务文件一样。
+
+schema 与插件的字段清单来自 ``--tool`` 指定的入口：用户写的算法要用登记了它的入口
+（例如 ``simpleslam-lio-skeleton``），``simpleslam-config`` 只有内置实现。
 
 精度的权威实现是 ``simpleslam-eval``（退出码能让流水线失败）；
 这里的 ``eval`` 子命令是给交互式查看用的。
@@ -11,11 +15,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import runpy
 import sys
 from pathlib import Path
 
-from simpleslam.config import Config, ConfigError
+from simpleslam.config import SYSTEM_FILE, Config, ConfigError
 from simpleslam.metrics import absolute_trajectory_error, relative_pose_error
 from simpleslam.schema import Schema, SchemaError
 from simpleslam.trajectory import read_trajectory, write_trajectory
@@ -31,45 +36,75 @@ def _load_schema(tool: str | None, required: bool) -> Schema | None:
         return None
 
 
-def _load_config(path: str, schema: Schema | None) -> Config:
+def _load_config(path: str, schema: Schema | None, tool: str | None) -> Config:
+    """``.py`` 任务原样取出（引用的系统文件换成绝对路径）；YAML 任务交给 C++ 读。"""
     source = Path(path)
-    if source.suffix == ".py":
-        namespace = runpy.run_path(str(source))
-        config = namespace.get("config")
-        if config is None and callable(namespace.get("build")):
-            config = namespace["build"]()
-        if not isinstance(config, Config):
-            raise ConfigError(f"{path} 里没有名为 config 的 Config，也没有 build() 返回它")
-    else:
-        config = Config.from_yaml(source.read_text(encoding="utf-8"), schema)
+    if source.suffix != ".py":
+        return Config.load(source, tool, schema)
+    namespace = runpy.run_path(str(source))
+    config = namespace.get("config")
+    if config is None and callable(namespace.get("build")):
+        config = namespace["build"]()
+    if not isinstance(config, Config):
+        raise ConfigError(f"{path} 里没有名为 config 的 Config，也没有 build() 返回它")
+    system_file = config.get(SYSTEM_FILE)
+    if isinstance(system_file, str):
+        config = config.copy()
+        config[SYSTEM_FILE] = str((source.resolve().parent / system_file).resolve())
     if schema is not None:
         config.validate(schema)
     return config
+
+
+def _complete(config: Config, schema: Schema, tool: str | None) -> Config:
+    """完整、自足的任务：自足的 Python 任务直接用，引用了文件或带覆盖项的交给 C++ 展开。"""
+    return config if config.self_contained else config.through_cpp(tool=tool, schema=schema)
+
+
+def _print_schema(schema: Schema) -> None:
+    for field in schema:
+        flag = "可调" if field.tunable else "固定"
+        print(f"{field.path:52} {field.type:7} {flag}  默认={field.default:<12} {field.doc}")
+    if schema.slots:
+        print("\n插件节点可选的实现：")
+        for path, interface in sorted(schema.slots.items()):
+            names = "、".join(schema.implementations(interface)) or "（还没有任何实现）"
+            print(f"  {path}（{interface}）: {names}")
 
 
 def _config_command(args: argparse.Namespace) -> int:
     if args.action == "schema":
         schema = _load_schema(args.tool, required=True)
         assert schema is not None
-        for field in schema:
-            flag = "可调" if field.tunable else "固定"
-            print(f"{field.path:44} {field.type:7} {flag}  默认={field.default:<12} {field.doc}")
+        _print_schema(schema)
         return 0
 
-    schema = _load_schema(args.tool, required=args.action in ("hash", "full"))
-    config = _load_config(args.input, schema)
+    # 只有不补默认值的渲染可以没有 schema；其余都要按实现的字段清单还原
+    needs_schema = args.action != "render" or args.full or not args.input.endswith(".py")
+    schema = _load_schema(args.tool, required=needs_schema)
+    config = _load_config(args.input, schema, args.tool)
 
-    if args.action == "check":
-        print(f"配置有效: {args.input}（{len(config)} 项显式设置）")
-        if schema is not None:
-            print(f"哈希: {config.hash(schema)}")
-        return 0
-    if args.action == "hash":
+    if args.action in ("check", "hash"):
         assert schema is not None
-        print(config.hash(schema))
+        complete = _complete(config, schema, args.tool)
+        if args.action == "hash":
+            print(complete.hash(schema))
+            return 0
+        print(f"任务有效: {args.input}（{len(config)} 项显式设置）")
+        print(f"任务哈希: {complete.hash(schema)}")
+        print(f"系统哈希: {complete.system_hash(schema)}")
         return 0
 
-    text = config.canonical(schema) if (args.full and schema) else config.to_yaml(schema)
+    if args.full:
+        assert schema is not None
+        text = _complete(config, schema, args.tool).canonical(schema)
+    else:
+        if args.output and isinstance(config.get(SYSTEM_FILE), str):
+            # 渲染出的文件挪了位置：系统文件改写成相对它的路径
+            config = config.copy()
+            target = Path(args.output).resolve().parent
+            config[SYSTEM_FILE] = os.path.relpath(config[SYSTEM_FILE], target)
+        text = config.to_yaml(schema)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"已写出 {args.output}", file=sys.stderr)
@@ -126,17 +161,21 @@ def _convert_command(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m simpleslam")
-    parser.add_argument("--tool", help="simpleslam-config 的路径（默认从 PATH 找）")
+    parser.add_argument(
+        "--tool",
+        help="导出 schema、加载任务的入口（登记了你的算法的可执行文件；"
+        "默认 SIMPLESLAM_CONFIG_TOOL，其次 PATH 里的 simpleslam-config）",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    config_parser = subparsers.add_parser("config", help="配置渲染与校验")
+    config_parser = subparsers.add_parser("config", help="任务渲染与校验")
     config_parser.add_argument(
         "action", choices=["schema", "render", "check", "hash"], help="要做什么"
     )
-    config_parser.add_argument("input", nargs="?", help="配置文件（.py 或 .yaml）")
+    config_parser.add_argument("input", nargs="?", help="任务文件（.py 或 .yaml）")
     config_parser.add_argument("-o", "--output", help="输出文件（默认打到标准输出）")
     config_parser.add_argument(
-        "--full", action="store_true", help="输出补齐默认值的完整配置"
+        "--full", action="store_true", help="输出补齐默认值、还原插件节点的完整任务"
     )
     config_parser.set_defaults(func=_config_command)
 
@@ -163,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "config" and args.action != "schema" and not args.input:
-        parser.error("config " + args.action + " 需要一个配置文件")
+        parser.error("config " + args.action + " 需要一个任务文件")
     try:
         return int(args.func(args))
     except (ConfigError, SchemaError, OSError, ValueError) as exc:

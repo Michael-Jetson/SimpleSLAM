@@ -98,6 +98,26 @@ SensorIoModule& SlamSystem::setSource(std::unique_ptr<fw::ISensorSource> source,
     return *sensor_io_;
 }
 
+OdometryModule& SlamSystem::setOdometry(std::unique_ptr<plugin::OdometryBase> algorithm) {
+    odometry_ = &runtime_.addModule<OdometryModule>("/slam/odometry", std::move(algorithm),
+                                                    resources_, &diagnostics_);
+    return *odometry_;
+}
+
+PlaceRecognizerModule& SlamSystem::setPlaceRecognizer(
+    std::unique_ptr<plugin::PlaceRecognizerBase> algorithm) {
+    place_recognizer_ = &runtime_.addModule<PlaceRecognizerModule>(
+        "/slam/place_recognizer", std::move(algorithm), resources_, &diagnostics_);
+    return *place_recognizer_;
+}
+
+GraphOptimizerModule& SlamSystem::setGraphOptimizer(
+    std::unique_ptr<plugin::GraphOptimizerBase> algorithm, OdometryEdgePolicy edge_policy) {
+    graph_optimizer_ = &runtime_.addModule<GraphOptimizerModule>(
+        "/slam/graph_optimizer", std::move(algorithm), resources_, &diagnostics_, edge_policy);
+    return *graph_optimizer_;
+}
+
 void SlamSystem::init() {
     if (!descriptor_.required_extrinsics.empty()) {
         const auto missing = fw::missingExtrinsics(*resources_.calibrationSnapshot(),

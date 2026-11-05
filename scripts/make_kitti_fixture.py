@@ -7,8 +7,8 @@
 
 用法:
     python3 scripts/make_kitti_fixture.py --out /tmp/kitti_fixture --frames 40
-    build/examples/simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \\
-        dataset.path=/tmp/kitti_fixture/odometry/sequences/00
+    build/examples/simpleslam-lio-skeleton configs/tasks/kitti_odometry.yaml \\
+        data.source.path=/tmp/kitti_fixture/odometry/sequences/00 outputs.dir=/tmp/kitti_run
 """
 
 from __future__ import annotations

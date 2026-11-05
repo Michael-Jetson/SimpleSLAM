@@ -2,12 +2,16 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 #include <SimpleSLAM/app/bindings.hpp>
+#include <SimpleSLAM/config/error.hpp>
+#include <SimpleSLAM/config/loader.hpp>
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
 
 namespace simpleslam::app {
 
@@ -33,24 +37,77 @@ fw::PacketizerPolicy toPacketizerPolicy(const config::PacketizerSection& section
     return policy;
 }
 
-comm::RuntimeOptions toRuntimeOptions(const config::RuntimeSection& section) {
+comm::RuntimeOptions toRuntimeOptions(const config::TaskConfig& config) {
     comm::RuntimeOptions options;
-    options.offline = section.offline;
+    options.offline = config.task.mode == "offline";
     return options;
 }
 
-modules::SlamSystemOptions toSystemOptions(const config::SlamConfig& config) {
+modules::SlamSystemOptions toSystemOptions(const config::TaskConfig& config) {
     modules::SlamSystemOptions options;
-    options.offline = config.runtime.offline;
-    options.spin_budget = static_cast<std::size_t>(config.runtime.spin_budget);
+    options.offline = config.task.mode == "offline";
+    options.spin_budget = static_cast<std::size_t>(config.system.runtime.spin_budget);
+    options.online_max_in_flight =
+        static_cast<std::size_t>(config.system.runtime.online_max_in_flight);
     return options;
 }
 
-modules::OdometryEdgePolicy toEdgePolicy(const config::BackendSection& section) {
+modules::OdometryEdgePolicy toEdgePolicy(const config::GraphOptimizerModuleSection& section) {
     modules::OdometryEdgePolicy policy;
     policy.translation_weight = section.odometry_translation_weight;
     policy.rotation_weight = section.odometry_rotation_weight;
     return policy;
+}
+
+std::string configParamName(const std::string& path) {
+    constexpr std::string_view kModules = "system.modules.";
+    std::string name;
+    if (path.rfind(kModules, 0) == 0) {
+        name = "/slam/";
+        for (const char c : path.substr(kModules.size())) name += (c == '.' ? '/' : c);
+        return name;
+    }
+    name = "/config/";
+    for (const char c : path) name += (c == '.' ? '/' : c);
+    return name;
+}
+
+void readFromParameters(config::TaskConfig& config, const comm::ParamSnapshot& snapshot) {
+    config::visitConfig(config, [&](const char* path, auto& value, const char*,
+                                    config::Tunable tunable) {
+        if (tunable != config::Tunable::kYes) return;
+        using ValueType = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<ValueType, bool> || std::is_same_v<ValueType, std::int64_t>
+                      || std::is_same_v<ValueType, double>
+                      || std::is_same_v<ValueType, std::string>) {
+            if (auto stored = snapshot.get<ValueType>(configParamName(path))) value = *stored;
+        }
+    });
+}
+
+void applyToParameters(const config::TaskConfig& config, comm::ParameterStore& store) {
+    config::visitConfig(config, [&](const char* path, const auto& value, const char*,
+                                    config::Tunable tunable) {
+        // 不可调的字段不进运行期参数：改了也不会生效
+        if (tunable != config::Tunable::kYes) return;
+        using ValueType = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<ValueType, bool> || std::is_same_v<ValueType, std::int64_t>
+                      || std::is_same_v<ValueType, double>
+                      || std::is_same_v<ValueType, std::string>) {
+            store.preset(configParamName(path), comm::ParamValue{value});
+        }
+    });
+    store.setValidator([base = config](const comm::ParamSnapshot& candidate, std::string& detail) {
+        config::TaskConfig probe = base;
+        readFromParameters(probe, candidate);
+        try {
+            config::validateConfig(probe);
+        } catch (const config::ConfigError& e) {
+            detail = e.what();
+            return false;
+        }
+        return true;
+    });
 }
 
 }  // namespace simpleslam::app

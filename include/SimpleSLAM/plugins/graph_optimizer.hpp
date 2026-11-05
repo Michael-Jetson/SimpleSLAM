@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace simpleslam::plugin {
 
@@ -25,6 +26,8 @@ namespace fw = simpleslam::fw;
 
 class GraphOptimizerBase {
 public:
+    static constexpr std::string_view kInterfaceName = "GraphOptimizerBase";
+
     /// 一次求解的结局。"没收敛"与"数值失败"是两件事：前者的解仍然可用
     /// （迭代次数用尽但在往好处走），后者根本不该被采纳。用一个 bool 表达不了。
     enum class Status : std::uint8_t {
@@ -74,6 +77,24 @@ protected:
 
     /// 算法本体：改 problem.nodes 里的位姿。不得增删节点。
     virtual Report onOptimize(fw::GraphProblem& problem) = 0;
+};
+
+/// 不优化：位姿图照常累积节点与边，求解时原样返回、报收敛。
+class NoGraphOptimizer final : public GraphOptimizerBase {
+public:
+    static constexpr std::string_view kTypeName = "none";
+
+    struct Config {
+        template <class V>
+        void visit(V& /*v*/) {}
+    };
+
+    explicit NoGraphOptimizer(const Config& /*config*/ = {}) {}
+
+    [[nodiscard]] std::string name() const override { return std::string(kTypeName); }
+
+private:
+    Report onOptimize(fw::GraphProblem& /*problem*/) override { return Report{}; }
 };
 
 }  // namespace simpleslam::plugin

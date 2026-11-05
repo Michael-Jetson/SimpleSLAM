@@ -212,7 +212,7 @@ TEST_CASE("录制之后回放得到逐位相同的结果", "[system][record]") {
 
     record::RecordMetadata metadata;
     metadata.name = "replay-determinism";
-    metadata.config_hash = config::configHash(config::SlamConfig{});
+    metadata.config_hash = config::configHash(config::TaskConfig{});
     auto writer = std::make_shared<record::RecordWriter>(path.string(), metadata);
 
     const auto live = runAndCollect(std::make_unique<record::RecordingSource>(
@@ -226,22 +226,23 @@ TEST_CASE("录制之后回放得到逐位相同的结果", "[system][record]") {
 
     record::ReplaySource inspect(path.string());
     CHECK(inspect.metadata().name == "replay-determinism");
-    CHECK(inspect.metadata().config_hash == config::configHash(config::SlamConfig{}));
+    CHECK(inspect.metadata().config_hash == config::configHash(config::TaskConfig{}));
     std::filesystem::remove(path);
 }
 
 TEST_CASE("配置驱动打包器：纯 LiDAR 声明不需要 IMU", "[system][config]") {
-    const auto config = config::loadConfigString(R"(
-runtime:
-  offline: true
-packetizer:
-  imu_required: false
-)");
-    CHECK_FALSE(config.packetizer.imu_required);
+    const auto config = config::loadTaskString(R"(
+task:
+  mode: offline
+system:
+  packetizer:
+    imu_required: false
+)", "<string>").config;
+    CHECK_FALSE(config.system.packetizer.imu_required);
 
     modules::SlamSystem system(app::toSystemOptions(config));
     auto& io = system.setSource(std::make_unique<SyntheticSource>(8),
-                                app::toPacketizerPolicy(config.packetizer));
+                                app::toPacketizerPolicy(config.system.packetizer));
     system.setOdometry<StraightLineOdometry>();
     system.init();
     system.runOffline();
@@ -251,22 +252,25 @@ packetizer:
 }
 
 TEST_CASE("配置的运行期可调部分进参数存储", "[system][config]") {
-    const auto config = config::loadConfigString("odometry:\n  keyframe_distance_m: 1.7\n");
+    const auto config = config::loadTaskString(
+        "system:\n  modules:\n    graph_optimizer:\n      odometry_translation_weight: 1.7\n",
+        "<string>").config;
     modules::SlamSystem system(offlineOptions());
-    config::applyToParameters(config, system.runtime().params());
+    app::applyToParameters(config, system.runtime().params());
     system.setSource(std::make_unique<SyntheticSource>(4));
     system.setOdometry<StraightLineOdometry>();
     system.init();
 
     const auto snapshot = system.runtime().params().snapshot();
-    CHECK(snapshot->get<double>("/config/odometry/keyframe_distance_m") == 1.7);
+    // 模块级参数是那个模块的私有名：模块用 ~odometry_translation_weight 读，不认识配置布局
+    CHECK(snapshot->get<double>("/slam/graph_optimizer/odometry_translation_weight") == 1.7);
 }
 
 TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][record][bundle]") {
     const auto record_path = tempFile("simpleslam_bundle_run.ssrec");
-    auto config = config::SlamConfig{};
-    config.name = "bundle-demo";
-    config.seed = 7;
+    auto config = config::TaskConfig{};
+    config.task.name = "bundle-demo";
+    config.task.seed = 7;
 
     {
         auto writer = std::make_shared<record::RecordWriter>(record_path.string());
@@ -281,9 +285,9 @@ TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][re
         const auto ate = eval::absoluteTrajectoryError(system.trajectory()->odometry(),
                                                        groundTruth(10));
         record::ExperimentBundle bundle;
-        bundle.name = config.name;
+        bundle.name = config.task.name;
         bundle.config_hash = config::configHash(config);
-        bundle.seed = config.seed;
+        bundle.seed = config.task.seed;
         std::uint64_t bytes = 0;
         bundle.inputs.push_back(record::InputDigest{
             "recording", record_path.string(), record::fileDigest(record_path.string(), &bytes),
@@ -301,7 +305,7 @@ TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][re
 
     // 换一个配置，哈希就变——"这个结果是哪份配置跑的"因此可查
     auto other = config;
-    other.odometry.max_iterations += 1;
+    other.system.runtime.spin_budget += 1;
     CHECK(config::configHash(other) != bundle.config_hash);
 
     std::filesystem::remove(record_path);
@@ -311,11 +315,12 @@ TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][re
 TEST_CASE("运行期改参数走的是同一套校验", "[config][params]") {
     // 只保证类型一致是不够的：启动时会被 validateConfig 拒绝的值，
     // 运行期不该能直接改进去
-    config::SlamConfig config;
+    config::TaskConfig config;
     comm::ParameterStore store;
-    config::applyToParameters(config, store);
+    app::applyToParameters(config, store);
 
-    const auto name = config::configParamName("odometry.keyframe_distance_m");
+    const auto name =
+        app::configParamName("system.modules.graph_optimizer.odometry_translation_weight");
     const auto bad = store.commit({comm::ParamChange{name, comm::ParamValue{-1.0}}});
     CHECK_FALSE(bad.ok());
     CHECK(bad.status == comm::ParamCommit::kRejectedValue);

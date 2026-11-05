@@ -5,6 +5,8 @@
 # 写算法的人只在这个目录里加文件——契约在 include/SimpleSLAM/plugins/，
 # 需要实现文件的（如数据集读取器）放 src/plugins/src/。
 add_library(simpleslam_plugins STATIC
+    src/dataset.cpp
+    src/kitti_dataset.cpp
     src/kitti_source.cpp
     src/odometry.cpp
 )

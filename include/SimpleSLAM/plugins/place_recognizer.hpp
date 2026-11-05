@@ -17,6 +17,7 @@
 #include <SimpleSLAM/framework/sensor_packet.hpp>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace simpleslam::plugin {
@@ -25,6 +26,8 @@ namespace fw = simpleslam::fw;
 
 class PlaceRecognizerBase {
 public:
+    static constexpr std::string_view kInterfaceName = "PlaceRecognizerBase";
+
     virtual ~PlaceRecognizerBase() = default;
     PlaceRecognizerBase(const PlaceRecognizerBase&) = delete;
     PlaceRecognizerBase& operator=(const PlaceRecognizerBase&) = delete;
@@ -57,6 +60,27 @@ protected:
         (void)packet;
         (void)request;
         return fw::RelocationResult{};
+    }
+};
+
+/// 不找回环。建图管线可以先不配位置识别：关键帧照常进位姿图，只是没有回环边。
+class NoPlaceRecognizer final : public PlaceRecognizerBase {
+public:
+    static constexpr std::string_view kTypeName = "none";
+
+    struct Config {
+        template <class V>
+        void visit(V& /*v*/) {}
+    };
+
+    explicit NoPlaceRecognizer(const Config& /*config*/ = {}) {}
+
+    [[nodiscard]] std::string name() const override { return std::string(kTypeName); }
+
+private:
+    void onInsert(const fw::Keyframe& /*keyframe*/) override {}
+    std::vector<fw::LoopConstraint> onDetectLoops(const fw::Keyframe& /*keyframe*/) override {
+        return {};
     }
 };
 

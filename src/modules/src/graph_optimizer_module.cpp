@@ -123,9 +123,8 @@ void GraphOptimizerModule::appendNode(fw::PoseGraphData& graph, const fw::Keyfra
         // 权重从本模块当前的参数快照读：运行期改了参数，下一条边就用新值。
         edge.measurement = relative;
         edge.information = fw::diagonalInformation(
-            paramOr("/config/backend/odometry_translation_weight",
-                    edge_policy_.translation_weight),
-            paramOr("/config/backend/odometry_rotation_weight", edge_policy_.rotation_weight),
+            paramOr(resolve("~odometry_translation_weight"), edge_policy_.translation_weight),
+            paramOr(resolve("~odometry_rotation_weight"), edge_policy_.rotation_weight),
             edge_policy_.convention);
         edge.information_source = fw::InformationSource::kHeuristic;
         edge.convention = edge_policy_.convention;

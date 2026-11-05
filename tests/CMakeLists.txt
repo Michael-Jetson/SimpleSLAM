@@ -76,6 +76,11 @@ if(SIMPLESLAM_BUILD_TOOLING)
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_transitions)
 
+    # 任务执行器：从任务文件到任务档案
+    add_executable(test_app_task unit/test_app_task.cpp)
+    target_link_libraries(test_app_task PRIVATE simpleslam_app Catch2::Catch2WithMain)
+    catch_discover_tests(test_app_task)
+
     add_executable(test_contract_boundaries unit/test_contract_boundaries.cpp)
     target_link_libraries(test_contract_boundaries
         PRIVATE simpleslam_modules Catch2::Catch2WithMain)

@@ -21,6 +21,8 @@ CMakeFiles/
 
 # 日志与运行时输出
 logs/
+# 任务档案的默认位置：outputs.dir 没写时是 runs/<任务名>
+runs/
 
 # 内部文档（蓝图、调研报告等，不对外发布）
 docs/

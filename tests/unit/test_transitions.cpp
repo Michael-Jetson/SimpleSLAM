@@ -1015,10 +1015,9 @@ TEST_CASE("时长换算四舍五入，装不下的量拒绝，配置里的离谱
     CHECK_THROWS_AS(app::secondsToDuration(1e12), std::out_of_range);
     CHECK_THROWS_AS(app::secondsToDuration(std::numeric_limits<double>::quiet_NaN()),
                     std::out_of_range);
-    CHECK_THROWS_AS(config::loadConfigString("packetizer:\n  post_support_s: 1e12\n"),
+    CHECK_THROWS_AS(config::loadTaskString("system:\n  packetizer:\n    post_support_s: 1e12\n",
+                                           "<string>"),
                     config::ConfigError);
-    CHECK_THROWS_AS(config::loadConfigString("recording:\n  enabled: true\n"),
-                    config::ConfigError);  // 打开了录制却没说录到哪
 }
 
 // ─────────────────────────── 终结：完成与取消 ───────────────────────────

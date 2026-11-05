@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 using namespace simpleslam;
@@ -387,15 +388,27 @@ TEST_CASE("schema：按接口、类型名排序，字段带种类、默认值与
     CHECK(brush[0].default_value == "false");
     CHECK(brush[1].kind == "int");
     CHECK(brush[1].default_value == "3");
-    CHECK(brush[3].kind == "double");
+    CHECK(brush[3].kind == "float");  // 单精度要单独标出：赋值时就舍入了
     CHECK(brush[3].default_value == "0.5");
     CHECK(brush[4].kind == "string");
     CHECK(brush[4].default_value == "red");  // 与配置 schema 同一口径：字符串原样写
     CHECK(brush[5].kind == "slot:Shape");
     CHECK(brush[5].default_value == "square");
     CHECK(brush[5].doc == "印章形状");
+    // 子槽的默认节点是完整的：类型加补齐的参数，按 schema 还原的一方照抄即可
+    CHECK(brush[5].default_spec == spec("square", {{"side_m", 1.0}}));
 
     CHECK(schemas[1].fields[0].default_value.empty());  // 没有默认实现的子槽
+    CHECK(schemas[1].fields[0].default_spec == PluginSpec{});
+}
+
+TEST_CASE("单精度字段：还原后的节点存舍入后的值", "[config][plugin]") {
+    const Fixture f;
+    const auto slot = f.painter(spec("brush", {{"pressure", 0.1}}));
+    const auto& pressure = slot.resolved().params.at("pressure");
+    REQUIRE(std::holds_alternative<double>(pressure));
+    CHECK(std::get<double>(pressure) == static_cast<double>(0.1F));
+    CHECK(std::get<double>(pressure) != 0.1);
 }
 
 TEST_CASE("算法库的内置实现都登记在目录里，默认配置可还原", "[config][plugin][algo]") {

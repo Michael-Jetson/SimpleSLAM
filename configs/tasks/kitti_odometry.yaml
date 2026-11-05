@@ -1,0 +1,20 @@
+# 任务：离线跑 KITTI odometry 的一段序列并对真值评测。
+#
+#   simpleslam-lio-skeleton configs/tasks/kitti_odometry.yaml \
+#       data.source.path=/data/kitti/odometry/sequences/00
+#
+# 换算法改 system，换数据改 data.source，只出结果不评测把 task.purpose 改成 run。
+task:
+  name: kitti-00
+  purpose: experiment
+  mode: offline
+system: ../systems/my_lio.yaml
+data:
+  source:
+    type: kitti_odometry
+    path: /data/kitti/odometry/sequences/00
+    groundtruth_frame: body
+evaluation:
+  format: tum
+  alignment: se3
+  association_tolerance_s: 0.02

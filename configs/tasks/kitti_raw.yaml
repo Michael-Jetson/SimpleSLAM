@@ -1,0 +1,20 @@
+# 任务：离线跑 KITTI raw 的一段采集并对 OXTS 真值评测。
+#
+#   simpleslam-lio-skeleton configs/tasks/kitti_raw.yaml \
+#       data.source.path=/data/kitti/raw/2011_09_26/2011_09_26_drive_0027_sync
+#
+# 估计在扫描终点、真值在 OXTS 时刻，两边采样不同步，所以按插值关联。
+task:
+  name: kitti-raw-0027
+  purpose: experiment
+  mode: offline
+system: ../systems/my_lio.yaml
+data:
+  source:
+    type: kitti_raw
+    path: /data/kitti/raw/2011_09_26/2011_09_26_drive_0027_sync
+evaluation:
+  format: tum
+  alignment: se3
+  association: interpolate
+  max_interpolation_gap_s: 0.15

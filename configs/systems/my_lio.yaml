@@ -1,0 +1,9 @@
+# 示例系统：占位里程计 MyLio（没有配准，只演示接缝）。
+# 换成你的算法：在入口里登记它，再把这里的 type 改成它的类型名。
+pipeline: odometry
+modules:
+  odometry:
+    plugin:
+      type: my_lio
+      keyframe_distance_m: 1.5
+      keyframe_rotation_deg: 15.0

@@ -160,29 +160,28 @@ public:
         return descriptor_;
     }
 
-    /// 指定里程计算法。Args 转发给算法的构造函数。
+    /// 指定里程计算法。目录还原出来的实现走这个入口。
+    OdometryModule& setOdometry(std::unique_ptr<plugin::OdometryBase> algorithm);
+    PlaceRecognizerModule& setPlaceRecognizer(
+        std::unique_ptr<plugin::PlaceRecognizerBase> algorithm);
+    /// `edge_policy` 是算法没给跨关键帧约束时里程计边的兜底权重。
+    GraphOptimizerModule& setGraphOptimizer(std::unique_ptr<plugin::GraphOptimizerBase> algorithm,
+                                            OdometryEdgePolicy edge_policy = {});
+
+    /// 按类型构造算法，Args 转发给它的构造函数。手工装配（不经 YAML）时用。
     template <class Algorithm, class... Args>
     OdometryModule& setOdometry(Args&&... args) {
-        odometry_ = &runtime_.addModule<OdometryModule>(
-            "/slam/odometry", std::make_unique<Algorithm>(std::forward<Args>(args)...), resources_,
-            &diagnostics_);
-        return *odometry_;
+        return setOdometry(std::make_unique<Algorithm>(std::forward<Args>(args)...));
     }
 
     template <class Algorithm, class... Args>
     PlaceRecognizerModule& setPlaceRecognizer(Args&&... args) {
-        place_recognizer_ = &runtime_.addModule<PlaceRecognizerModule>(
-            "/slam/place_recognizer", std::make_unique<Algorithm>(std::forward<Args>(args)...),
-            resources_, &diagnostics_);
-        return *place_recognizer_;
+        return setPlaceRecognizer(std::make_unique<Algorithm>(std::forward<Args>(args)...));
     }
 
     template <class Algorithm, class... Args>
     GraphOptimizerModule& setGraphOptimizer(Args&&... args) {
-        graph_optimizer_ = &runtime_.addModule<GraphOptimizerModule>(
-            "/slam/graph_optimizer", std::make_unique<Algorithm>(std::forward<Args>(args)...),
-            resources_, &diagnostics_);
-        return *graph_optimizer_;
+        return setGraphOptimizer(std::make_unique<Algorithm>(std::forward<Args>(args)...));
     }
 
     /// 装配完成。来源要求的外参此刻必须已知——"来源有哪些标定"与"最终装配齐没齐"

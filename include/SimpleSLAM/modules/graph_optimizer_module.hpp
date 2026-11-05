@@ -99,7 +99,8 @@ private:
     /// 约束进没进真源，与这里求解成败无关。
     void optimizeAndPublish();
     static const char* statusKey(plugin::GraphOptimizerBase::Status status) noexcept;
-    /// 从本模块当前的参数快照取值，没有就用构造时给的默认值。
+    /// 从本模块当前的参数快照取值，没有就用构造时给的默认值。参数是本模块的私有名
+    /// （`~odometry_translation_weight`），模块不必知道配置的布局。
     [[nodiscard]] double paramOr(const std::string& name, double fallback) const;
     void submit(const char* key);
 

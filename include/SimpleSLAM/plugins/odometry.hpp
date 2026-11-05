@@ -43,6 +43,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace simpleslam::plugin {
 
@@ -162,6 +163,8 @@ struct FrameOutcome {
 
 class OdometryBase {
 public:
+    static constexpr std::string_view kInterfaceName = "OdometryBase";
+
     virtual ~OdometryBase() = default;
     OdometryBase(const OdometryBase&) = delete;
     OdometryBase& operator=(const OdometryBase&) = delete;

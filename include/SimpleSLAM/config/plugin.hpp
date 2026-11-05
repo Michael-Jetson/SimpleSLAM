@@ -57,10 +57,13 @@ struct PluginSpec {
 /// schema 里的一个字段：参数或子槽。
 struct PluginField {
     std::string name;
-    std::string kind;           ///< bool / int / double / string / slot:<接口名>
+    std::string kind;           ///< bool / int / float / double / string / slot:<接口名>
     /// 默认值的文本，口径同配置 schema；子槽写默认实现名，没有默认就空着。
     std::string default_value;
     std::string doc;
+    /// 子槽的完整默认节点（类型加补齐的参数）。默认实现可以带非默认参数，
+    /// 只给名字的话，按 schema 还原的一方（Python）就补不对。
+    PluginSpec default_spec{};
 };
 
 /// 一个实现的 schema：导出给 Python、文档和命令行。
@@ -158,6 +161,10 @@ std::string kindOfField() {
         return "bool";
     } else if constexpr (std::is_integral_v<F>) {
         return "int";
+    } else if constexpr (std::is_same_v<F, float>) {
+        // 单精度字段在赋值时就舍入了，还原后的节点存的是舍入后的值。schema 要说出来，
+        // 按 schema 还原的一方（Python）才能同样舍入，导出与哈希才一致
+        return "float";
     } else if constexpr (std::is_floating_point_v<F>) {
         return "double";
     } else {
@@ -315,6 +322,7 @@ public:
                       .doc = std::string(doc)};
         if constexpr (IsSlot<F>::value) {
             f.default_value = field.type();
+            f.default_spec = field.resolved();
         } else {
             f.default_value = defaultText(toValue(field));
         }

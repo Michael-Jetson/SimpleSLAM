@@ -24,7 +24,9 @@
 #include <SimpleSLAM/plugins/odometry.hpp>
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace example {
 
@@ -39,6 +41,28 @@ using simpleslam::Mat6d;
 /// 换掉 `track()` 即可；其余部分（关键帧判定、相对约束）可以留着用。
 class MyLio final : public plugin::OdometryBase {
 public:
+    /// 任务 YAML 里写 `type: my_lio` 选它；入口把它追加进里程计方案的目录。
+    static constexpr std::string_view kTypeName = "my_lio";
+
+    /// 算法自己的参数：字段清单写一次，YAML 的严格校验、默认值补齐、schema 都从它来。
+    struct Config {
+        double keyframe_distance_m = 1.0;
+        double keyframe_rotation_deg = 15.0;
+
+        template <class V>
+        void visit(V& v) {
+            v("keyframe_distance_m", keyframe_distance_m, "关键帧的平移阈值（米）");
+            v("keyframe_rotation_deg", keyframe_rotation_deg, "关键帧的旋转阈值（度）");
+        }
+    };
+
+    /// 阈值为负时抛 `std::invalid_argument`：装配时就报，不等到跑起来。
+    explicit MyLio(const Config& config) : config_(config) {
+        if (!(config_.keyframe_distance_m >= 0.0) || !(config_.keyframe_rotation_deg >= 0.0)) {
+            throw std::invalid_argument("my_lio 的关键帧阈值不能为负");
+        }
+    }
+
     [[nodiscard]] std::string name() const override { return "MyLio"; }
 
     /// 缺支撑的包怎么办，必须自己选。LIO 的初始化要一帧支撑完整的数据：初始化之前
@@ -133,17 +157,13 @@ protected:
     }
 
     /// 关键帧判定：走过一定距离或转过一定角度。框架已经把上一关键帧的位姿留好了。
-    ///
-    /// 阈值每帧从本帧的参数快照里读：运行期改了参数，下一帧就用新值，结果上标的
-    /// 参数版本也就名副其实。启动时拷进成员的值做不到这一点。
+    /// 阈值来自配置（插件参数第一版不能在运行期调）。
     bool selectKeyframe(const plugin::TrackResult& tracked,
                         const fw::SensorPacket& packet) override {
         (void)packet;
         if (!hasKeyframe()) return true;  // 第一帧必须是关键帧，否则图没有起点
-        const double distance_m =
-            context().param<double>("/config/odometry/keyframe_distance_m", 1.0);
-        const double rotation_rad =
-            context().param<double>("/config/odometry/keyframe_rotation_deg", 15.0) * kPi / 180.0;
+        const double distance_m = config_.keyframe_distance_m;
+        const double rotation_rad = config_.keyframe_rotation_deg * kPi / 180.0;
         const SE3d relative = lastKeyframePose().inverse().compose(tracked.T_odom_body);
         const double translation = relative.translation().norm();
         const double rotation = 2.0 * std::acos(std::min(1.0, std::abs(relative.quat().w())));
@@ -172,6 +192,7 @@ private:
         return dt > 0.0 && dt < 1.0 ? dt : 0.0;  // 缺口或时钟跳变时不外推
     }
 
+    Config config_;
     SE3d pose_ = SE3d::Identity();
     Vec3d velocity_ = Vec3d::Zero();
     fw::Timestamp last_time_{0};
