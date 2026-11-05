@@ -466,7 +466,9 @@ public:
 TEST_CASE("通信层自身不占线程：定时器在模块线程上，线程数等于模块数", "[comm][module]") {
     // 通信层自身不占线程：start() 之后多出来的线程数恰好等于模块数
     {
-        // 等之前用例退出的线程从 /proc 消失。TSAN 自己还有一个后台线程，所以不能写死成 1
+        // 等之前用例退出的线程从 /proc 消失。TSAN 自己还有一个后台线程，所以不能写死成 1；
+        // 它在进程第一次建线程时才出现，先起停一个线程，让它在取基数之前就出现
+        std::thread([] {}).join();
         std::size_t before = threadCount();
         for (int stable = 0, i = 0; stable < 50 && i < 2000; ++i) {
             std::this_thread::sleep_for(1ms);
