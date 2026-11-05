@@ -6,6 +6,7 @@
 # 需要实现文件的（如数据集读取器）放 src/plugins/src/。
 add_library(simpleslam_plugins STATIC
     src/kitti_source.cpp
+    src/odometry.cpp
 )
 target_include_directories(simpleslam_plugins PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_compile_features(simpleslam_plugins PUBLIC cxx_std_20)

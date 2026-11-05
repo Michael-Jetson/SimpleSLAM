@@ -12,10 +12,11 @@
 ///
 /// 命名空间 fw 是过渡：迁移完成后与旧的 simpleslam 类型合并（见 docs/design/legacy.md）。
 
+#include <SimpleSLAM/framework/ids.hpp>
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -27,14 +28,7 @@ using Timestamp = std::chrono::nanoseconds;
 /// 时间间隔，纳秒整型。
 using Duration = std::chrono::nanoseconds;
 
-/// 时钟域标识。0 保留给参考域（系统对齐后的运行时间）。
-struct ClockDomainId {
-    std::uint32_t value = 0;
-
-    friend constexpr bool operator==(ClockDomainId, ClockDomainId) noexcept = default;
-    friend constexpr auto operator<=>(ClockDomainId, ClockDomainId) noexcept = default;
-};
-
+/// 参考域：系统对齐后的运行时间。时钟域标识见 `ids.hpp`。
 inline constexpr ClockDomainId kReferenceClock{0};
 
 /// 域到参考时间的仿射映射，围绕一个整数锚点：
@@ -133,10 +127,3 @@ private:
 };
 
 }  // namespace simpleslam::fw
-
-template <>
-struct std::hash<simpleslam::fw::ClockDomainId> {
-    std::size_t operator()(simpleslam::fw::ClockDomainId id) const noexcept {
-        return std::hash<std::uint32_t>{}(id.value);
-    }
-};

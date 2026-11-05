@@ -13,10 +13,11 @@
 /// 2. **平移与旋转分开统计**。把它们加权成一个标量需要一个长度尺度，
 ///    那个尺度是任意的；框架不替使用者选。
 
-#include <SimpleSLAM/eval/trajectory.hpp>
+#include <SimpleSLAM/eval/association.hpp>
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,7 +57,7 @@ struct Alignment {
 
 /// 求对齐变换。associations 为空时返回恒等对齐。
 [[nodiscard]] Alignment computeAlignment(const Trajectory& estimate, const Trajectory& reference,
-                                         const std::vector<Association>& associations,
+                                         std::span<const Association> associations,
                                          AlignmentKind kind);
 
 /// 估计与参考怎么配对。

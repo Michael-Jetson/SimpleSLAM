@@ -24,13 +24,10 @@
 #include <SimpleSLAM/framework/events.hpp>
 #include <SimpleSLAM/framework/resources.hpp>
 
-#include <Eigen/Eigenvalues>
-
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -175,68 +172,12 @@ struct CalibrationData {
 /// 文件、数据集读取器与在线提交三个入口共用这一套判据：只在文件入口校验的话，
 /// 数据集或在线标定写进来的坏值就没人拦。四元数归一化只能让一个坏矩阵变成
 /// "合法"的旋转，不能让它变成对的，所以这里查的是语义，不是能不能构造出来。
-[[nodiscard]] inline std::string validateCalibration(const CalibrationData& calibration) {
-    const auto finitePositive = [](double v) { return std::isfinite(v) && v > 0.0; };
-    const auto finiteNonNegative = [](double v) { return std::isfinite(v) && v >= 0.0; };
-
-    for (const auto& [sensor, extrinsic] : calibration.extrinsics) {
-        const std::string where = "extrinsics." + sensor;
-        if (!extrinsic.T_body_sensor.translation().allFinite()) return where + " 的平移含非有限值";
-        const auto& q = extrinsic.T_body_sensor.quat();
-        if (!q.coeffs().allFinite() || std::abs(q.norm() - 1.0) > 1e-6) {
-            return where + " 的旋转不是单位四元数";
-        }
-        if (!extrinsic.covariance_known && !(extrinsic.covariance.array() == 0.0).all()) {
-            // 有值却没声明为已知：这组数没有含义，也导不出去。静默丢掉比报错更糟
-            return where + " 的协方差有值，却没有声明 covariance_known";
-        }
-        if (extrinsic.covariance_known) {
-            const Mat6d& c = extrinsic.covariance;
-            if (!c.allFinite()) return where + " 的协方差含非有限值";
-            // 容差按矩阵自身的量级取：1e-14 量级的协方差也要能被判对称、半正定
-            const double scale = c.cwiseAbs().maxCoeff();
-            if ((c - c.transpose()).cwiseAbs().maxCoeff() > 1e-9 * scale) {
-                return where + " 的协方差不对称";
-            }
-            const Eigen::SelfAdjointEigenSolver<Mat6d> solver(c);
-            if (solver.eigenvalues().minCoeff() < -1e-9 * scale) {
-                return where + " 的协方差不是半正定的";
-            }
-        }
-    }
-    const auto& imu = calibration.imu;
-    if (!finiteNonNegative(imu.gyro_noise_density) || !finiteNonNegative(imu.accel_noise_density)
-        || !finiteNonNegative(imu.gyro_bias_random_walk)
-        || !finiteNonNegative(imu.accel_bias_random_walk)) {
-        return "imu 的噪声参数必须是非负有限数";
-    }
-    if (!finitePositive(imu.rate_hz)) return "imu.rate_hz 必须是正的有限数";
-    if (!finitePositive(imu.gravity)) return "imu.gravity 必须是正的有限数";
-    for (const auto& [sensor, lidar] : calibration.lidars) {
-        const std::string where = "lidars." + sensor;
-        if (!finiteNonNegative(lidar.min_range_m) || !finitePositive(lidar.max_range_m)) {
-            return where + " 的量程必须是有限数";
-        }
-        if (lidar.min_range_m >= lidar.max_range_m) return where + " 的最小量程不小于最大量程";
-        if (lidar.rings == 0) return where + ".rings 不能为零";
-        if (!finitePositive(lidar.rate_hz)) return where + ".rate_hz 必须是正的有限数";
-    }
-    return {};
-}
+[[nodiscard]] std::string validateCalibration(const CalibrationData& calibration);
 
 /// 缺哪些必需的外参。已知（来源不是 unset）才算有；允许假设时 assumed 也算。
-[[nodiscard]] inline std::vector<SensorName> missingExtrinsics(
-    const CalibrationData& calibration, const std::vector<SensorName>& required,
-    bool allow_assumed = false) {
-    std::vector<SensorName> missing;
-    for (const auto& sensor : required) {
-        const auto* entry = calibration.extrinsic(sensor);
-        const bool ok = entry != nullptr && entry->known()
-                        && (allow_assumed || entry->source != CalibrationSource::kAssumed);
-        if (!ok) missing.push_back(sensor);
-    }
-    return missing;
-}
+[[nodiscard]] std::vector<SensorName> missingExtrinsics(const CalibrationData& calibration,
+                                                      std::span<const SensorName> required,
+                                                      bool allow_assumed = false);
 
 using Calibration = Resource<CalibrationData>;
 

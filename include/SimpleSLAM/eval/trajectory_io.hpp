@@ -14,7 +14,7 @@
 ///   读取时必须外部给出时刻来源：同名 `times.txt`，或固定采样周期。
 ///   把"没有时间"当成"时间等于行号"会让 RPE 的时间口径悄悄失真，所以这里要显式选。
 
-#include <SimpleSLAM/eval/trajectory.hpp>
+#include <SimpleSLAM/framework/trajectory.hpp>
 
 #include <optional>
 #include <stdexcept>
@@ -23,6 +23,11 @@
 #include <vector>
 
 namespace simpleslam::eval {
+
+namespace fw = simpleslam::fw;
+
+using fw::Trajectory;
+using fw::TrajectoryFrame;
 
 enum class TrajectoryFormat : std::uint8_t { kTum, kKitti };
 

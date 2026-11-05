@@ -8,7 +8,7 @@
 /// 一条 IMU 同时释放好几帧、报告里的协议转存成基线。每个用例断言的都是结论
 /// 该有的样子，而不是"多了一个字段"。
 
-#include <SimpleSLAM/config/bindings.hpp>
+#include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/config/loader.hpp>
 #include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
@@ -496,13 +496,13 @@ TEST_CASE("报告里的评测协议转存为基线，读回来每个字段都一
 
 TEST_CASE("任务完成度按目标窗口算：括点支撑没被用到，不是任务没完成", "[transitions][eval]") {
     // 真值在导航流的相位上（+50 ms），两侧各多一个括点；估计在四个扫描参考时刻
-    eval::Trajectory truth;
+    fw::Trajectory truth;
     for (int i = 0; i <= 5; ++i) {
         const double seconds = 0.05 + 0.1 * i;
         truth.push(fw::Timestamp{50ms + i * 100ms},
                    SE3d(Vec3d(seconds, 0.0, 0.0), Eigen::Quaterniond::Identity()));
     }
-    eval::Trajectory estimate;
+    fw::Trajectory estimate;
     for (int i = 1; i <= 4; ++i) {
         estimate.push(fw::Timestamp{i * 100ms},
                       SE3d(Vec3d(0.1 * i, 0.0, 0.0), Eigen::Quaterniond::Identity()));
@@ -960,11 +960,11 @@ TEST_CASE("RPE 按距离取段：走过的路沿真值自身的采样量，不�
     const auto pose = [](double x, double y) {
         return SE3d(Vec3d(x, y, 0.0), Eigen::Quaterniond::Identity());
     };
-    eval::Trajectory truth;
+    fw::Trajectory truth;
     truth.push(fw::Timestamp{0}, pose(0, 0));
     truth.push(fw::Timestamp{1s}, pose(0, 10));
     truth.push(fw::Timestamp{2s}, pose(10, 10));
-    eval::Trajectory estimate;
+    fw::Trajectory estimate;
     estimate.push(fw::Timestamp{0}, pose(0, 0));
     estimate.push(fw::Timestamp{2s}, pose(11, 10));
 
@@ -1011,9 +1011,9 @@ TEST_CASE("诊断落盘：数值全精度，非有限值写成合法的 JSON", "
 
 TEST_CASE("时长换算四舍五入，装不下的量拒绝，配置里的离谱时长在加载时就拒绝",
           "[transitions][config]") {
-    CHECK(config::secondsToDuration(0.3) == fw::Duration{300'000'000});  // 截断会得到 299999999
-    CHECK_THROWS_AS(config::secondsToDuration(1e12), std::out_of_range);
-    CHECK_THROWS_AS(config::secondsToDuration(std::numeric_limits<double>::quiet_NaN()),
+    CHECK(app::secondsToDuration(0.3) == fw::Duration{300'000'000});  // 截断会得到 299999999
+    CHECK_THROWS_AS(app::secondsToDuration(1e12), std::out_of_range);
+    CHECK_THROWS_AS(app::secondsToDuration(std::numeric_limits<double>::quiet_NaN()),
                     std::out_of_range);
     CHECK_THROWS_AS(config::loadConfigString("packetizer:\n  post_support_s: 1e12\n"),
                     config::ConfigError);

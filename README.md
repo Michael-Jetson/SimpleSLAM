@@ -141,6 +141,7 @@ include/SimpleSLAM/   # 公共头文件
          plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
          modules/（模块层：把插件接到总线与资源上）
          eval/（评测）、record/（录制回放）、config/（配置、插件槽与目录）
+         app/（入口层：配置换成运行期类型与装配选项）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
 apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
 tools/                # simpleslam-config（配置 schema / 校验 / 哈希）、simpleslam-eval（精度与基线门禁）

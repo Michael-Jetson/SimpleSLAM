@@ -19,41 +19,24 @@
 ///   问"建图最终精度"看它，这也是通常拿去和真值比的那条。
 
 #include <SimpleSLAM/comm/module.hpp>
-#include <SimpleSLAM/eval/trajectory.hpp>
+#include <SimpleSLAM/framework/trajectory.hpp>
 #include <SimpleSLAM/framework/odometry_result.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
-#include <cstddef>
+#include <cstdint>
 
 namespace simpleslam::modules {
 
 class TrajectoryModule final : public comm::Module {
 public:
-    explicit TrajectoryModule(SlamResources& resources) : resources_(&resources) {
-        // 里程计输出的是 body 的位姿：跟踪的传感器写明，评测才能拒绝拿它去比相机真值
-        odometry_.setFrame(eval::TrajectoryFrame::kOdom);
-        odometry_.setTracked("body");
-        odometry_.setName("odometry");
-        online_.setFrame(eval::TrajectoryFrame::kWorld);
-        online_.setTracked("body");
-        online_.setName("online");
-    }
+    /// 里程计输出的是 body 的位姿：跟踪的传感器写明，评测才能拒绝拿它去比相机真值。
+    explicit TrajectoryModule(SlamResources& resources);
 
-    [[nodiscard]] const eval::Trajectory& odometry() const noexcept { return odometry_; }
-    [[nodiscard]] const eval::Trajectory& online() const noexcept { return online_; }
+    [[nodiscard]] const fw::Trajectory& odometry() const noexcept { return odometry_; }
+    [[nodiscard]] const fw::Trajectory& online() const noexcept { return online_; }
 
     /// 优化后的关键帧轨迹。按需从位姿图生成，不常驻内存。
-    [[nodiscard]] eval::Trajectory keyframes() const {
-        eval::Trajectory trajectory;
-        trajectory.setFrame(eval::TrajectoryFrame::kWorld);
-        trajectory.setTracked("body");
-        trajectory.setName("keyframes");
-        const auto graph = resources_->graph.snapshot();
-        graph->nodes.forEach([&](const fw::PoseGraphNode& node) {
-            trajectory.push(node.time, node.T_world_body);
-        });
-        return trajectory;
-    }
+    [[nodiscard]] fw::Trajectory keyframes() const;
 
     /// 在线轨迹里有多少帧带着一份已生效的校正。
     [[nodiscard]] std::uint64_t corrected() const noexcept { return corrected_; }
@@ -66,31 +49,15 @@ public:
     }
 
 protected:
-    void onInit() override {
-        // 只订阅里程计结果：校正的生效时机写在结果里，不必也不该在这里重建
-        subscribe(topics::kOdometry, 0, &TrajectoryModule::onOdometry);
-    }
+    /// 只订阅里程计结果：校正的生效时机写在结果里，不必也不该在这里重建。
+    void onInit() override;
 
 private:
-    void onOdometry(const fw::OdometryResult& result) {
-        ++received_;
-        if (result.status == fw::TrackingStatus::kInitializing) return;
-        // 时间必须严格递增；来源重启或时钟回跳时宁可跳过并记下来，不悄悄接受
-        if (!odometry_.empty() && result.time <= odometry_.samples().back().time) {
-            ++skipped_;
-            return;
-        }
-        odometry_.push(result.time, result.T_odom_body);
-        online_.push(result.time, result.T_world_body());  // 事实：当时输出过的值
-        if (result.applied_correction.solution_revision != 0) {
-            ++corrected_;
-            last_correction_ = result.applied_correction;
-        }
-    }
+    void onOdometry(const fw::OdometryResult& result);
 
     SlamResources* resources_;
-    eval::Trajectory odometry_;
-    eval::Trajectory online_;
+    fw::Trajectory odometry_;
+    fw::Trajectory online_;
     fw::SolutionIdentity last_correction_;
     std::uint64_t corrected_ = 0;
     std::uint64_t skipped_ = 0;

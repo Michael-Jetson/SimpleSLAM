@@ -1,38 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-#pragma once
+#include <SimpleSLAM/app/bindings.hpp>
 
-/// @file bindings.hpp
-/// 配置 → 运行期类型的转换。集中在一处，因此"配置里的秒"与"代码里的纳秒"
-/// 只在这里换算一次，不会散落在各模块里各换各的。
-
-#include <SimpleSLAM/comm/runtime.hpp>
-#include <SimpleSLAM/config/config.hpp>
-#include <SimpleSLAM/framework/sensor_source.hpp>
-
-#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <format>
 #include <stdexcept>
-#include <string>
 
-namespace simpleslam::config {
+namespace simpleslam::app {
 
-namespace fw = simpleslam::fw;
-
-/// 秒 → 纳秒。四舍五入（截断会让 0.3 s 变成 299999999 ns），并拒绝非有限值与纳秒整型
-/// 装不下的量——溢出不会报错，只会悄悄变成一个负的极大值。
-[[nodiscard]] inline fw::Duration secondsToDuration(double seconds) {
+fw::Duration secondsToDuration(double seconds) {
     // int64 纳秒约可表示 ±9.2e9 秒；留出余量，拒绝在舍入时可能越界的值
     constexpr double kRepresentableSeconds = 9.0e9;
     if (!std::isfinite(seconds) || std::abs(seconds) > kRepresentableSeconds) {
-        throw std::out_of_range("时长超出可表示的范围: " + std::to_string(seconds) + " 秒");
+        throw std::out_of_range(std::format("时长超出可表示的范围: {} 秒", seconds));
     }
     return fw::Duration{static_cast<std::int64_t>(std::llround(seconds * 1e9))};
 }
 
-[[nodiscard]] inline fw::PacketizerPolicy toPacketizerPolicy(const PacketizerSection& section) {
+fw::PacketizerPolicy toPacketizerPolicy(const config::PacketizerSection& section) {
     fw::PacketizerPolicy policy;
     policy.trigger_on_lidar = section.trigger_on_lidar;
     policy.imu = section.imu_required ? fw::ImuRequirement::kRequired
@@ -45,10 +33,24 @@ namespace fw = simpleslam::fw;
     return policy;
 }
 
-[[nodiscard]] inline comm::RuntimeOptions toRuntimeOptions(const RuntimeSection& section) {
+comm::RuntimeOptions toRuntimeOptions(const config::RuntimeSection& section) {
     comm::RuntimeOptions options;
-    options.offline = section.offline;  // 离线用虚拟时钟，不等墙钟
+    options.offline = section.offline;
     return options;
 }
 
-}  // namespace simpleslam::config
+modules::SlamSystemOptions toSystemOptions(const config::SlamConfig& config) {
+    modules::SlamSystemOptions options;
+    options.offline = config.runtime.offline;
+    options.spin_budget = static_cast<std::size_t>(config.runtime.spin_budget);
+    return options;
+}
+
+modules::OdometryEdgePolicy toEdgePolicy(const config::BackendSection& section) {
+    modules::OdometryEdgePolicy policy;
+    policy.translation_weight = section.odometry_translation_weight;
+    policy.rotation_weight = section.odometry_rotation_weight;
+    return policy;
+}
+
+}  // namespace simpleslam::app

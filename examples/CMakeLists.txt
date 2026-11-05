@@ -2,8 +2,7 @@
 add_executable(simpleslam_lio_skeleton lio_skeleton/main.cpp)
 set_target_properties(simpleslam_lio_skeleton PROPERTIES OUTPUT_NAME simpleslam-lio-skeleton)
 target_link_libraries(simpleslam_lio_skeleton
-    PRIVATE simpleslam_modules simpleslam_plugins simpleslam_eval simpleslam_record
-            simpleslam_config)
+    PRIVATE simpleslam_app simpleslam_plugins simpleslam_eval simpleslam_record)
 if(TARGET simpleslam_compiler_options)
     target_link_libraries(simpleslam_lio_skeleton PRIVATE simpleslam_compiler_options)
 endif()

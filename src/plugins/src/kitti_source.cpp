@@ -363,7 +363,7 @@ struct OdometrySource::Impl {
     std::vector<fs::path> scans;
     std::vector<fw::Timestamp> times;
     fw::CalibrationData calibration;
-    eval::Trajectory ground_truth;
+    fw::Trajectory ground_truth;
     bool has_ground_truth = false;
     std::size_t first = 0;
     std::size_t cursor = 0;
@@ -500,7 +500,7 @@ OdometrySource::OdometrySource(const std::string& sequence_path, OdometryOptions
             ++index;
         }
         impl_->has_ground_truth = impl_->ground_truth.size() > 0;
-        impl_->ground_truth.setFrame(eval::TrajectoryFrame::kWorld);
+        impl_->ground_truth.setFrame(fw::TrajectoryFrame::kWorld);
         // 跟踪的传感器写明：body 系真值跟踪的是 body（= 激光），相机系真值跟踪的是 cam0
         impl_->ground_truth.setTracked(
             impl_->options.ground_truth_frame == GroundTruthFrame::kBody ? "body" : "cam0");
@@ -567,7 +567,7 @@ fw::SourceDescriptor OdometrySource::descriptor() const {
 std::size_t OdometrySource::frameCount() const { return impl_->last - impl_->first; }
 const fw::CalibrationData& OdometrySource::calibration() const { return impl_->calibration; }
 bool OdometrySource::hasGroundTruth() const { return impl_->has_ground_truth; }
-const eval::Trajectory& OdometrySource::groundTruth() const { return impl_->ground_truth; }
+const fw::Trajectory& OdometrySource::groundTruth() const { return impl_->ground_truth; }
 
 fw::PacketizerPolicy OdometrySource::packetizerPolicy() const {
     fw::PacketizerPolicy policy;
@@ -587,7 +587,7 @@ struct RawSource::Impl {
     std::vector<fs::path> oxts;
     std::vector<fw::Timestamp> oxts_times;
     fw::CalibrationData calibration;
-    eval::Trajectory ground_truth;
+    fw::Trajectory ground_truth;
     bool has_ground_truth = false;
     double imu_rate_hz = 0.0;        ///< 实测，不是标称
     fw::Duration typical_imu_gap{0}; ///< 实测的典型（中位数）间隔
@@ -728,7 +728,7 @@ RawSource::RawSource(const std::string& drive_path, RawOptions options)
     if (!impl_->oxts.empty() && hi >= lo) {
         Mercator mercator;
         mercator.scale = std::cos(parseOxts(impl_->oxts[lo]).lat * kPi / 180.0);
-        eval::Trajectory absolute;
+        fw::Trajectory absolute;
         for (std::size_t i = lo; i <= hi; ++i) {
             const OxtsRecord record = parseOxts(impl_->oxts[i]);
             absolute.push(oxts[i], SE3d(mercator.project(record.lat, record.lon, record.alt),
@@ -741,7 +741,7 @@ RawSource::RawSource(const std::string& drive_path, RawOptions options)
             impl_->ground_truth.push(sample.time, origin.inverse().compose(sample.pose));
         }
         impl_->has_ground_truth = impl_->ground_truth.size() > 0;
-        impl_->ground_truth.setFrame(eval::TrajectoryFrame::kWorld);
+        impl_->ground_truth.setFrame(fw::TrajectoryFrame::kWorld);
         impl_->ground_truth.setTracked("body");
         impl_->ground_truth.setName(oxts_dir.string() + "(相对第一帧选中扫描的 body)");
     }
@@ -863,7 +863,7 @@ std::size_t RawSource::imuSampleCount() const {
 }
 const fw::CalibrationData& RawSource::calibration() const { return impl_->calibration; }
 bool RawSource::hasGroundTruth() const { return impl_->has_ground_truth; }
-const eval::Trajectory& RawSource::groundTruth() const { return impl_->ground_truth; }
+const fw::Trajectory& RawSource::groundTruth() const { return impl_->ground_truth; }
 
 fw::PacketizerPolicy RawSource::packetizerPolicy() const {
     fw::PacketizerPolicy policy;

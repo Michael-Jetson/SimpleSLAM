@@ -70,7 +70,7 @@ std::optional<AlignmentKind> parseAlignmentKind(std::string_view text) {
 }
 
 Alignment computeAlignment(const Trajectory& estimate, const Trajectory& reference,
-                           const std::vector<Association>& associations, AlignmentKind kind) {
+                           std::span<const Association> associations, AlignmentKind kind) {
     Alignment alignment;
     alignment.kind = kind;
     if (kind == AlignmentKind::kNone || associations.empty()) {

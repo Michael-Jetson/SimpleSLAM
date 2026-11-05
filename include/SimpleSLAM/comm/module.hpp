@@ -79,6 +79,11 @@ protected:
         return Publisher<T>(core_->topic<T>(advertised_.back()), opts);
     }
 
+    template <class T>
+    Publisher<T> advertise(TopicDesc<T> topic, PublishOptions opts = {}) {
+        return advertise<T>(topic.name, opts);
+    }
+
     // 回调可以是成员函数、普通函数或 lambda，都在本模块的线程上串行执行。
     // 参数取 const T& 或 const MsgPtr<T>&，后者用于延长消息寿命。
 
@@ -116,6 +121,12 @@ protected:
                 fn(std::static_pointer_cast<const T>(m));
             }
         });
+    }
+
+    /// 经描述符订阅：消息类型取自描述符，回调的参数类型与它不符时编译不过。
+    template <class T, class Callback>
+    Subscriber subscribe(TopicDesc<T> topic, std::size_t queue_size, Callback&& callback) {
+        return subscribe<T>(topic.name, queue_size, std::forward<Callback>(callback));
     }
 
     // ── 服务 ──

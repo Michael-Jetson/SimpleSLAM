@@ -1,8 +1,9 @@
-# 评测层：轨迹容器（头文件）、TUM/KITTI 读写、ATE/RPE、精度基线与报告。
+# 评测层：轨迹的关联与重采样、TUM/KITTI 读写、ATE/RPE、精度基线与报告。
 #
-# Trajectory 本身完全在头文件里，模块层只 include 它即可，不必链接本库；
+# 轨迹本身是框架的数据类型（framework/trajectory.hpp），模块层和插件不依赖本库；
 # 需要读写文件、算指标、比基线时才链接 simpleslam_eval。
 add_library(simpleslam_eval STATIC
+    src/association.cpp
     src/trajectory_io.cpp
     src/metrics.cpp
     src/baseline.cpp

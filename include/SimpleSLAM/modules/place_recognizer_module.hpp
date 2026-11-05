@@ -31,64 +31,16 @@ public:
     [[nodiscard]] std::uint64_t loopsFound() const noexcept { return loops_; }
 
 protected:
-    void onInit() override {
-        loop_pub_ = advertise<fw::LoopConstraint>(topics::kLoopConstraint);
-        reloc_pub_ = advertise<fw::RelocationResult>(topics::kRelocationResult);
-        subscribe(topics::kKeyframe, 0, &PlaceRecognizerModule::onKeyframe);
-        subscribe(topics::kRelocationRequest, 0, &PlaceRecognizerModule::onRelocationRequest);
-    }
-
+    void onInit() override;
     /// 主动核对一次补读游标，不等下一条通知。
-    void onFinish() override { catchUpKeyframes(); }
+    void onFinish() override;
 
 private:
-    void onKeyframe(const fw::KeyframeEvent& event) {
-        (void)event;  // 通知只提示位置，真正的数据按序号补读
-        catchUpKeyframes();
-    }
-
+    void onKeyframe(const fw::KeyframeEvent& event);
     /// 按游标从关键帧库补读：建索引、找回环、发约束。
-    void catchUpKeyframes() {
-        const auto store = resources_->keyframes.snapshot();
-        for (const auto& frame : store->since(consumed_sequence_)) {
-            algorithm_->insert(*frame);
-            ++indexed_;
-            consumed_sequence_ = frame->sequence;
-
-            for (auto& constraint : algorithm_->detectLoops(*frame)) {
-                constraint.id = fw::ConstraintId{++loops_};
-                loop_pub_.publish(constraint);
-            }
-        }
-    }
-
-    void onRelocationRequest(const fw::RelocationRequest& request) {
-        const auto store = resources_->keyframes.snapshot();
-        const auto frame = store->find(request.query);
-        if (!frame || !frame->packet) {
-            fw::RelocationResult result;
-            result.generation = request.generation;
-            result.session = resources_->session;
-            result.success = false;
-            reloc_pub_.publish(result);
-            return;
-        }
-        auto result = algorithm_->relocalize(*frame->packet, request);
-        result.session = resources_->session;
-        reloc_pub_.publish(result);
-        report(result.success ? "place_recognizer.reloc_ok" : "place_recognizer.reloc_failed");
-    }
-
-    void report(const char* key) {
-        if (diagnostics_ == nullptr) return;
-        fw::DiagnosticRecord record;
-        record.header.module = name();
-        record.header.session = resources_->session;
-        record.header.frame_sequence = consumed_sequence_;
-        record.level = fw::DiagnosticClass::kControl;
-        record.payload = fw::EventRecord{key, ""};
-        diagnostics_->submit(record);
-    }
+    void catchUpKeyframes();
+    void onRelocationRequest(const fw::RelocationRequest& request);
+    void report(const char* key);
 
     std::unique_ptr<plugin::PlaceRecognizerBase> algorithm_;
     SlamResources* resources_;

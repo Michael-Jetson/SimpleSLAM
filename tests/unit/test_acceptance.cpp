@@ -676,8 +676,8 @@ TEST_CASE("门禁：不完整的运行默认不下结论，前缀只能与前缀
 TEST_CASE("插值关联把不同步的真值对上，最近邻对不上", "[acceptance][eval]") {
     // 估计在扫描终点（整 100 ms），真值在中段（+50 ms）：最近邻 20 ms 容差一对都配不上，
     // 放宽容差是拿相邻时刻冒充同一时刻；插值才是显式换算
-    eval::Trajectory estimate;
-    eval::Trajectory truth;
+    fw::Trajectory estimate;
+    fw::Trajectory truth;
     for (int i = 0; i < 20; ++i) {
         const double x = 0.5 * i;
         estimate.push(fw::Timestamp{i * 100ms}, SE3d(Vec3d(x, 0.0, 0.0), Eigen::Quaterniond::Identity()));
@@ -698,8 +698,8 @@ TEST_CASE("插值关联把不同步的真值对上，最近邻对不上", "[acce
 }
 
 TEST_CASE("跟踪的传感器不同就拒绝比较，显式转换之后才能比", "[acceptance][eval]") {
-    eval::Trajectory body;
-    eval::Trajectory camera;
+    fw::Trajectory body;
+    fw::Trajectory camera;
     body.setTracked("body");
     camera.setTracked("cam0");
     for (int i = 0; i < 5; ++i) {
@@ -707,7 +707,7 @@ TEST_CASE("跟踪的传感器不同就拒绝比较，显式转换之后才能比
         camera.push(fw::Timestamp{i * 100ms}, SE3d::Identity());
     }
     CHECK_THROWS_AS(eval::absoluteTrajectoryError(body, camera, eval::AteOptions{}),
-                    eval::TrajectoryError);
+                    fw::TrajectoryError);
     const auto converted = eval::rightMultiplied(body, SE3d::Identity(), "cam0");
     CHECK_NOTHROW(eval::absoluteTrajectoryError(converted, camera, eval::AteOptions{}));
 }

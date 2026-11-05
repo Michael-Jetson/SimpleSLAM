@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file types.hpp
-/// 通信层基础类型：消息指针、上报出口、服务终态、名称解析。
+/// 通信层基础类型：话题描述符、消息指针、上报出口、服务终态、名称解析。
 
 #include <cstdint>
 #include <exception>
@@ -19,6 +19,14 @@
 #include <vector>
 
 namespace simpleslam::comm {
+
+/// 话题描述符：把话题名和消息类型绑在一起。经它发布、订阅时，消息类型取自描述符，
+/// 名字对、类型错在编译期就报错，而不是装配时才发现。运行期才生成的话题名用字符串入口。
+template <class T>
+struct TopicDesc {
+    using Message = T;
+    std::string_view name;
+};
 
 /// 异常与积压的上报出口。
 using ErrorReporter = std::function<void(std::string_view where, std::string_view what)>;

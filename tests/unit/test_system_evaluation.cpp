@@ -10,7 +10,7 @@
 #include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
-#include <SimpleSLAM/modules/config_bindings.hpp>
+#include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/record/bundle.hpp>
 #include <SimpleSLAM/record/reader.hpp>
 #include <SimpleSLAM/record/writer.hpp>
@@ -103,9 +103,9 @@ private:
 };
 
 /// 真值：与合成运动解析一致。时刻取每一包的参考时刻。
-eval::Trajectory groundTruth(int scans) {
-    eval::Trajectory trajectory;
-    trajectory.setFrame(eval::TrajectoryFrame::kWorld);
+fw::Trajectory groundTruth(int scans) {
+    fw::Trajectory trajectory;
+    trajectory.setFrame(fw::TrajectoryFrame::kWorld);
     for (int i = 1; i <= scans; ++i) {
         trajectory.push(fw::Timestamp{static_cast<std::int64_t>(i) * kScanPeriodNs},
                         SE3d(Vec3d(static_cast<double>(i) * kStepM, 0.0, 0.0),
@@ -138,8 +138,8 @@ TEST_CASE("跑完就能拿到三条轨迹", "[system][eval]") {
     CHECK(trajectory->odometry().size() == 20);
     CHECK(trajectory->online().size() == 20);
     CHECK(trajectory->skipped() == 0);
-    CHECK(trajectory->odometry().frame() == eval::TrajectoryFrame::kOdom);
-    CHECK(trajectory->online().frame() == eval::TrajectoryFrame::kWorld);
+    CHECK(trajectory->odometry().frame() == fw::TrajectoryFrame::kOdom);
+    CHECK(trajectory->online().frame() == fw::TrajectoryFrame::kWorld);
     CHECK(trajectory->odometry().pathLength() == Approx(19.0 * kStepM));
 
     // 没有后端时关键帧轨迹为空：位姿图没有写者，这是事实而不是缺陷
@@ -239,9 +239,9 @@ packetizer:
 )");
     CHECK_FALSE(config.packetizer.imu_required);
 
-    modules::SlamSystem system(modules::toSystemOptions(config));
+    modules::SlamSystem system(app::toSystemOptions(config));
     auto& io = system.setSource(std::make_unique<SyntheticSource>(8),
-                                config::toPacketizerPolicy(config.packetizer));
+                                app::toPacketizerPolicy(config.packetizer));
     system.setOdometry<StraightLineOdometry>();
     system.init();
     system.runOffline();
@@ -270,7 +270,7 @@ TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][re
 
     {
         auto writer = std::make_shared<record::RecordWriter>(record_path.string());
-        modules::SlamSystem system(modules::toSystemOptions(config));
+        modules::SlamSystem system(app::toSystemOptions(config));
         system.setSource(std::make_unique<record::RecordingSource>(
             std::make_unique<SyntheticSource>(10), writer));
         system.setOdometry<StraightLineOdometry>();

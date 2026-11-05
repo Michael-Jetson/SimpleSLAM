@@ -49,7 +49,7 @@
 /// 该文件缺失时读取不失败，这条外参保持"未知"：外部标定文件可以补上它。补没补上
 /// 由装配核对（SourceDescriptor::required_extrinsics），没补上就失败，除非显式允许假设。
 
-#include <SimpleSLAM/eval/trajectory.hpp>
+#include <SimpleSLAM/framework/trajectory.hpp>
 #include <SimpleSLAM/framework/calibration.hpp>
 #include <SimpleSLAM/framework/sensor_source.hpp>
 
@@ -144,7 +144,7 @@ public:
     [[nodiscard]] bool hasGroundTruth() const;
     /// 真值轨迹，时刻与发出的包的参考时刻逐帧一致。只覆盖选中的扫描窗口，
     /// 世界原点在第一帧选中扫描。
-    [[nodiscard]] const eval::Trajectory& groundTruth() const;
+    [[nodiscard]] const fw::Trajectory& groundTruth() const;
     /// 与本数据源匹配的打包策略。不必自己拼。
     [[nodiscard]] fw::PacketizerPolicy packetizerPolicy() const;
 
@@ -183,7 +183,7 @@ public:
     /// 世界系是**第一帧选中扫描时刻的 body**（`T_origin⁻¹ · T_i`），不是 ENU：
     /// 原点处姿态里的 roll/pitch/yaw 都被一起消掉了，剩下的只是相对原点的位姿。
     /// 样本在 OXTS 原始时刻上，与扫描终点不同步，评测应使用插值关联。
-    [[nodiscard]] const eval::Trajectory& groundTruth() const;
+    [[nodiscard]] const fw::Trajectory& groundTruth() const;
     [[nodiscard]] fw::PacketizerPolicy packetizerPolicy() const;
 
 private:

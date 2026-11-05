@@ -20,7 +20,7 @@
 #include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
-#include <SimpleSLAM/modules/config_bindings.hpp>
+#include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/plugins/sources/kitti.hpp>
 #include <SimpleSLAM/record/diagnostic_file_sink.hpp>
 #include <SimpleSLAM/record/reader.hpp>
@@ -38,6 +38,7 @@
 
 namespace {
 
+namespace app = simpleslam::app;
 namespace cfg = simpleslam::config;
 namespace eval = simpleslam::eval;
 namespace fw = simpleslam::fw;
@@ -49,7 +50,7 @@ namespace modules = simpleslam::modules;
 struct Dataset {
     std::unique_ptr<fw::ISensorSource> source;
     fw::CalibrationData calibration;
-    eval::Trajectory ground_truth;
+    fw::Trajectory ground_truth;
     bool has_ground_truth = false;
     /// 读取器按**实测数据**给出的推荐策略。用不用它由配置决定。
     fw::PacketizerPolicy recommended_policy;
@@ -67,7 +68,7 @@ struct ResolvedPolicy {
 
 ResolvedPolicy resolvePolicy(const cfg::SlamConfig& config, const Dataset& dataset) {
     if (config.packetizer.source_policy == "config") {
-        return {cfg::toPacketizerPolicy(config.packetizer), "config"};
+        return {app::toPacketizerPolicy(config.packetizer), "config"};
     }
     return {dataset.recommended_policy, "source"};
 }
@@ -104,7 +105,7 @@ Dataset openDataset(const cfg::SlamConfig& config) {
         // 读取器按"最后一帧终点加上余量之后的第一条样本"留右括点：余量要与实际生效的
         // 打包策略一致，否则末帧等不到
         if (config.packetizer.source_policy == "config") {
-            options.post_support = cfg::secondsToDuration(config.packetizer.post_support_s);
+            options.post_support = app::secondsToDuration(config.packetizer.post_support_s);
         }
         auto source = std::make_unique<kitti::RawSource>(section.path, options);
         dataset.calibration = source->calibration();
@@ -117,7 +118,7 @@ Dataset openDataset(const cfg::SlamConfig& config) {
     }
     if (section.kind == "replay") {
         auto source = std::make_unique<simpleslam::record::ReplaySource>(section.path);
-        dataset.recommended_policy = cfg::toPacketizerPolicy(config.packetizer);
+        dataset.recommended_policy = app::toPacketizerPolicy(config.packetizer);
         dataset.source = std::move(source);
         return dataset;
     }
@@ -181,8 +182,8 @@ std::map<std::string, std::string> effectiveInputs(const cfg::SlamConfig& config
 ///
 /// 默认在 body 上比较（换算真值）；配置要求相机系真值时在真值的传感器上比较（换算估计）。
 /// 左乘对齐消不掉右侧外参，所以这一步必须显式做。
-std::vector<std::string> matchTrackedSensor(eval::Trajectory& estimate,
-                                            eval::Trajectory& ground_truth,
+std::vector<std::string> matchTrackedSensor(fw::Trajectory& estimate,
+                                            fw::Trajectory& ground_truth,
                                             const fw::CalibrationData& calibration,
                                             const fw::SourceDescriptor& descriptor,
                                             bool external_calibration,
@@ -261,7 +262,7 @@ int main(int argc, char** argv) {
                 std::move(dataset.source), recorder);
         }
 
-        modules::SlamSystem system(modules::toSystemOptions(config));
+        modules::SlamSystem system(app::toSystemOptions(config));
         // 版本由提交入口生成，不由文件声明：帧产物上标的就是这个号
         std::cout << "标定版本: " << system.setCalibration(dataset.calibration) << '\n';
         system.setSource(std::move(dataset.source), resolved.policy);
@@ -370,11 +371,11 @@ int main(int argc, char** argv) {
         ate_options.alignment =
             eval::parseAlignmentKind(config.evaluation.alignment).value_or(
                 eval::AlignmentKind::kSe3);
-        ate_options.tolerance = cfg::secondsToDuration(config.evaluation.association_tolerance_s);
+        ate_options.tolerance = app::secondsToDuration(config.evaluation.association_tolerance_s);
         ate_options.association =
             interpolate ? eval::AssociationMode::kInterpolate : eval::AssociationMode::kNearest;
         ate_options.max_interpolation_gap =
-            cfg::secondsToDuration(config.evaluation.max_interpolation_gap_s);
+            app::secondsToDuration(config.evaluation.max_interpolation_gap_s);
         if (has_target) ate_options.target_window = target;
         const auto ate = eval::absoluteTrajectoryError(estimate, dataset.ground_truth, ate_options);
 
@@ -384,7 +385,7 @@ int main(int argc, char** argv) {
         rpe_options.max_interpolation_gap = ate_options.max_interpolation_gap;
         if (config.evaluation.rpe_delta_s > 0.0) {
             rpe_options.delta_kind = eval::RpeDelta::kTime;
-            rpe_options.delta_time = cfg::secondsToDuration(config.evaluation.rpe_delta_s);
+            rpe_options.delta_time = app::secondsToDuration(config.evaluation.rpe_delta_s);
             rpe_options.normalize = false;
         } else {
             rpe_options.delta_kind = eval::RpeDelta::kDistance;

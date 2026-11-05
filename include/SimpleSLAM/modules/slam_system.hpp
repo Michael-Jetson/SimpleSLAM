@@ -17,8 +17,8 @@
 #include <SimpleSLAM/modules/trajectory_module.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -99,62 +99,10 @@ struct RunOutcome {
     }
 
     /// 不完整的原因，按人话列出来。完整时为空。
-    [[nodiscard]] std::vector<std::string> reasons() const {
-        std::vector<std::string> out;
-        const auto add = [&out](bool bad, std::string what) {
-            if (bad) out.push_back(std::move(what));
-        };
-        const auto n = [](auto count) { return std::to_string(count); };
-        add(!inputComplete(), std::string("输入不完整：") + std::string(fw::toString(input)));
-        add(cancelled, "运行被取消：" + cancel_reason);
-        add(!drained, "排空预算用尽，仍有未处理的工作");
-        add(!shutdown_drained && !cancelled, "关闭时排空预算用尽，已接纳的工作没有做完");
-        add(packets_without_outcome > 0, n(packets_without_outcome) + " 个送达的包没有终态");
-        add(contract_errors > 0, n(contract_errors) + " 帧违反包契约、没进估计");
-        add(failed_frames > 0, n(failed_frames) + " 帧算法失败、没有结果");
-        add(failed_corrections > 0, n(failed_corrections) + " 次校正准备失败、没有生效");
-        add(reinitializations > 0,
-            n(reinitializations) + " 次按恢复协议重新初始化，轨迹与关键帧链在那里断开");
-        add(isolated_failures > 0, n(isolated_failures) + " 次回调异常，对应的工作没有做完");
-        add(foreign_clock_drops > 0, n(foreign_clock_drops) + " 条数据不在参考时钟域、被拒收");
-        add(out_of_order_imu > 0, n(out_of_order_imu) + " 条 IMU 时间倒流或重复");
-        add(dropped_triggers > 0, n(dropped_triggers) + " 个触发帧被丢掉（下游处理不过来，或等括点积压）");
-        add(rejected_triggers > 0, n(rejected_triggers) + " 个触发帧时刻不前进、被拒收");
-        add(imu_backlog_drops > 0, n(imu_backlog_drops) + " 条 IMU 因积压超限被丢掉");
-        add(attachment_drops > 0, n(attachment_drops) + " 条图像 / GNSS 因待附着队列超限被丢掉");
-        add(pending_triggers > 0, n(pending_triggers) + " 个触发帧到最后都没发出");
-        add(trajectory_missing > 0, "轨迹少了 " + n(trajectory_missing) + " 个已发布的结果");
-        add(trajectory_skipped > 0, "轨迹跳过了 " + n(trajectory_skipped) + " 个时间不递增的结果");
-        add(graph_missing_keyframes > 0, "位姿图少了 " + n(graph_missing_keyframes) + " 个关键帧");
-        add(index_missing_keyframes > 0,
-            "位置识别少索引了 " + n(index_missing_keyframes) + " 个关键帧");
-        add(unsolved_constraints > 0,
-            n(unsolved_constraints) + " 条回环 / 先验约束没有进入最后一次成功求解");
-        add(rejected_constraints > 0, n(rejected_constraints) + " 条回环内容不合法或端点不存在、没进图");
-        add(calibration_mixed, "位姿图混入了不同标定的节点，未产出校正");
-        return out;
-    }
+    [[nodiscard]] std::vector<std::string> reasons() const;
 
     /// 有终态、有说明、不算不完整的事实。与 reasons() 一起进报告。
-    [[nodiscard]] std::vector<std::string> notes() const {
-        std::vector<std::string> out;
-        const auto add = [&out](bool present, std::string what) {
-            if (present) out.push_back(std::move(what));
-        };
-        const auto n = [](auto count) { return std::to_string(count); };
-        add(propagation_gaps > 0, n(propagation_gaps)
-                                      + " 次算法状态与下一包的传播起点接不上，已按缺支撑政策处理");
-        add(awaiting_support_frames > 0,
-            n(awaiting_support_frames) + " 帧初始化前缺支撑，按算法政策等待、没有位姿");
-        add(rejected_for_gap_frames > 0,
-            n(rejected_for_gap_frames) + " 帧缺支撑，按算法政策拒绝、没有位姿");
-        add(degraded_for_gap_frames > 0,
-            n(degraded_for_gap_frames) + " 帧缺支撑，结果按降级处理");
-        add(failed_solutions > 0 && unsolved_constraints == 0,
-            n(failed_solutions) + " 次求解失败，之后的成功求解已覆盖全部约束");
-        add(!finalized, "结局取自运行关闭之前，不含关闭时的排空");
-        return out;
-    }
+    [[nodiscard]] std::vector<std::string> notes() const;
 };
 
 /// 一次运行的最终结果视图：终结时固定下来的结局与产物副本。
@@ -163,9 +111,9 @@ struct RunOutcome {
 /// 这份视图才是"这次运行的结果"。
 struct RunResult {
     RunOutcome outcome;
-    eval::Trajectory odometry;   ///< 里程计轨迹（odom 系）
-    eval::Trajectory online;     ///< 在线轨迹（world 系，当时实际输出过的值）
-    eval::Trajectory keyframes;  ///< 优化后的关键帧轨迹（world 系）
+    fw::Trajectory odometry;   ///< 里程计轨迹（odom 系）
+    fw::Trajectory online;     ///< 在线轨迹（world 系，当时实际输出过的值）
+    fw::Trajectory keyframes;  ///< 优化后的关键帧轨迹（world 系）
 };
 
 /// 装配选项。放在命名空间作用域而不是嵌套在类里：嵌套类的默认成员初始化器
@@ -188,17 +136,8 @@ class SlamSystem {
 public:
     using Options = SlamSystemOptions;
 
-    explicit SlamSystem(Options options = Options{})
-        : options_(options),
-          runtime_(comm::RuntimeOptions{.offline = options.offline}) {
-        runtime_.setErrorReporter([this](std::string_view where, std::string_view what) {
-            fw::DiagnosticRecord record;
-            record.header.module = std::string(where);
-            record.level = fw::DiagnosticClass::kObservation;
-            record.payload = fw::EventRecord{"comm.error", std::string(what)};
-            diagnostics_.submit(record);
-        });
-    }
+    /// 通信层的异常与积压上报接到诊断汇聚上。
+    explicit SlamSystem(Options options = Options{});
 
     [[nodiscard]] SlamResources& resources() noexcept { return resources_; }
 
@@ -214,17 +153,7 @@ public:
     /// 例如策略要求 IMU 而来源没有惯性流，装配期就失败，而不是跑起来之后每包都缺支撑。
     SensorIoModule& setSource(std::unique_ptr<fw::ISensorSource> source,
                               fw::PacketizerPolicy policy = {},
-                              const std::string& name = "/slam/sensor_io") {
-        descriptor_ = source->descriptor();
-        if (descriptor_.declared && policy.imu == fw::ImuRequirement::kRequired
-            && !descriptor_.has_imu) {
-            throw comm::WiringError("数据来源 " + descriptor_.name
-                                    + " 没有惯性流，打包策略却要求 IMU");
-        }
-        sensor_io_ = &runtime_.addModule<SensorIoModule>(name, std::move(source), policy,
-                                                         resources_);
-        return *sensor_io_;
-    }
+                              const std::string& name = "/slam/sensor_io");
 
     /// 数据来源声明的能力。进评测报告与实验产物。
     [[nodiscard]] const fw::SourceDescriptor& sourceDescriptor() const noexcept {
@@ -258,28 +187,7 @@ public:
 
     /// 装配完成。来源要求的外参此刻必须已知——"来源有哪些标定"与"最终装配齐没齐"
     /// 是两件事：数据集可以缺外参，只要外部标定文件补上了就行。
-    void init() {
-        if (!descriptor_.required_extrinsics.empty()) {
-            const auto missing =
-                fw::missingExtrinsics(*resources_.calibrationSnapshot(),
-                                      descriptor_.required_extrinsics,
-                                      descriptor_.assumed_extrinsics_allowed);
-            if (!missing.empty()) {
-                std::string list;
-                for (const auto& sensor : missing) list += (list.empty() ? "" : "、") + sensor;
-                throw comm::WiringError("缺少必需的外参：" + list
-                                        + "（数据集没有给出，也没有外部标定文件补上）");
-            }
-        }
-        // 没有里程计就没有处理进度，也就谈不上在途多少
-        if (!options_.offline && sensor_io_ != nullptr && odometry_ != nullptr) {
-            sensor_io_->packetizer().setMaxInFlight(options_.online_max_in_flight);
-        }
-        if (options_.collect_trajectory && trajectory_ == nullptr) {
-            trajectory_ = &runtime_.addModule<TrajectoryModule>("/slam/trajectory", resources_);
-        }
-        runtime_.init();
-    }
+    void init();
 
     /// 离线跑完整个数据源：喂一包、把虚拟时钟推到该包的数据时刻、跑到静止，
     /// 再喂下一包。因此结果可逐位复现，且**依赖定时器的业务也会被覆盖**：
@@ -299,22 +207,7 @@ public:
     ///
     /// max_packets 限制的是发出的包数（按尝试计）：一条 IMU 同时让好几帧凑齐括点时，
     /// 也只发预算允许的那几个。运行终结之后什么也不做。
-    std::size_t runOffline(std::size_t max_packets = 0) {
-        if (sensor_io_ == nullptr || finalized_) return 0;
-        std::size_t processed = 0;
-        std::size_t attempts = 0;
-        while ((max_packets == 0 || attempts < max_packets) && !runtime_.stopRequested()) {
-            const auto pumped = sensor_io_->pump(1);
-            processed += pumped.published;
-            attempts += pumped.published;
-            advanceClockToData();
-            settle();
-            if (pumped.finished || pumped.stopped) break;
-        }
-        advanceClockToData();
-        settle();
-        return processed;
-    }
+    std::size_t runOffline(std::size_t max_packets = 0);
 
     /// 这次运行的结局。评测报告要在它之后写：报告前没有它，就说不清结论建立在
     /// 完整还是残缺的运行之上。
@@ -329,42 +222,13 @@ public:
     [[nodiscard]] bool finalized() const noexcept { return finalized_; }
 
     /// 把虚拟时钟推进到已读样本的数据时刻。在线模式（单调时钟）下是空操作。
-    void advanceClockToData() {
-        auto* clock = runtime_.virtualClock();
-        if (clock == nullptr || sensor_io_ == nullptr || finalized_) return;
-        const auto& packetizer = sensor_io_->packetizer();
-        if (!origin_set_) {
-            const auto first = packetizer.firstObserved();
-            if (!first) return;
-            if (first->count() > 0 && clock->now().count() == 0) {
-                runtime_.shiftTimers(comm::Duration{first->count()});
-                clock->advanceTo(comm::Time{first->count()});
-            }
-            origin_set_ = true;
-        }
-        const auto data_time = packetizer.observedUntil();
-        if (data_time.count() > 0) clock->advanceTo(comm::Time{data_time.count()});
-    }
+    void advanceClockToData();
 
     /// 处理到系统静止（没有就绪任务为止），带轮数上限兜底。
     ///
     /// 轮数用完仍有工作时，这次运行记为"没排空"（RunOutcome::drained）：
     /// 兜底的上限不能悄悄吞掉没处理完的工作。
-    std::size_t settle(std::size_t max_rounds = 256) {
-        if (finalized_) return 0;
-        std::size_t total = 0;
-        bool quiescent = false;
-        for (std::size_t i = 0; i < max_rounds; ++i) {
-            const std::size_t done = runtime_.spinOnce(options_.spin_budget);
-            total += done;
-            if (done == 0) {
-                quiescent = true;
-                break;
-            }
-        }
-        if (!quiescent) all_settled_ = false;
-        return total;
-    }
+    std::size_t settle(std::size_t max_rounds = 256);
 
     void start() { runtime_.start(); }
     void spin() { runtime_.spin(); }
@@ -382,10 +246,7 @@ public:
 
     /// 终结之后固定下来的最终结果。运行还没终结时抛 std::logic_error：
     /// 那时读到的只能是半截的产物。
-    [[nodiscard]] const RunResult& result() const {
-        if (!finalized_) throw std::logic_error("运行还没有终结：先 shutdown() 或 cancel()");
-        return final_result_;
-    }
+    [[nodiscard]] const RunResult& result() const;
 
     [[nodiscard]] SensorIoModule* sensorIo() noexcept { return sensor_io_; }
     [[nodiscard]] OdometryModule* odometry() noexcept { return odometry_; }
@@ -394,85 +255,11 @@ public:
     [[nodiscard]] TrajectoryModule* trajectory() noexcept { return trajectory_; }
 
 private:
-    void finalize(comm::ShutdownMode mode, std::string reason) {
-        if (comm::inRuntimeThread()) {
-            throw std::logic_error("回调内不能同步终结运行；请 requestStop() 后由控制线程终结");
-        }
-        if (finalized_) return;
-        runtime_.shutdown(mode);
-        if (runtime_.state() != comm::RuntimeState::kDone) {
-            throw std::logic_error("运行时尚未完成收尾，不能生成最终结果");
-        }
-        resources_.freeze();
-        final_result_.outcome = collectOutcome();
-        auto& outcome = final_result_.outcome;
-        outcome.shutdown_drained = runtime_.shutdownDrained();
-        outcome.cancelled = runtime_.cancelled();
-        outcome.cancel_reason = std::move(reason);
-        outcome.finalized = true;
-        if (trajectory_ != nullptr) {
-            final_result_.odometry = trajectory_->odometry();
-            final_result_.online = trajectory_->online();
-            final_result_.keyframes = trajectory_->keyframes();
-        }
-        finalized_ = true;
-    }
+    void finalize(comm::ShutdownMode mode, std::string reason);
 
     /// 按账汇总各模块的终态证据与产物进度。模块在 Runtime 析构之前一直存活，
     /// 关闭之后读它们同样安全。
-    [[nodiscard]] RunOutcome collectOutcome() const {
-        RunOutcome outcome;
-        outcome.drained = all_settled_;
-        outcome.isolated_failures = runtime_.isolatedFailures();
-        const auto keyframes = resources_.keyframes.snapshot()->size();
-        if (sensor_io_ != nullptr) {
-            outcome.input = sensor_io_->outcome();
-            const auto& packetizer = sensor_io_->packetizer();
-            outcome.foreign_clock_drops = packetizer.foreignClockDrops();
-            outcome.out_of_order_imu = packetizer.outOfOrderImu();
-            outcome.dropped_triggers = packetizer.droppedTriggers();
-            outcome.rejected_triggers = packetizer.rejectedTriggers();
-            outcome.imu_backlog_drops = packetizer.imuBacklogDrops();
-            outcome.attachment_drops = packetizer.attachmentDrops();
-            outcome.pending_triggers = packetizer.pendingTriggers();
-        }
-        if (odometry_ != nullptr) {
-            outcome.contract_errors = odometry_->contractErrors();
-            outcome.failed_frames = odometry_->failedFrames();
-            outcome.failed_corrections = odometry_->failedCorrections();
-            outcome.reinitializations = odometry_->reinitializations();
-            outcome.propagation_gaps = odometry_->propagationGaps();
-            outcome.awaiting_support_frames = odometry_->awaitingSupportFrames();
-            outcome.rejected_for_gap_frames = odometry_->rejectedForGapFrames();
-            outcome.degraded_for_gap_frames = odometry_->degradedForGapFrames();
-            if (sensor_io_ != nullptr) {
-                // 送到里程计的每一包都要有终态：少了就是"送达了却没有下落"
-                const auto delivered = sensor_io_->publishedPackets();
-                const auto received = odometry_->receivedPackets();
-                outcome.packets_without_outcome = delivered > received ? delivered - received : 0;
-            }
-            if (trajectory_ != nullptr) {
-                const auto published = odometry_->publishedResults();
-                const auto received = trajectory_->received();
-                outcome.trajectory_missing = published > received ? published - received : 0;
-            }
-        }
-        if (trajectory_ != nullptr) outcome.trajectory_skipped = trajectory_->skipped();
-        if (place_recognizer_ != nullptr) {
-            const auto indexed = place_recognizer_->indexedFrames();
-            outcome.index_missing_keyframes = keyframes > indexed ? keyframes - indexed : 0;
-        }
-        const auto graph = resources_.graph.snapshot();
-        if (graph_optimizer_ != nullptr) {
-            outcome.failed_solutions = graph_optimizer_->failedSolutions();
-            outcome.rejected_constraints = graph_optimizer_->rejectedConstraints();
-            outcome.unsolved_constraints = graph_optimizer_->unsolvedRequiredConstraints();
-            const auto nodes = graph->nodeCount();
-            outcome.graph_missing_keyframes = keyframes > nodes ? keyframes - nodes : 0;
-        }
-        outcome.calibration_mixed = graph->calibration_mixed;
-        return outcome;
-    }
+    [[nodiscard]] RunOutcome collectOutcome() const;
 
     Options options_;
     SlamResources resources_;

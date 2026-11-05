@@ -25,12 +25,10 @@
 #include <SimpleSLAM/framework/resources.hpp>
 #include <SimpleSLAM/framework/time.hpp>
 
-#include <Eigen/Eigenvalues>
-
-#include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace simpleslam::fw {
@@ -45,16 +43,8 @@ namespace simpleslam::fw {
 ///
 /// 有限不等于合法：一个不对称或有负特征值的矩阵照样全是有限数，进了求解器会把
 /// 代价函数变成非凸甚至无下界。退化方向允许零信息，所以只要求半正定，不要求正定。
-[[nodiscard]] inline bool isValidInformation(const Mat6d& information) {
-    if (!information.allFinite()) return false;
-    const double scale = information.cwiseAbs().maxCoeff();
-    if (scale == 0.0) return true;  // 全零：没有信息，但不违法
-    if ((information - information.transpose()).cwiseAbs().maxCoeff() > 1e-9 * scale) {
-        return false;
-    }
-    const Eigen::SelfAdjointEigenSolver<Mat6d> solver(information);
-    return solver.eigenvalues().minCoeff() >= -1e-9 * scale;
-}
+/// 全零矩阵合法：没有信息，但不违法。
+[[nodiscard]] bool isValidInformation(const Mat6d& information);
 
 enum class EdgeKind : std::uint8_t { kOdometry, kLoop, kPrior };
 
@@ -131,36 +121,16 @@ struct PoseGraphData {
     bool calibration_mixed = false;
 
     /// 追加一个节点。必须按 id 升序，否则二分查找与确定性遍历都不成立。
-    void addNode(const PoseGraphNode& node) {
-        if (nodes.size() != 0 && !(nodes.back().id < node.id)) {
-            throw std::logic_error("位姿图节点必须按 id 升序追加");
-        }
-        nodes.push_back(node);
-    }
+    void addNode(const PoseGraphNode& node);
 
-    [[nodiscard]] const PoseGraphNode* node(KeyframeId id) const {
-        std::size_t lo = 0;
-        std::size_t hi = nodes.size();
-        while (lo < hi) {
-            const std::size_t mid = lo + (hi - lo) / 2;
-            const auto& candidate = nodes.at(mid);
-            if (candidate.id == id) return &candidate;
-            if (candidate.id < id) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        return nullptr;
-    }
+    /// 二分查找；没有返回空指针。
+    [[nodiscard]] const PoseGraphNode* node(KeyframeId id) const;
 
     [[nodiscard]] std::size_t nodeCount() const noexcept { return nodes.size(); }
     [[nodiscard]] std::size_t edgeCount() const noexcept { return edges.size(); }
 
     /// 生成求解快照。O(n)，每次优化一次，不在每加一个关键帧时发生。
-    [[nodiscard]] GraphProblem toProblem() const {
-        return GraphProblem(nodes.flatten(), edges.flatten());
-    }
+    [[nodiscard]] GraphProblem toProblem() const;
 
     /// 回写解。
     ///
@@ -171,32 +141,7 @@ struct PoseGraphData {
     /// **只采纳位姿**：节点的其余字段（时刻、是否固定、标定版本）是图的事实，
     /// 不是解的一部分，求解器改了也不算数。固定节点的位姿本身也不许动——
     /// 那是这张图的 gauge，动了它整张图就换了一个参考系。
-    void adoptSolution(const GraphProblem& problem) {
-        if (problem.nodes.size() != nodes.size()) {
-            throw std::logic_error("优化器改变了节点数量：解与图不对应");
-        }
-        std::vector<PoseGraphNode> adopted = nodes.flatten();
-        for (std::size_t i = 0; i < problem.nodes.size(); ++i) {
-            const auto& solved = problem.nodes[i];
-            auto& node = adopted[i];
-            if (!(solved.id == node.id)) {
-                throw std::logic_error("优化器改变了节点身份或顺序：解与图不对应");
-            }
-            if (!isFinite(solved.T_world_body)) {
-                throw std::logic_error("解中含非有限位姿：数值失败，不得采纳");
-            }
-            if (node.fixed) {
-                const SE3d delta = node.T_world_body.inverse().compose(solved.T_world_body);
-                if (delta.translation().norm() > 1e-9
-                    || std::abs(delta.quat().w()) < 1.0 - 1e-12) {
-                    throw std::logic_error("优化器移动了固定节点：解换了 gauge，不得采纳");
-                }
-                continue;
-            }
-            node.T_world_body = solved.T_world_body;
-        }
-        nodes = AppendLog<PoseGraphNode>::fromVector(std::move(adopted));
-    }
+    void adoptSolution(const GraphProblem& problem);
 };
 
 using PoseGraph = Resource<PoseGraphData>;

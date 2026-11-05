@@ -3,6 +3,7 @@
 
 /// 轨迹容器与 TUM/KITTI 读写：时间严格递增、李群插值、格式往返不丢精度。
 
+#include <SimpleSLAM/eval/association.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 
 #include <catch2/catch_approx.hpp>

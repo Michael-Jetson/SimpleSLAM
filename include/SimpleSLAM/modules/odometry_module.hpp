@@ -31,22 +31,17 @@
 #include <SimpleSLAM/framework/solution.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
-#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <utility>
 
 namespace simpleslam::modules {
 
 class OdometryModule final : public comm::Module {
 public:
+    /// 取走关键帧库与当前状态的写令牌：这两份资源从此只有本模块能写。
     OdometryModule(std::unique_ptr<plugin::OdometryBase> algorithm, SlamResources& resources,
-                   fw::DiagnosticSink* diagnostics = nullptr)
-        : algorithm_(std::move(algorithm)),
-          resources_(&resources),
-          keyframe_writer_(resources.keyframes.acquireWriteToken()),
-          state_writer_(resources.state.acquireWriteToken()),
-          diagnostics_(diagnostics) {}
+                   fw::DiagnosticSink* diagnostics = nullptr);
 
     [[nodiscard]] plugin::OdometryBase& algorithm() noexcept { return *algorithm_; }
     /// 跟踪了的帧数（含按缺支撑降级的）。
@@ -81,262 +76,30 @@ public:
     [[nodiscard]] std::uint64_t handledSolution() const noexcept { return handled_solution_; }
 
 protected:
-    void onInit() override {
-        algorithm_->reset(resources_->session);
-        odometry_pub_ = advertise<fw::OdometryResult>(topics::kOdometry);
-        keyframe_pub_ = advertise<fw::KeyframeEvent>(topics::kKeyframe);
-        lost_pub_ = advertise<fw::TrackingLostEvent>(topics::kTrackingLost);
-        consumed_pub_ = advertise<fw::PacketConsumed>(topics::kPacketConsumed);
-
-        // 包不能在这里丢：丢包等于丢它带的 IMU，状态传播就接不上了。过载由入口丢触发帧
-        subscribe(topics::kSensorPacket, 0, &OdometryModule::onPacket);
-        // 校正事件自带解快照；取最新一份即可，旧解不需要逐个应用
-        subscribe(topics::kCorrection, 1, &OdometryModule::onCorrection);
-    }
+    void onInit() override;
 
 private:
-    void onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
-        // 帧边界上取一次上下文：标定快照与参数版本在本帧内恒定，
-        // 算法用的和产物标的因此是同一份
-        fw::FrameContext context;
-        context.calibration = resources_->calibrationSnapshot();
-        context.params = paramSnapshot();
-        context.parameter_revision = context.params ? context.params->revision : 0;
-        // 这一包的终态与诊断都绑定到它的身份，不绑定到"已经跟踪了几帧"
-        current_ = PacketIdentity{packet->sequence, packet->reference_time,
-                                  context.parameter_revision};
-
-        ++received_;
-        // 算法的状态停在哪一刻，与这一包的传播起点对一下：接不上就是一段没进这一包的输入
-        if (last_state_time_ && *last_state_time_ < packet->propagation.begin) {
-            context.missing_propagation = fw::TimeRange{*last_state_time_, packet->propagation.begin};
-            ++propagation_gaps_;
-            report(fw::DiagnosticClass::kControl, "odometry.propagation_gap", "");
-        }
-        plugin::FrameOutcome outcome;
-        try {
-            outcome = algorithm_->process(*packet, context);
-        } catch (const plugin::OdometryContractError& e) {
-            ++contract_errors_;
-            report(fw::DiagnosticClass::kControl, "odometry.contract_error", e.what());
-            if (e.stage() == plugin::ContractStage::kOutput) reinitialize();
-            // 每个终态都要报进度：否则入口以为下游一直在忙
-            acknowledge(*packet);
-            return;
-        } catch (const std::exception& e) {
-            failFrame(*packet, e.what());
-            return;
-        } catch (...) {
-            failFrame(*packet, "算法抛出未知异常");
-            return;
-        }
-        switch (outcome.disposition) {
-            case plugin::FrameDisposition::kTracked:
-                break;
-            case plugin::FrameDisposition::kStateUnusable:
-                // 算法自己说状态不能再用：不论声明的恢复协议是什么，都只能重新初始化
-                ++failed_;
-                ++state_losses_;
-                report(fw::DiagnosticClass::kControl, "odometry.state_unusable", "");
-                reinitialize();
-                acknowledge(*packet);
-                return;
-            case plugin::FrameDisposition::kAwaitingSupport:
-            case plugin::FrameDisposition::kRejectedForGap:
-                if (outcome.disposition == plugin::FrameDisposition::kAwaitingSupport) {
-                    ++awaiting_;
-                } else {
-                    ++rejected_for_gap_;
-                }
-                report(fw::DiagnosticClass::kControl, "odometry.support_gap",
-                       plugin::toString(outcome.disposition));
-                acknowledge(*packet);
-                return;
-        }
-        ++processed_;
-        if (outcome.support_gap) ++degraded_for_gap_;
-        auto& result = outcome.result;
-        last_state_time_ = result.state_time;
-
-        state_writer_.modify([&](fw::CurrentStateData& state) {
-            state.time = result.time;
-            state.T_odom_body = result.T_odom_body;
-            state.status = result.status;
-        });
-
-        if (result.is_keyframe) {
-            // 先在真源提交，再发通知：通知丢了也能凭序号补读，位姿图不会断链
-            const auto frame = commitKeyframe(result, packet, context);
-            fw::KeyframeEvent event;
-            // 通知里的序号是关键帧库的序号，不是帧序号：消费者按它发现断号、补读
-            event.sequence = frame->sequence;
-            event.id = frame->id;
-            event.time = result.time;
-            event.T_odom_body = result.T_odom_body;
-            keyframe_pub_.publish(event);
-            ++keyframes_;
-        }
-
-        odometry_pub_.publish(result);
-        ++published_results_;
-
-        if (result.status == fw::TrackingStatus::kLost) {
-            fw::TrackingLostEvent lost;
-            lost.time = result.time;
-            lost.last_good_T_odom_body = result.T_odom_body;
-            lost_pub_.publish(lost);
-            report(fw::DiagnosticClass::kControl, "odometry.tracking_lost", "");
-        }
-
-        report(fw::DiagnosticClass::kMetric, "odometry.inliers",
-               static_cast<double>(result.inliers));
-
-        acknowledge(*packet);
-    }
-
+    void onPacket(const comm::MsgPtr<fw::SensorPacket>& packet);
     /// 这一包有了终态：报告处理进度。累计的，按序处理，序号即进度。
-    void acknowledge(const fw::SensorPacket& packet) {
-        consumed_pub_.publish(fw::PacketConsumed{packet.sequence});
-    }
-
+    void acknowledge(const fw::SensorPacket& packet);
     /// 算法抛出异常：这一包是"失败"终态，再按算法声明的恢复协议处理。
-    void failFrame(const fw::SensorPacket& packet, const char* what) {
-        ++failed_;
-        report(fw::DiagnosticClass::kControl, "odometry.frame_failed", what);
-        if (algorithm_->failureRecovery() == plugin::FailureRecovery::kReinitialize) {
-            reinitialize();
-        }
-        acknowledge(packet);
-    }
-
+    void failFrame(const fw::SensorPacket& packet, const char* what);
     /// 重新初始化：算法复位，关键帧链与当前状态随之断开。
     ///
     /// 复位之后算法的里程计系是新的一段（结果的段号加一）：下一个关键帧不接在旧链上
     /// （图从这里开新的一段），当前生效的校正清空；已处理版本水位继续保留。
-    void reinitialize() {
-        last_keyframe_ = fw::KeyframeId{};
-        last_state_time_.reset();
-        applied_solution_ = 0;
-        state_writer_.modify([](fw::CurrentStateData& state) {
-            state = fw::CurrentStateData{};
-        });
-        ++reinitializations_;
-        try {
-            algorithm_->reinitialize();
-        } catch (const std::exception& e) {
-            report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", e.what());
-            return;  // 基类保留不可用状态；本包仍须报告进度
-        } catch (...) {
-            report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", "复位抛出未知异常");
-            return;
-        }
-        report(fw::DiagnosticClass::kControl, "odometry.reinitialized", "");
-    }
-
+    void reinitialize();
     fw::KeyframePtr commitKeyframe(const fw::OdometryResult& result,
                                    const comm::MsgPtr<fw::SensorPacket>& packet,
-                                   const fw::FrameContext& context) {
-        fw::KeyframePtr committed;
-        keyframe_writer_.modify([&](fw::KeyframeStoreData& store) {
-            auto frame = std::make_shared<fw::Keyframe>();
-            frame->id = fw::KeyframeId{store.last_id.value + 1};
-            frame->sequence = store.next_sequence++;
-            frame->odometry_segment = result.odometry_segment;
-            frame->time = result.time;
-            frame->T_odom_body = result.T_odom_body;
-            frame->packet = packet;  // 整包原始数据进真源
-            // 继承本帧实际用的那一份：帧处理中标定可能已经换代，现读最新版本会贴错身份。
-            // 内容一并留下——版本号代替不了内容，按当时条件重建这一帧要用它
-            frame->calibration_revision = result.calibration_revision;
-            frame->calibration = context.calibration;
-            frame->previous = last_keyframe_;
-            // 算法给出的跨关键帧约束原样保存；只有端点对得上才认
-            if (result.constraint_to_last_keyframe && last_keyframe_.valid()) {
-                frame->constraint_from_previous = result.constraint_to_last_keyframe;
-            }
-            frame->registration_information = result.registration_information;
-            frame->registration_information_source = result.registration_information_source;
-            committed = frame;
-            store.append(std::move(frame));
-        });
-        last_keyframe_ = committed->id;
-        return committed;
-    }
+                                   const fw::FrameContext& context);
+    void onCorrection(const fw::CorrectionEvent& event);
+    void correctionFailed(const fw::SolutionIdentity& identity, const char* what);
 
-    void onCorrection(const fw::CorrectionEvent& event) {
-        if (!event.valid()) {
-            report(fw::DiagnosticClass::kControl, "odometry.correction_empty", "");
-            return;
-        }
-        // 身份与数据同源：都来自事件携带的那份不可变快照
-        const auto& solution = *event.solution;
-        const fw::SolutionIdentity identity = solution.identity;
-
-        // 身份失效（换会话、标定不兼容）的结果直接拒；版本稍旧但兼容的仍然接受
-        if (!identity.compatibleWith(resources_->session, resources_->calibrationRevision())) {
-            report(fw::DiagnosticClass::kControl, "odometry.correction_rejected", "身份失效");
-            return;
-        }
-        if (identity.solution_revision <= handled_solution_) return;
-
-        const auto keyframes = resources_->keyframes.snapshot();
-        const auto correction = fw::worldFromOdom(solution, *keyframes, algorithm_->odometrySegment());
-        if (!correction) return;
-
-        const SE3d T_world_odom = *correction;
-        // 帧边界：本回调与 onPacket 在同一收件箱里排队，不会并发。
-        // 先让算法准备并激活，成功之后才写当前状态、才算生效；准备失败时校正不生效，
-        // 算法状态可能已被部分修改，按恢复协议重新初始化
-        try {
-            algorithm_->applyCorrection(T_world_odom, solution, identity);
-        } catch (const std::exception& e) {
-            correctionFailed(identity, e.what());
-            return;
-        } catch (...) {
-            correctionFailed(identity, "校正准备抛出未知异常");
-            return;
-        }
-        state_writer_.modify([&](fw::CurrentStateData& state) {
-            state.T_world_odom = T_world_odom;
-            state.correction_identity = identity;
-        });
-        applied_solution_ = identity.solution_revision;
-        handled_solution_ = identity.solution_revision;
-        report(fw::DiagnosticClass::kControl, "odometry.correction_applied", "");
-    }
-
-    void correctionFailed(const fw::SolutionIdentity& identity, const char* what) {
-        ++failed_corrections_;
-        // 这份解不会再被尝试：它面对的是失败之前的里程计系
-        handled_solution_ = std::max(handled_solution_, identity.solution_revision);
-        report(fw::DiagnosticClass::kControl, "odometry.correction_failed", what);
-        reinitialize();
-    }
-
-    void report(fw::DiagnosticClass level, const char* key, const char* detail) {
-        if (diagnostics_ == nullptr) return;
-        auto record = recordHeader(level);
-        record.payload = fw::EventRecord{key, detail};
-        diagnostics_->submit(record);
-    }
-    void report(fw::DiagnosticClass level, const char* key, double value) {
-        if (diagnostics_ == nullptr) return;
-        auto record = recordHeader(level);
-        record.payload = fw::MetricRecord{key, value, ""};
-        diagnostics_->submit(record);
-    }
+    void report(fw::DiagnosticClass level, const char* key, const char* detail);
+    void report(fw::DiagnosticClass level, const char* key, double value);
     /// 记录绑定到当前这一包；校正生效、重新初始化这类不针对某一包的记录，绑定的是
     /// 最近处理的那一包，表示发生在它之后的帧边界。
-    [[nodiscard]] fw::DiagnosticRecord recordHeader(fw::DiagnosticClass level) const {
-        fw::DiagnosticRecord record;
-        record.header.module = name();
-        record.header.frame_sequence = current_.sequence;
-        record.header.data_time = current_.time;
-        record.header.parameter_revision = current_.parameter_revision;
-        record.header.session = resources_->session;
-        record.level = level;
-        return record;
-    }
+    [[nodiscard]] fw::DiagnosticRecord recordHeader(fw::DiagnosticClass level) const;
 
     /// 正在处理（或最近处理）的那一包。
     struct PacketIdentity {

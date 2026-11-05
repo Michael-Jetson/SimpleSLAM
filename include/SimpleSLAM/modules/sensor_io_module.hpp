@@ -21,8 +21,9 @@
 #include <SimpleSLAM/framework/sensor_source.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
-#include <string>
 #include <utility>
 
 namespace simpleslam::modules {
@@ -52,59 +53,7 @@ public:
     ///
     /// 每一步先发打包器里已经就绪的帧，再读来源；来源读完之后逐帧排空还在等括点的触发帧，
     /// 排空完才报 finished。模块已收尾时什么也不做。
-    PumpResult pump(std::size_t max_packets = 1, std::size_t max_samples = 0) {
-        PumpResult result;
-        if (inputsStopped() || stopped()) {
-            result.stopped = true;
-            return result;
-        }
-        const std::size_t sample_budget =
-            max_samples > 0 ? max_samples : kSamplesPerPacket * (max_packets + 1);
-        // 预算在生成之前检查：一条 IMU 可能同时让好几帧凑齐，一步只该发预算允许的那几个
-        const auto emitReady = [&](bool at_eof) {
-            if (result.published >= max_packets) return false;
-            auto packet = at_eof ? packetizer_.flush() : packetizer_.poll();
-            if (!packet) return false;
-            packet_pub_.publish(std::move(*packet));
-            ++published_;
-            ++result.published;
-            return true;
-        };
-        for (;;) {
-            if (inputsStopped()) {
-                result.stopped = true;
-                return result;
-            }
-            if (source_exhausted_) {
-                while (emitReady(true)) {
-                }
-                if (packetizer_.waitingForWatermark()) {
-                    result.yielded = true;  // 预算用完：剩下的下一步接着排空
-                    return result;
-                }
-                finished_ = true;
-                result.finished = true;
-                return result;
-            }
-            while (emitReady(false)) {
-            }
-            if (result.published >= max_packets) return result;
-            if (result.samples >= sample_budget) {
-                result.yielded = true;
-                return result;
-            }
-            auto datum = source_->next();
-            ++result.samples;
-            if (!datum) {
-                // 来源读完：不再调用 next()，剩下的触发帧按"已有多少 IMU 就声明多少"
-                // 逐帧发出，缺支撑如实标缺口
-                source_exhausted_ = true;
-                outcome_ = source_->outcome();
-                continue;
-            }
-            packetizer_.ingest(*datum);
-        }
-    }
+    PumpResult pump(std::size_t max_packets = 1, std::size_t max_samples = 0);
 
     [[nodiscard]] bool finished() const noexcept { return finished_; }
     /// 来源已经读完（next() 返回过空）。与 finished() 不同：读完之后还可能有触发帧在排空。
@@ -116,25 +65,14 @@ public:
     [[nodiscard]] fw::Packetizer& packetizer() noexcept { return packetizer_; }
 
     /// 在线模式：按固定周期自驱动。离线模式不要调用它。
-    void startPumping(comm::Duration period, std::size_t packets_per_tick = 1) {
-        if (stopped()) return;
-        pump_timer_ = createTimer(period, [this, packets_per_tick] { pump(packets_per_tick); });
-    }
+    void startPumping(comm::Duration period, std::size_t packets_per_tick = 1);
 
 protected:
-    void onInit() override {
-        packet_pub_ = advertise<fw::SensorPacket>(topics::kSensorPacket);
-        // 消费进度是累计的，只有最新值有用
-        subscribe(topics::kPacketConsumed, 1, &SensorIoModule::onConsumed);
-        (void)resources_;
-    }
+    void onInit() override;
 
 private:
     /// 下游处理到哪了：打包器据此判断过载。
-    void onConsumed(const fw::PacketConsumed& event) {
-        packetizer_.notifyConsumedThrough(event.through);
-        consumed_ = event.through;
-    }
+    void onConsumed(const fw::PacketConsumed& event);
 
     std::unique_ptr<fw::ISensorSource> source_;
     fw::Packetizer packetizer_;

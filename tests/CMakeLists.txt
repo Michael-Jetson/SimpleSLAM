@@ -45,7 +45,7 @@ if(SIMPLESLAM_BUILD_TOOLING)
 
     add_executable(test_framework_calibration unit/test_framework_calibration.cpp)
     target_link_libraries(test_framework_calibration
-        PRIVATE simpleslam_config Catch2::Catch2WithMain)
+        PRIVATE simpleslam_config simpleslam_modules Catch2::Catch2WithMain)
     catch_discover_tests(test_framework_calibration)
 
     add_executable(test_sources_kitti unit/test_sources_kitti.cpp)
@@ -58,7 +58,7 @@ if(SIMPLESLAM_BUILD_TOOLING)
 
     add_executable(test_system_evaluation unit/test_system_evaluation.cpp)
     target_link_libraries(test_system_evaluation
-        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+        PRIVATE simpleslam_app simpleslam_eval simpleslam_record
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_system_evaluation)
 
@@ -72,7 +72,7 @@ if(SIMPLESLAM_BUILD_TOOLING)
     # 相邻的状态转换：两件事紧挨着发生时，终态证据、寿命与结论是否仍然成立
     add_executable(test_transitions unit/test_transitions.cpp)
     target_link_libraries(test_transitions
-        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+        PRIVATE simpleslam_app simpleslam_eval simpleslam_record
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_transitions)
 
@@ -96,8 +96,8 @@ if(SIMPLESLAM_BUILD_TOOLING)
     endif()
 endif()
 
-# 新栈主要在头文件里实现。静态库 PRIVATE 链接的编译选项不会传播到这些测试的
-# 翻译单元；仅在链接时带 sanitizer 不能检测 Runtime / 模块的头文件代码。
+# 新栈的模板与内联代码在头文件里，由包含它们的测试翻译单元编译。静态库 PRIVATE 链接的
+# 编译选项不会传播到这些翻译单元；只在链接时带 sanitizer 检测不到这部分代码。
 # 每个测试目标自己 PRIVATE 使用选项，不把工程内的警告规则传给库的消费者。
 get_property(simpleslam_new_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(test_target IN LISTS simpleslam_new_test_targets)

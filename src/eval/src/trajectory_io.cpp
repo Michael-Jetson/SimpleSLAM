@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -84,9 +85,9 @@ Trajectory readTum(std::istream& input, const std::string& path) {
         const Eigen::Quaterniond q(n[7], n[4], n[5], n[6]);  // (w, x, y, z)
         // 只容忍舍入：归一化一个长度是 2 的四元数，等于替坏数据编一个"看起来对"的旋转
         if (std::abs(q.norm() - 1.0) > kRotationTolerance) {
-            throw TrajectoryIoError(path + ":" + std::to_string(line_number)
-                                    + " 四元数不是单位四元数（模长 " + std::to_string(q.norm())
-                                    + "）");
+            // 模长要按最短往返表示打印：to_string 只留 6 位小数，1.0000004 会打成 1.000000
+            throw TrajectoryIoError(std::format("{}:{} 四元数不是单位四元数（模长 {}）", path,
+                                                line_number, q.norm()));
         }
         trajectory.push(secondsToTimestamp(n[0]),
                         SE3d(Vec3d(n[1], n[2], n[3]), q.normalized()));

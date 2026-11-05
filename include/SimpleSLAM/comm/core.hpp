@@ -45,6 +45,10 @@ public:
     std::shared_ptr<Topic> topic(const std::string& resolved) {
         return topicOf(resolved, typeid(T));
     }
+    template <class T>
+    std::shared_ptr<Topic> topic(TopicDesc<T> desc) {
+        return topicOf(std::string(desc.name), typeid(T));
+    }
     std::shared_ptr<Topic> topicOf(const std::string& resolved, std::type_index type);
 
     std::shared_ptr<ServiceEndpoint> addService(const std::string& resolved, std::type_index request,

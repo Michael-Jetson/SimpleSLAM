@@ -203,31 +203,19 @@ public:
     explicit Packetizer(PacketizerPolicy policy = {}) : policy_(policy) {}
 
     /// 喂入一条数据；若有触发帧凑齐了括点，返回最早的那个包。
-    std::optional<SensorPacket> feed(const SensorDatum& datum) {
-        accept(datum);
-        return poll();
-    }
+    std::optional<SensorPacket> feed(const SensorDatum& datum);
 
     /// 只收下一条数据，不出包。出包交给 poll() / flush()：调用方据此控制每一步发几个
     /// 包——一条 IMU 可能同时让好几帧凑齐括点，一步只该发预算允许的那几个。
     void ingest(const SensorDatum& datum) { accept(datum); }
 
     /// 取下一个已凑齐的包。没有凑齐的触发帧时返回空。下游处理不过来时，凑齐的触发帧在这里被丢掉。
-    std::optional<SensorPacket> poll() {
-        while (frontReady()) {
-            if (!overloaded()) return buildFront();
-            dropFront();
-        }
-        return std::nullopt;
-    }
+    std::optional<SensorPacket> poll();
 
     /// 数据结束。还在等括点的触发帧按"已有多少 IMU 就声明多少"逐个发出，
     /// 并标 kImuGap——丢掉最后几帧不如如实交代它们缺支撑。每次调用发一个。
     /// 这里不看在途上限：剩下的帧有限，也没有更新的帧要让路。
-    std::optional<SensorPacket> flush() {
-        if (pending_triggers_.empty()) return std::nullopt;
-        return buildFront();
-    }
+    std::optional<SensorPacket> flush();
 
     /// 下游的处理进度：序号不大于 sequence 的包都处理完了。累计的，丢一条由下一条补上。
     void notifyConsumedThrough(std::uint64_t sequence) noexcept {
@@ -273,250 +261,42 @@ public:
     [[nodiscard]] std::optional<Timestamp> firstObserved() const noexcept { return first_observed_; }
 
 private:
-    /// 收下一条数据。时钟域不对的一律拒收：跨域融合要先经显式换算。
-    void accept(const SensorDatum& datum) {
-        if (const auto* imu = std::get_if<Ptr<ImuSample>>(&datum)) {
-            if (*imu && acceptDomain((*imu)->domain)) pushImu(*imu);
-            return;
-        }
-        if (const auto* image = std::get_if<Ptr<CameraFrame>>(&datum)) {
-            if (!*image || !acceptDomain((*image)->domain)) return;
-            if (policy_.trigger_on_lidar) {
-                pushAttachment(pending_images_, *image);
-            } else {
-                setTrigger(Trigger{*image}, (*image)->capture_time);
-            }
-            return;
-        }
-        if (const auto* gnss = std::get_if<Ptr<GnssFix>>(&datum)) {
-            if (*gnss && acceptDomain((*gnss)->domain)) pushAttachment(pending_gnss_, *gnss);
-            return;
-        }
-        if (const auto* scan = std::get_if<Ptr<LidarScan>>(&datum)) {
-            if (!*scan || !acceptDomain((*scan)->domain)) return;
-            if (policy_.trigger_on_lidar) setTrigger(Trigger{*scan}, (*scan)->reference_time);
-        }
-    }
-
-    [[nodiscard]] bool acceptDomain(ClockDomainId domain) {
-        if (domain == policy_.clock_domain) return true;
-        ++foreign_clock_drops_;
-        pending_gap_ = GapReason::kClockDomain;
-        return false;
-    }
-
-    void pushImu(const Ptr<ImuSample>& sample) {
-        if (!imu_.empty() && sample->time <= imu_.back()->time) {
-            // 时间倒流或重复：丢掉这条并显式记缺口。取区间的算法依赖样本有序，
-            // 乱序样本进去之后左右括点都可能找错。
-            ++imu_out_of_order_;
-            pending_gap_ = GapReason::kClockReset;
-            return;
-        }
-        imu_.push_back(sample);
-        observe(sample->time);
-        if (imu_.size() > policy_.max_imu_backlog) {
-            imu_.pop_front();
-            ++imu_backlog_drops_;
-            pending_gap_ = GapReason::kImuGap;  // 有界内存下"永不丢"只在声明容量内成立
-        }
-    }
-
-    void observe(Timestamp time) noexcept {
-        if (!first_observed_) first_observed_ = time;
-        observed_until_ = std::max(observed_until_, time);
-    }
-
-    void setTrigger(Trigger trigger, Timestamp reference_time) {
-        const Timestamp last = pending_triggers_.empty() ? generated_until_
-                                                         : pending_triggers_.back().reference_time;
-        if (sequence_ > 0 || !pending_triggers_.empty()) {
-            if (reference_time <= last) {
-                ++rejected_triggers_;
-                pending_gap_ = GapReason::kClockReset;  // 触发帧时刻不前进：拒收
-                return;
-            }
-        }
-        pending_triggers_.push_back(PendingTrigger{std::move(trigger), reference_time});
-        observe(reference_time);
-        if (pending_triggers_.size() > policy_.max_pending_triggers) {
-            dropFront();  // 等括点的触发帧太多
-        }
-    }
-
-    template <class T>
-    void pushAttachment(std::deque<Ptr<T>>& queue, const Ptr<T>& item) {
-        queue.push_back(item);
-        observe(timeOf(*item));
-        if (queue.size() > policy_.max_pending_attachments) {
-            queue.pop_front();
-            ++attachment_drops_;
-        }
-    }
-
-    /// 队首的触发帧凑齐了没有：要 IMU 时等到终点（加算法要的余量）之后的第一条样本，那就是右括点。
-    [[nodiscard]] bool frontReady() const {
-        if (pending_triggers_.empty()) return false;
-        if (policy_.imu != ImuRequirement::kRequired) return true;
-        const Timestamp watermark = pending_triggers_.front().reference_time + policy_.post_support;
-        return !imu_.empty() && imu_.back()->time >= watermark;
-    }
-
-    [[nodiscard]] bool overloaded() const noexcept {
-        return policy_.max_in_flight > 0 && inFlight() >= policy_.max_in_flight;
-    }
-
-    /// 丢掉队首的触发帧。生成水位不动，它那段 IMU 留给下一包，所以这不算缺支撑。
-    void dropFront() {
-        pending_triggers_.pop_front();
-        ++dropped_triggers_;
-        ++dropped_since_packet_;
-    }
-
-    SensorPacket buildFront() {
-        auto front = std::move(pending_triggers_.front());
-        pending_triggers_.pop_front();
-        return buildPacket(std::move(front.trigger), front.reference_time);
-    }
-
-    SensorPacket buildPacket(Trigger trigger, Timestamp reference_time) {
-        SensorPacket packet;
-        packet.sequence = ++sequence_;
-        packet.trigger = std::move(trigger);
-        packet.reference_time = reference_time;
-        packet.time_offset_support = policy_.post_support;
-
-        // 需求由触发帧与生成水位决定，不由现有数据反推。状态传播从上一包的参考时刻起算；
-        // 首包没有这个时刻，从本帧采集起点起算——拿"现有的第一条 IMU"当起点，等于用数据
-        // 的缺失来定义需求，缺口就永远不会被发现。
-        // 去畸变还要覆盖整帧采集区间，所以支撑的需求是两者的并集。
-        const Timestamp capture_begin =
-            std::min(captureBegin(packet.trigger, reference_time), reference_time);
-        const Timestamp propagation_begin =
-            has_generated_ ? std::min(generated_until_, reference_time) : capture_begin;
-        const Timestamp end = reference_time + policy_.post_support;
-        packet.propagation = TimeRange{propagation_begin, end};
-        packet.imu_required = TimeRange{std::min(propagation_begin, capture_begin), end};
-
-        GapReason gap = pending_gap_;
-        std::vector<ImuSample> taken = takeImuSpan(packet.imu_required.begin, end);
-
-        Timestamp declared_begin = packet.imu_required.begin;
-        Timestamp declared_end = end;
-        if (taken.empty()) {
-            declared_begin = reference_time;
-            declared_end = reference_time;
-            if (policy_.imu == ImuRequirement::kRequired && gap == GapReason::kNone) {
-                gap = GapReason::kImuGap;
-            }
-        } else {
-            if (taken.front().time > declared_begin) {
-                declared_begin = taken.front().time;
-                gap = GapReason::kImuGap;  // 左边界插值不了：如实收窄并标缺口
-            }
-            if (taken.back().time < declared_end) {
-                declared_end = taken.back().time;
-                gap = GapReason::kImuGap;
-            }
-            if (declared_end < declared_begin) declared_end = declared_begin;
-        }
-        // 两端有样本不等于中间连续：量出相邻样本的最大间隔，超过要求就标缺口
-        for (std::size_t i = 1; i < taken.size(); ++i) {
-            const Duration step = taken[i].time - taken[i - 1].time;
-            if (step > packet.imu_max_gap) packet.imu_max_gap = step;
-        }
-        if (policy_.max_imu_gap.count() > 0 && packet.imu_max_gap > policy_.max_imu_gap) {
-            gap = GapReason::kImuGap;
-        }
-        packet.imu_coverage = TimeRange{declared_begin, declared_end};
-        packet.imu = Batch<ImuSample>(std::move(taken));
-
-        packet.attachments.images = takeNear(pending_images_, reference_time);
-        packet.attachments.gnss = takeNear(pending_gnss_, reference_time);
-        // 早于"本包时刻 - 容差"的附件再也附不上了：清掉，不让它们无界堆积
-        pruneStale(pending_images_, reference_time);
-        pruneStale(pending_gnss_, reference_time);
-        packet.gap = gap;
-        packet.dropped_triggers = dropped_since_packet_;
-        dropped_since_packet_ = 0;
-
-        pending_gap_ = GapReason::kNone;
-        generated_until_ = reference_time;
-        has_generated_ = true;
-        trimImu();
-        return packet;
-    }
-
-    /// 取 [begin, end] 的样本，并向两侧各多取一个跨越端点的样本。
-    /// 不从 imu_ 里移除——回收由 trimImu() 跟着生成水位做。
-    [[nodiscard]] std::vector<ImuSample> takeImuSpan(Timestamp begin, Timestamp end) const {
-        std::vector<ImuSample> taken;
-        if (imu_.empty()) return taken;
-
-        std::size_t lo = 0;
-        for (std::size_t i = 0; i < imu_.size(); ++i) {
-            if (imu_[i]->time <= begin) {
-                lo = i;  // 最后一个不晚于起点的样本：起点插值的左端
-            } else {
-                break;
-            }
-        }
-        std::size_t hi = imu_.size() - 1;
-        for (std::size_t i = lo; i < imu_.size(); ++i) {
-            if (imu_[i]->time >= end) {
-                hi = i;  // 第一个不早于终点的样本：终点插值的右端
-                break;
-            }
-        }
-        if (hi < lo) hi = lo;
-        taken.reserve(hi - lo + 1);
-        for (std::size_t i = lo; i <= hi; ++i) taken.push_back(*imu_[i]);
-        return taken;
-    }
-
-    /// 回收原始 IMU：保留 生成水位 - pre_support 之后的全部样本，外加一个跨越该时刻的边界样本。
-    void trimImu() {
-        const Timestamp keep_from = generated_until_ - policy_.pre_support;
-        while (imu_.size() >= 2 && imu_[1]->time <= keep_from) {
-            imu_.pop_front();
-        }
-    }
-
-    template <class T>
-    std::vector<Ptr<T>> takeNear(std::deque<Ptr<T>>& queue, Timestamp reference_time) {
-        std::vector<Ptr<T>> taken;
-        while (!queue.empty()) {
-            const Timestamp t = timeOf(*queue.front());
-            if (t > reference_time + policy_.attachment_tolerance) break;
-            if (t + policy_.attachment_tolerance >= reference_time) taken.push_back(queue.front());
-            queue.pop_front();
-        }
-        return taken;
-    }
-
-    template <class T>
-    void pruneStale(std::deque<Ptr<T>>& queue, Timestamp reference_time) {
-        while (!queue.empty()
-               && timeOf(*queue.front()) + policy_.attachment_tolerance < reference_time) {
-            queue.pop_front();
-        }
-    }
-
-    static Timestamp timeOf(const CameraFrame& frame) { return frame.capture_time; }
-    static Timestamp timeOf(const GnssFix& fix) { return fix.time; }
-
-    /// 本帧采集的起点：扫描取覆盖区间的起点，相机取曝光时刻。
-    static Timestamp captureBegin(const Trigger& trigger, Timestamp reference_time) {
-        if (const auto* scan = std::get_if<Ptr<LidarScan>>(&trigger); scan != nullptr && *scan) {
-            if (!(*scan)->coverage.empty()) return (*scan)->coverage.begin;
-        }
-        return reference_time;
-    }
-
     struct PendingTrigger {
         Trigger trigger;
         Timestamp reference_time{0};
     };
+
+    /// 收下一条数据。时钟域不对的一律拒收：跨域融合要先经显式换算。
+    void accept(const SensorDatum& datum);
+    [[nodiscard]] bool acceptDomain(ClockDomainId domain);
+    void pushImu(const Ptr<ImuSample>& sample);
+    void observe(Timestamp time) noexcept;
+    void setTrigger(Trigger trigger, Timestamp reference_time);
+    template <class T>
+    void pushAttachment(std::deque<Ptr<T>>& queue, const Ptr<T>& item);
+
+    /// 队首的触发帧凑齐了没有：要 IMU 时等到终点（加算法要的余量）之后的第一条样本，那就是右括点。
+    [[nodiscard]] bool frontReady() const;
+    [[nodiscard]] bool overloaded() const noexcept;
+    /// 丢掉队首的触发帧。生成水位不动，它那段 IMU 留给下一包，所以这不算缺支撑。
+    void dropFront();
+    SensorPacket buildFront();
+    SensorPacket buildPacket(Trigger trigger, Timestamp reference_time);
+
+    /// 取 [begin, end] 的样本，并向两侧各多取一个跨越端点的样本。
+    /// 不从 imu_ 里移除——回收由 trimImu() 跟着生成水位做。
+    [[nodiscard]] std::vector<ImuSample> takeImuSpan(Timestamp begin, Timestamp end) const;
+    /// 回收原始 IMU：保留 生成水位 - pre_support 之后的全部样本，外加一个跨越该时刻的边界样本。
+    void trimImu();
+    template <class T>
+    std::vector<Ptr<T>> takeNear(std::deque<Ptr<T>>& queue, Timestamp reference_time);
+    template <class T>
+    void pruneStale(std::deque<Ptr<T>>& queue, Timestamp reference_time);
+
+    static Timestamp timeOf(const CameraFrame& frame) { return frame.capture_time; }
+    static Timestamp timeOf(const GnssFix& fix) { return fix.time; }
+    /// 本帧采集的起点：扫描取覆盖区间的起点，相机取曝光时刻。
+    static Timestamp captureBegin(const Trigger& trigger, Timestamp reference_time);
 
     PacketizerPolicy policy_;
     std::deque<PendingTrigger> pending_triggers_;
