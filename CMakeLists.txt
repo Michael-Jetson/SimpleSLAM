@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(SimpleSLAM
-    VERSION 0.99.0
+    VERSION 1.1
     DESCRIPTION "模块化 C++20 SLAM 框架"
     LANGUAGES CXX
 )
-# 版本轴规则：路线图里程碑即软件版本，但里程碑以验收证据为准。
-# v1.0 的验收（标准数据集精度基线 + 对比表入仓）未完成前，版本保持 0.99.0（即 1.0.0-rc）。
+# 版本号分两级 X.Y：大改动升大版本，小改动升小版本。每次合进 main 定一次版本，
+# 与 git 标签 vX.Y 一致。
 
 # ── C++20 全局设置 ──
 set(CMAKE_CXX_STANDARD 20)
