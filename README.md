@@ -60,6 +60,21 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 代码完成：v0 基础设施、v0.5 点云原语、v1.0 纯 LO（`configs/lo_kissicp.yaml` 可跑；精度基线验收待做，验收后版本号才进位 1.0.0）。下一步 v1.5 LIO 核心。
 
+2026-09 起另有一套新栈在 `feat/comm-runtime` 上成形：进程内通信运行时（话题 / 服务 /
+参数，用法接近 ROS1 但没有句柄）、框架契约层、模块层，以及评测（TUM/KITTI 轨迹、
+ATE/RPE、精度基线门禁）、录制回放（实验回放包）、配置（C++ 真源 + YAML/Python 两种写法）
+三层工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
+决策见 ADR-0010 ~ ADR-0014。手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；
+不下载数据集也能冒烟测试整条链路：
+
+```bash
+python3 scripts/make_kitti_fixture.py --out /tmp/fx          # 合成最小 KITTI 夹具
+build/examples/simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \
+    dataset.path=/tmp/fx/odometry/sequences/00
+```
+
+新旧两栈不得在同一翻译单元混用，迁移是施工项。
+
 | 版本 | 内容 | 状态 |
 |------|------|------|
 | v1.0 | 纯 LO（VoxelHashTarget、IcpSolver、LoIcpOdometry） | 代码完成，精度基线验收待做 |
@@ -109,9 +124,15 @@ cd build && ctest --output-on-failure
 ## 目录结构
 
 ```
-include/SimpleSLAM/   # 公共头文件：core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
+include/SimpleSLAM/   # 公共头文件
+  旧栈： core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
+  新栈： comm/（通信运行时）、framework/（框架契约与资源）、plugins/（算法插件——写算法只碰这里）
+         modules/（模块层：把插件接到总线与资源上）、eval/（评测）、record/（录制回放）、config/（配置）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
 apps/                 # simpleslam_run（L1 入口，YAML 驱动离线回放）
+tools/                # simpleslam-config（配置 schema / 校验 / 哈希）、simpleslam-eval（精度与基线门禁）
+examples/lio_skeleton # 能跑的新栈入口：数据集 → 装配 → 跑完 → 导出 → 评测；算法在 my_lio.hpp
+python/simpleslam/    # Python 侧：配置渲染、轨迹读写、指标（schema 读自 C++，不重写）
 configs/  tests/  docker/  scripts/  docs/
 ```
 

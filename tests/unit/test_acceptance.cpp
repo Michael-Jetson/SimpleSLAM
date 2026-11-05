@@ -1,0 +1,927 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 SimpleSLAM contributors
+
+/// 验收场景：按"系统在这种情形下必须怎样"来写，不按"多了几个字段"来写。
+///
+/// 每个用例描述一个会造成丢帧、错误身份、持续积压或错误通过的边界，断言的是正确行为。
+/// 通信与生命周期、打包与确认、标定身份、评测门禁、录制兼容，分节排列。
+
+#include <SimpleSLAM/config/calibration_io.hpp>
+#include <SimpleSLAM/config/loader.hpp>
+#include <SimpleSLAM/eval/baseline.hpp>
+#include <SimpleSLAM/eval/metrics.hpp>
+#include <SimpleSLAM/framework/deskew.hpp>
+#include <SimpleSLAM/modules/slam_system.hpp>
+#include <SimpleSLAM/record/reader.hpp>
+#include <SimpleSLAM/record/writer.hpp>
+
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <thread>
+#include <vector>
+
+#if defined(__linux__)
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+using namespace simpleslam;
+using Catch::Approx;
+using namespace std::chrono_literals;
+namespace comm = simpleslam::comm;
+namespace fw = simpleslam::fw;
+namespace modules = simpleslam::modules;
+namespace plugin = simpleslam::plugin;
+namespace cfg = simpleslam::config;
+namespace eval = simpleslam::eval;
+namespace rec = simpleslam::record;
+
+namespace {
+
+struct Provider final : comm::Module {
+    int handle(const int& n) { return n + 1; }
+    void onInit() override { advertiseService<int, int>("/svc", &Provider::handle); }
+};
+
+struct Client final : comm::Module {
+    comm::ServiceClient<int, int> cli;
+    void onInit() override { cli = serviceClient<int, int>("/svc"); }
+};
+
+/// 收下回环约束但从不回确认：模拟"确认丢了"。
+struct NoAck final : comm::Module {
+    int received = 0;
+    void onInit() override {
+        subscribe<fw::LoopConstraint>(modules::topics::kLoopConstraint,
+                                      [this](const fw::LoopConstraint&) { ++received; },
+                                      comm::SubscribeOptions{64, comm::Delivery::kReliable});
+    }
+};
+
+/// 每个关键帧都报一条指向 1 号关键帧的回环。
+struct Loops final : plugin::PlaceRecognizerBase {
+    void onInsert(const fw::Keyframe&) override {}
+    std::vector<fw::LoopConstraint> onDetectLoops(const fw::Keyframe& keyframe) override {
+        if (keyframe.id.value <= 1) return {};
+        fw::LoopConstraint loop;
+        loop.match = fw::KeyframeId{1};
+        loop.query = keyframe.id;
+        return {loop};
+    }
+};
+
+/// 每帧建议关键帧的里程计；可在 track 中注入一段钩子。
+/// 什么都不改、直接报收敛的优化器：只用来触发求解路径。
+struct IdleOptimizer final : plugin::GraphOptimizerBase {
+    int calls = 0;
+    Report onOptimize(fw::GraphProblem&) override {
+        ++calls;
+        return Report{};
+    }
+};
+
+struct HookOdometry final : plugin::OdometryBase {
+    std::function<void()> hook;
+    explicit HookOdometry(std::function<void()> fn = {}) : hook(std::move(fn)) {}
+    [[nodiscard]] plugin::SupportGapPolicy supportGapPolicy() const override {
+        return plugin::SupportGapPolicy::kDegrade;
+    }
+    plugin::TrackResult track(const fw::SensorPacket&) override {
+        if (hook) hook();
+        plugin::TrackResult r;
+        r.suggest_keyframe = true;
+        return r;
+    }
+};
+
+void settle(comm::Runtime& runtime) {
+    while (runtime.spinOnce() != 0) {
+    }
+}
+
+fw::Ptr<fw::LidarScan> scanAt(fw::Timestamp t) {
+    auto s = std::make_shared<fw::LidarScan>();
+    s->reference_time = t;
+    s->coverage = fw::TimeRange{t - 100ms, t};
+    return s;
+}
+
+fw::Ptr<fw::ImuSample> imuAt(fw::Timestamp t, fw::ClockDomainId domain = fw::kReferenceClock) {
+    auto s = std::make_shared<fw::ImuSample>();
+    s->time = t;
+    s->domain = domain;
+    return s;
+}
+
+fw::CalibrationData validCalibration() {
+    fw::CalibrationData calibration;
+    calibration.device = "acceptance";
+    fw::Extrinsic lidar;
+    lidar.source = fw::CalibrationSource::kFile;
+    calibration.extrinsics["lidar"] = lidar;
+    return calibration;
+}
+
+}  // namespace
+
+// ─────────────────────────── 通信与生命周期 ───────────────────────────
+
+TEST_CASE("收件箱已关时发布不算送达", "[acceptance][comm]") {
+    // 订阅端还活着、收件箱已经关了：消息进订阅队列也没有一格会来取它
+    comm::IoContext io;
+    auto box = comm::Mailbox::create(io, "/x", {});
+    auto topic = std::make_shared<comm::Topic<int>>("/x", comm::ErrorReporter{});
+    auto sub = topic->subscribe(box, [](const comm::MsgPtr<int>&) {},
+                                comm::SubscribeOptions{4, comm::Delivery::kReliable});
+    box->close();
+    comm::Publisher<int> pub(topic, comm::PublishOptions{});
+    const auto result = pub.publish(1);
+    CHECK_FALSE(result.deliveredTo(1));
+    CHECK(result.accepted == 0);
+    CHECK(result.closed == 1);
+    CHECK(sub->queuedForTest() == 0);  // 没留下无人认领的消息
+}
+
+TEST_CASE("同批到期的一次性定时器里，先执行的能取消后一个", "[acceptance][comm]") {
+    comm::TimerQueue timers;
+    comm::TimerQueue::Id second = 0;
+    int fired = 0;
+    (void)timers.schedule(comm::Time{1ns}, comm::Duration{0}, [&] { timers.cancel(second); });
+    second = timers.schedule(comm::Time{1ns}, comm::Duration{0}, [&] { ++fired; });
+    timers.fireDue(comm::Time{1ns});
+    CHECK(fired == 0);
+    CHECK(timers.size() == 0);
+}
+
+TEST_CASE("服务调用从受理到结案有界，结案回收定时器", "[acceptance][comm]") {
+    // 模块不被驱动时连续发起大量带长超时的调用：名额与超时定时器都不能无界增长；
+    // 驱动之后每个受理的调用恰好结案一次，定时器全部撤掉
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    runtime.addModule<Provider>("/p");
+    auto& client = runtime.addModule<Client>("/c");
+    runtime.init();
+
+    int completions = 0;
+    int accepted = 0;
+    int rejected_at_entry = 0;
+    for (int i = 0; i < 5000; ++i) {
+        const auto status = client.cli.asyncCall(i, 1h, [&](auto) { ++completions; });
+        if (status == comm::ServiceStatus::kOk) ++accepted;
+        if (status == comm::ServiceStatus::kRejected) ++rejected_at_entry;
+    }
+    CHECK(accepted == static_cast<int>(comm::ServiceClient<int, int>::kDefaultMaxPending));
+    CHECK(rejected_at_entry == 5000 - accepted);
+    CHECK(runtime.timers().size() <= static_cast<std::size_t>(accepted));
+
+    settle(runtime);
+    CHECK(completions == accepted);
+    CHECK(client.cli.pendingCalls() == 0);
+    CHECK(runtime.timers().size() == 0);  // 结案即撤：不留一小时后才到期的定时器
+}
+
+TEST_CASE("受理后调用方关闭：清理照做，未送达可见", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    runtime.addModule<Provider>("/p");
+    auto& client = runtime.addModule<Client>("/c");
+    runtime.init();
+
+    int completions = 0;
+    const auto status = client.cli.asyncCall(1, 0ns, [&](auto) { ++completions; });
+    REQUIRE(status == comm::ServiceStatus::kOk);
+    auto box = client.mailbox();
+    box->close();
+    settle(runtime);
+
+    CHECK(completions == 0);                     // 不在已关闭的模块上回调
+    CHECK(client.cli.pendingCalls() == 0);       // 但操作已结案、名额已回收
+    CHECK(client.cli.undeliveredCompletions() == 1);
+    CHECK(box->undeliveredTasks() >= 1);         // 收件箱这一侧同样看得见
+}
+
+TEST_CASE("关闭之后 spinFor 立即返回", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    (void)runtime.timers().schedule(comm::Time{1ns}, comm::Duration{0}, [] {});
+    runtime.shutdown();
+    CHECK(runtime.spinFor(10ns) == 0);
+}
+
+TEST_CASE("装配阶段之外不能加模块，init 只能一次", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    runtime.addModule<Provider>("/p");
+    runtime.init();
+    CHECK_THROWS_AS(runtime.addModule<Client>("/c"), comm::WiringError);
+    CHECK_THROWS_AS(runtime.init(), comm::WiringError);
+}
+
+TEST_CASE("关闭开始后参数写入被拒，存储不变", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    runtime.params().preset("/x", std::int64_t{1});
+    runtime.addModule<Client>("/c");
+    runtime.init();
+    runtime.shutdown();
+    const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
+    CHECK(result.status == comm::ParamCommit::kRejectedStopped);
+    CHECK(runtime.params().revision() == 0);
+}
+
+TEST_CASE("参数的已排队与已生效分开", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    runtime.params().preset("/x", std::int64_t{1});
+    auto& client = runtime.addModule<Client>("/c");
+    runtime.init();
+
+    const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
+    REQUIRE(result.ok());
+    CHECK(result.fullyQueued());
+    CHECK_FALSE(runtime.paramsApplied(result.revision));  // 模块还没被驱动
+    CHECK(client.appliedParamRevision() == 0);
+
+    settle(runtime);
+    CHECK(runtime.paramsApplied(result.revision));
+    CHECK(client.appliedParamRevision() == result.revision);
+}
+
+TEST_CASE("并发发布到同一可靠订阅：每个生产者自己的顺序保持", "[acceptance][comm]") {
+    // 接纳点在订阅端锁内排进收件箱：同一订阅端里，进队列的次序就是格子的次序
+    comm::IoContext io;
+    auto box = comm::Mailbox::create(io, "/m", {});
+    auto topic = std::make_shared<comm::Topic<int>>("/t", comm::ErrorReporter{});
+    std::vector<int> seen;
+    auto sub = topic->subscribe(box, [&](const comm::MsgPtr<int>& v) { seen.push_back(*v); },
+                                comm::SubscribeOptions{100000, comm::Delivery::kReliable});
+    constexpr int kPerProducer = 2000;
+    std::atomic<int> undelivered{0};  // Catch2 的断言不能多线程并用：线程里只计数
+    auto produce = [&](int base) {
+        comm::Publisher<int> pub(topic, comm::PublishOptions{});
+        for (int i = 0; i < kPerProducer; ++i) {
+            if (!pub.publish(base + i).deliveredTo(1)) undelivered.fetch_add(1);
+        }
+    };
+    std::thread a(produce, 0);
+    std::thread b(produce, 100000);
+    a.join();
+    b.join();
+    io.run();
+    CHECK(undelivered.load() == 0);
+
+    REQUIRE(seen.size() == 2 * kPerProducer);
+    int last_a = -1;
+    int last_b = 99999;
+    for (const int v : seen) {
+        if (v < 100000) {
+            CHECK(v == last_a + 1);
+            last_a = v;
+        } else {
+            CHECK(v == last_b + 1);
+            last_b = v;
+        }
+    }
+}
+
+// ─────────────────────────── 打包与确认 ───────────────────────────
+
+TEST_CASE("不在参考时钟域的 IMU 被拒收并标缺口", "[acceptance][packetizer]") {
+    fw::Packetizer packetizer;
+    packetizer.feed(imuAt(fw::Timestamp{100ms}, fw::ClockDomainId{2}));
+    auto packet = packetizer.feed(scanAt(fw::Timestamp{100ms}));
+    // 没有可用的 IMU：包还在等括点
+    CHECK_FALSE(packet.has_value());
+    CHECK(packetizer.foreignClockDrops() == 1);
+    packet = packetizer.flush();
+    REQUIRE(packet.has_value());
+    CHECK(packet->imu.view().empty());
+    CHECK(packet->gap == fw::GapReason::kClockDomain);
+}
+
+TEST_CASE("两端有样本不等于中间连续", "[acceptance][packetizer]") {
+    fw::Packetizer packetizer;
+    packetizer.feed(imuAt(fw::Timestamp{0}));
+    packetizer.feed(imuAt(fw::Timestamp{10s}));
+    auto packet = packetizer.feed(scanAt(fw::Timestamp{10s}));
+    REQUIRE(packet.has_value());
+    CHECK(packet->imu_max_gap == fw::Duration{10s});
+    CHECK(packet->gap == fw::GapReason::kImuGap);
+}
+
+TEST_CASE("时间倒流的 IMU 被丢弃，不进取区间的算法", "[acceptance][packetizer]") {
+    fw::Packetizer packetizer;
+    packetizer.feed(imuAt(fw::Timestamp{100ms}));
+    packetizer.feed(imuAt(fw::Timestamp{50ms}));   // 倒流
+    packetizer.feed(imuAt(fw::Timestamp{100ms}));  // 重复
+    CHECK(packetizer.outOfOrderImu() == 2);
+    CHECK(packetizer.imuBacklog() == 1);
+}
+
+TEST_CASE("低频惯性流的不同相位下每一帧都发得出来", "[acceptance][packetizer]") {
+    // 10 Hz 扫描、10 Hz 惯性流、惯性样本落在扫描中段：每一帧等到终点之后第一条样本
+    // （右括点）就发，不会被下一帧顶掉
+    fw::PacketizerPolicy policy;
+    policy.max_imu_gap = 150ms;
+    fw::Packetizer packetizer(policy);
+    int packets = 0;
+    int bracketed = 0;
+    auto consume = [&](std::optional<fw::SensorPacket> packet) {
+        while (packet) {
+            ++packets;
+            const auto samples = packet->imu.view();
+            if (!samples.empty() && samples.front().time <= packet->imu_coverage.begin
+                && samples.back().time >= packet->reference_time) {
+                ++bracketed;
+            }
+            packetizer.notifyAdmitted(packet->sequence);
+            packet = packetizer.poll();
+        }
+    };
+    consume(packetizer.feed(imuAt(fw::Timestamp{50ms})));
+    for (int i = 1; i <= 8; ++i) {
+        consume(packetizer.feed(scanAt(fw::Timestamp{i * 100ms})));
+        consume(packetizer.feed(imuAt(fw::Timestamp{i * 100ms + 50ms})));
+    }
+    CHECK(packets == 8);
+    CHECK(bracketed == 8);
+    CHECK(packetizer.droppedTriggers() == 0);
+}
+
+TEST_CASE("拒收序号表与附件队列都有界", "[acceptance][packetizer]") {
+    fw::PacketizerPolicy policy;
+    policy.imu = fw::ImuRequirement::kNotRequired;
+    policy.max_pending_packets = 4;
+    policy.max_pending_attachments = 3;
+    fw::Packetizer packetizer(policy);
+    for (int i = 1; i <= 20; ++i) {
+        auto packet = packetizer.feed(scanAt(fw::Timestamp{i * 100ms}));
+        REQUIRE(packet.has_value());
+        packetizer.notifyRejected(packet->sequence);  // 持续拒收
+    }
+    CHECK(packetizer.reclamationDesynchronized());  // 表超限即失同步，而不是无限增长
+
+    for (int i = 0; i < 10; ++i) {
+        auto fix = std::make_shared<fw::GnssFix>();
+        fix->time = fw::Timestamp{50s + i * 1ms};
+        packetizer.feed(fw::Ptr<fw::GnssFix>(fix));
+    }
+    CHECK(packetizer.pendingAttachments() <= 3);
+}
+
+TEST_CASE("确认丢了：查真源结案，或有限次重发后显式放弃", "[acceptance][modules]") {
+    modules::SlamResources resources;
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    auto keyframe_writer = resources.keyframes.acquireWriteToken();
+    auto graph_writer = resources.graph.acquireWriteToken();
+    auto& recognizer = runtime.addModule<modules::PlaceRecognizerModule>(
+        "/pr", std::make_unique<Loops>(), resources);
+    auto& sink = runtime.addModule<NoAck>("/sink");
+    runtime.init();
+
+    comm::Publisher<fw::KeyframeEvent> notify(
+        runtime.core().topic<fw::KeyframeEvent>(modules::topics::kKeyframe), comm::PublishOptions{});
+    for (std::uint64_t i = 1; i <= 3; ++i) {
+        keyframe_writer.modify([&](fw::KeyframeStoreData& store) {
+            auto frame = std::make_shared<fw::Keyframe>();
+            frame->id = fw::KeyframeId{i};
+            frame->sequence = i;
+            store.append(frame);
+        });
+        notify.publish(fw::KeyframeEvent{});
+        settle(runtime);
+    }
+    REQUIRE(recognizer.pendingLoops() == 2);
+
+    // 其中一条其实已经进了真源（只是回执丢了）：查真源就地结案
+    graph_writer.modify([](fw::PoseGraphData& graph) {
+        graph.committed_constraints.insert(fw::ConstraintId{1});
+    });
+    // 之后再没有业务帧：只靠定时器推进
+    for (int i = 0; i < 20; ++i) runtime.spinFor(1s);
+
+    CHECK(recognizer.pendingLoops() == 0);  // 不会永远挂着
+    CHECK(recognizer.recoveredFromGraph() == 1);
+    CHECK(recognizer.abandonedLoops() == 1);  // 另一条重发用尽，显式放弃
+    CHECK(sink.received > 2);                 // 确实重发过
+}
+
+// ─────────────────────────── 标定身份 ───────────────────────────
+
+TEST_CASE("帧处理中改标定：结果与关键帧都用帧开始时那一份", "[acceptance][calibration]") {
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    modules::SlamResources resources;
+    resources.setCalibration(validCalibration());
+    bool changed = false;
+    auto& odometry = runtime.addModule<modules::OdometryModule>(
+        "/o", std::make_unique<HookOdometry>([&] {
+            if (changed) return;
+            changed = true;
+            resources.modifyCalibration([](fw::CalibrationData& data) { data.imu.gravity = 9.7; });
+        }),
+        resources);
+    runtime.init();
+
+    comm::Publisher<fw::SensorPacket> packets(
+        runtime.core().topic<fw::SensorPacket>(modules::topics::kSensorPacket),
+        comm::PublishOptions{false, true});
+    fw::SensorPacket first;
+    first.sequence = 1;
+    first.reference_time = fw::Timestamp{100ms};
+    packets.publish(first);
+    settle(runtime);
+
+    const auto frame = resources.keyframes.snapshot()->find(fw::KeyframeId{1});
+    REQUIRE(frame != nullptr);
+    CHECK(odometry.algorithm().lastResult().calibration_revision == 1);
+    CHECK(frame->calibration_revision == 1);  // 不是帧处理中途换上的 2
+
+    // 下一帧才切换
+    fw::SensorPacket second;
+    second.sequence = 2;
+    second.reference_time = fw::Timestamp{200ms};
+    packets.publish(second);
+    settle(runtime);
+    CHECK(odometry.algorithm().lastResult().calibration_revision == 2);
+}
+
+TEST_CASE("多线程并发改标定：不丢更新，版本与资源一致", "[acceptance][calibration]") {
+    modules::SlamResources resources;
+    resources.setCalibration(validCalibration());
+    constexpr int kRounds = 100;
+    std::thread a([&] {
+        for (int i = 0; i < kRounds; ++i) {
+            resources.modifyCalibration([](fw::CalibrationData& d) { d.imu.gravity += 0.001; });
+        }
+    });
+    std::thread b([&] {
+        for (int i = 0; i < kRounds; ++i) {
+            resources.modifyCalibration([](fw::CalibrationData& d) { d.imu.rate_hz += 1.0; });
+        }
+    });
+    a.join();
+    b.join();
+    const auto snapshot = resources.calibrationSnapshot();
+    CHECK(snapshot->imu.gravity == Approx(9.81 + kRounds * 0.001));
+    CHECK(snapshot->imu.rate_hz == Approx(200.0 + kRounds));
+    CHECK(snapshot->revision == 1 + 2 * kRounds);
+    CHECK(resources.calibration.version() == snapshot->revision);
+}
+
+TEST_CASE("坏的标定进不了真源", "[acceptance][calibration]") {
+    modules::SlamResources resources;
+    auto bad = validCalibration();
+    bad.imu.gravity = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS(resources.setCalibration(bad));
+    CHECK(resources.calibrationRevision() == 0);
+
+    for (const char* yaml : {"extrinsics:\n  lidar: {}\n",
+                             "imu:\n  gravity: .nan\n",
+                             "imu:\n  rate_hz: -1\n",
+                             "lidars:\n  lidar: {min_range_m: 100, max_range_m: 1}\n"}) {
+        CHECK_THROWS_AS(cfg::loadCalibrationString(yaml), cfg::CalibrationError);
+    }
+}
+
+TEST_CASE("很小的已知协方差也能无损往返", "[acceptance][calibration]") {
+    auto without = validCalibration();
+    auto with = validCalibration();
+    with.extrinsics["lidar"].covariance_known = true;
+    with.extrinsics["lidar"].covariance(0, 0) = 1e-14;
+    CHECK(cfg::calibrationHash(with) != cfg::calibrationHash(without));
+    const auto roundtrip = cfg::loadCalibrationString(cfg::dumpCalibration(with));
+    CHECK(roundtrip.extrinsics.at("lidar").covariance_known);
+    CHECK(roundtrip.extrinsics.at("lidar").covariance(0, 0) == 1e-14);
+}
+
+TEST_CASE("必需外参由装配核对：外部标定补上即可", "[acceptance][calibration]") {
+    struct NeedsLidar final : fw::ISensorSource {
+        std::optional<fw::SensorDatum> next() override { return std::nullopt; }
+        fw::SourceDescriptor descriptor() const override {
+            fw::SourceDescriptor d;
+            d.declared = true;
+            d.name = "needs-lidar";
+            d.required_extrinsics = {"lidar"};
+            return d;
+        }
+    };
+    fw::PacketizerPolicy policy;
+    policy.imu = fw::ImuRequirement::kNotRequired;
+    {
+        modules::SlamSystem system;
+        system.setSource(std::make_unique<NeedsLidar>(), policy);
+        system.setOdometry<HookOdometry>();
+        CHECK_THROWS_AS(system.init(), comm::WiringError);  // 没人提供这条外参
+    }
+    {
+        modules::SlamSystem system;
+        system.setCalibration(validCalibration());  // 外部标定补上了
+        system.setSource(std::make_unique<NeedsLidar>(), policy);
+        system.setOdometry<HookOdometry>();
+        CHECK_NOTHROW(system.init());
+    }
+}
+
+TEST_CASE("来源没有惯性流而策略要求 IMU：装配期失败", "[acceptance][calibration]") {
+    struct NoImu final : fw::ISensorSource {
+        std::optional<fw::SensorDatum> next() override { return std::nullopt; }
+        fw::SourceDescriptor descriptor() const override {
+            fw::SourceDescriptor d;
+            d.declared = true;
+            d.has_imu = false;
+            return d;
+        }
+    };
+    modules::SlamSystem system;
+    CHECK_THROWS_AS(system.setSource(std::make_unique<NoImu>(), fw::PacketizerPolicy{}),
+                    comm::WiringError);
+}
+
+TEST_CASE("求解回写只采纳位姿，固定节点不许动", "[acceptance][graph]") {
+    fw::PoseGraphData graph;
+    fw::PoseGraphNode a;
+    a.id = fw::KeyframeId{1};
+    a.fixed = true;
+    a.time = fw::Timestamp{1ns};
+    graph.addNode(a);
+    auto problem = graph.toProblem();
+    problem.nodes[0].fixed = false;
+    problem.nodes[0].time = fw::Timestamp{2ns};
+    graph.adoptSolution(problem);  // 只采纳位姿：其余字段是图的事实
+    CHECK(graph.nodes.at(0).fixed);
+    CHECK(graph.nodes.at(0).time == fw::Timestamp{1ns});
+
+    auto moved = graph.toProblem();
+    moved.nodes[0].T_world_body = SE3d(Vec3d(1.0, 0.0, 0.0), Eigen::Quaterniond::Identity());
+    CHECK_THROWS_AS(graph.adoptSolution(moved), std::logic_error);  // 固定节点不许动
+}
+
+TEST_CASE("信息矩阵要真的合法，不只是有限", "[acceptance][calibration]") {
+    Mat6d information = Mat6d::Identity();
+    CHECK(fw::isValidInformation(information));
+    CHECK(fw::isValidInformation(Mat6d::Zero()));  // 退化方向允许零信息
+    Mat6d asymmetric = Mat6d::Identity();
+    asymmetric(0, 1) = 5.0;
+    CHECK_FALSE(fw::isValidInformation(asymmetric));
+    Mat6d indefinite = Mat6d::Identity();
+    indefinite(2, 2) = -1.0;
+    CHECK_FALSE(fw::isValidInformation(indefinite));
+}
+
+TEST_CASE("去畸变：已补偿的原样保留，轨迹不覆盖的不外推", "[acceptance][deskew]") {
+    fw::PointCloud points;
+    points.push(1.0F, 0.0F, 0.0F);
+    points.time_offset_ns.push_back(-50'000'000);
+    SE3d::Tangent twist;
+    twist.coeffs() << 1.0, 0.0, 0.0, 0.0, 0.0, 0.5;
+
+    fw::DeskewContext context;
+    context.reference_time = fw::Timestamp{1s};
+    context.calibration_revision = 7;
+    context.sensor = "lidar";
+    context.motion_compensation = fw::MotionCompensation::kCompensated;
+    auto [kept, compensated] = fw::deskew(points, SE3d::Identity(), fw::ConstantTwist(twist),
+                                          context);
+    CHECK(compensated.status == fw::DeskewStatus::kAlreadyCompensated);
+    CHECK(compensated.compensated());
+    CHECK(kept.x[0] == 1.0F);
+    CHECK(compensated.reference_time == fw::Timestamp{1s});
+    CHECK(compensated.calibration_revision == 7);
+    CHECK(compensated.output_frame == "lidar");
+
+    context.motion_compensation = fw::MotionCompensation::kRaw;
+    context.trajectory_coverage = fw::TimeRange{fw::Timestamp{-10ms}, fw::Timestamp{0}};
+    auto [untouched, uncovered] =
+        fw::deskew(points, SE3d::Identity(), fw::ConstantTwist(twist), context);
+    CHECK(uncovered.status == fw::DeskewStatus::kTrajectoryNotCovered);
+    CHECK(untouched.x[0] == 1.0F);
+}
+
+TEST_CASE("图里混入不同标定的节点就不再产出校正", "[acceptance][graph]") {
+    // 一张图只属于一份标定：换代之后再往里加节点，解对应的就不是任何一份标定了
+    modules::SlamResources resources;
+    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    auto keyframe_writer = resources.keyframes.acquireWriteToken();
+    auto optimizer = std::make_unique<IdleOptimizer>();
+    auto* idle = optimizer.get();
+    auto& graph_module = runtime.addModule<modules::GraphOptimizerModule>(
+        "/graph", std::move(optimizer), resources);
+    runtime.init();
+
+    comm::Publisher<fw::KeyframeEvent> notify(
+        runtime.core().topic<fw::KeyframeEvent>(modules::topics::kKeyframe), comm::PublishOptions{});
+    comm::Publisher<fw::LoopConstraint> loops(
+        runtime.core().topic<fw::LoopConstraint>(modules::topics::kLoopConstraint),
+        comm::PublishOptions{});
+    const std::uint64_t revisions[] = {1, 1, 2};
+    for (std::uint64_t i = 1; i <= 3; ++i) {
+        keyframe_writer.modify([&](fw::KeyframeStoreData& store) {
+            auto frame = std::make_shared<fw::Keyframe>();
+            frame->id = fw::KeyframeId{i};
+            frame->sequence = i;
+            frame->previous = fw::KeyframeId{i - 1};  // 接在前一帧后：同一段里程计
+            frame->time = fw::Timestamp{static_cast<std::int64_t>(i) * 100'000'000};
+            frame->calibration_revision = revisions[i - 1];
+            store.append(frame);
+        });
+        notify.publish(fw::KeyframeEvent{});
+        settle(runtime);
+    }
+    REQUIRE(resources.graph.snapshot()->calibration_mixed);
+
+    fw::LoopConstraint loop;
+    loop.id = fw::ConstraintId{1};
+    loop.query = fw::KeyframeId{3};
+    loop.match = fw::KeyframeId{1};
+    loops.publish(loop);
+    settle(runtime);
+
+    CHECK(graph_module.committedConstraints() == 1);          // 约束照样进真源
+    CHECK(graph_module.skippedForMixedCalibration() == 1);    // 但不求解、不发校正
+    CHECK(idle->calls == 0);
+    CHECK(graph_module.optimizations() == 0);
+}
+
+// ─────────────────────────── 评测门禁 ───────────────────────────
+
+namespace {
+
+eval::DatasetBaseline baselineFor(const std::string& dataset) {
+    eval::DatasetBaseline baseline;
+    baseline.dataset = dataset;
+    baseline.bounds = {eval::MetricBound{"ate.translation.rmse", 0.1,
+                                         -std::numeric_limits<double>::infinity()}};
+    return baseline;
+}
+
+std::map<std::string, double> validMetrics(double rmse) {
+    return {{"ate.pairs", 30.0}, {"ate.translation.rmse", rmse}};
+}
+
+}  // namespace
+
+TEST_CASE("门禁：没有基线也要做有效性检查", "[acceptance][gate]") {
+    eval::GateRequest request;
+    request.metrics = {{"ate.pairs", 0.0}, {"ate.translation.rmse", 0.0}};
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
+    CHECK(eval::exitCodeFor(eval::gate(request)) == 4);
+}
+
+TEST_CASE("门禁：有基线文件就必须指定数据集，不默认取第一条", "[acceptance][gate]") {
+    const std::vector<eval::DatasetBaseline> baselines{baselineFor("kitti/00")};
+    eval::GateRequest request;
+    request.metrics = validMetrics(0.05);
+    request.completeness = eval::RunCompleteness::kComplete;
+    request.baselines = &baselines;
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
+
+    request.dataset = "kitti/05";  // 文件里没有这一条
+    const auto missing = eval::gate(request);
+    CHECK(missing.outcome == eval::BaselineOutcome::kIncomparable);
+    CHECK(eval::exitCodeFor(missing) == 5);
+
+    request.dataset = "kitti/00";
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
+}
+
+TEST_CASE("门禁：不可比较先于失败", "[acceptance][gate]") {
+    // Fail 的含义是"有效、可比较、没过线"：配置不符时主结论只能是不可比较
+    auto baseline = baselineFor("kitti/00");
+    baseline.config_hash = "A";
+    const std::vector<eval::DatasetBaseline> baselines{baseline};
+    eval::GateRequest request;
+    request.metrics = validMetrics(10.0);  // 远超门限
+    request.dataset = "kitti/00";
+    request.completeness = eval::RunCompleteness::kComplete;
+    request.config_hash = "B";
+    request.baselines = &baselines;
+    const auto verdict = eval::gate(request);
+    CHECK(verdict.outcome == eval::BaselineOutcome::kIncomparable);
+    CHECK(verdict.config_mismatch);
+}
+
+TEST_CASE("门禁：评测协议不同就不可比较", "[acceptance][gate]") {
+    auto baseline = baselineFor("kitti/00");
+    eval::EvaluationProtocol recorded;
+    recorded.alignment = "se3";
+    recorded.association = "nearest";
+    recorded.association_tolerance_s = 0.02;
+    baseline.protocol = recorded;
+    const std::vector<eval::DatasetBaseline> baselines{baseline};
+
+    eval::GateRequest request;
+    request.metrics = validMetrics(0.05);
+    request.dataset = "kitti/00";
+    request.completeness = eval::RunCompleteness::kComplete;
+    request.baselines = &baselines;
+    request.protocol = recorded;
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
+
+    request.protocol.association_tolerance_s = 0.1;  // 同一份配置，换了容差
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
+}
+
+TEST_CASE("有效身份：不同的输入集合不会拼成同一个摘要", "[acceptance][gate]") {
+    // 来源名里带路径，路径里可以有 '=' 与换行：朴素的"键=值"拼接会让两份输入撞在一起
+    const std::map<std::string, std::string> one{{"a", "b\nc=d"}};
+    const std::map<std::string, std::string> two{{"a", "b"}, {"c", "d"}};
+    CHECK(cfg::effectiveHash(one) != cfg::effectiveHash(two));
+    CHECK(cfg::effectiveHash(one) == cfg::effectiveHash(one));
+}
+
+TEST_CASE("门禁：不完整的运行默认不下结论，前缀只能与前缀基线比", "[acceptance][gate]") {
+    const std::vector<eval::DatasetBaseline> full{baselineFor("kitti/00")};
+    eval::GateRequest request;
+    request.metrics = validMetrics(0.05);
+    request.dataset = "kitti/00";
+    request.baselines = &full;
+    request.completeness = eval::RunCompleteness::kIncomplete;
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
+
+    request.allow_incomplete = true;  // 显式允许前缀分析
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
+
+    auto prefix_baseline = baselineFor("kitti/00");
+    prefix_baseline.prefix = true;
+    const std::vector<eval::DatasetBaseline> prefix{prefix_baseline};
+    request.baselines = &prefix;
+    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
+
+    // 没有基线时，前缀结果也要自己说明是前缀：报告里一个裸的 pass 会被当成全程通过
+    request.baselines = nullptr;
+    const auto verdict = eval::gate(request);
+    CHECK(verdict.outcome == eval::BaselineOutcome::kPass);
+    CHECK(verdict.detail.find("前缀") != std::string::npos);
+}
+
+TEST_CASE("插值关联把不同步的真值对上，最近邻对不上", "[acceptance][eval]") {
+    // 估计在扫描终点（整 100 ms），真值在中段（+50 ms）：最近邻 20 ms 容差一对都配不上，
+    // 放宽容差是拿相邻时刻冒充同一时刻；插值才是显式换算
+    eval::Trajectory estimate;
+    eval::Trajectory truth;
+    for (int i = 0; i < 20; ++i) {
+        const double x = 0.5 * i;
+        estimate.push(fw::Timestamp{i * 100ms}, SE3d(Vec3d(x, 0.0, 0.0), Eigen::Quaterniond::Identity()));
+        truth.push(fw::Timestamp{i * 100ms + 50ms},
+                   SE3d(Vec3d(x + 0.25, 0.0, 0.0), Eigen::Quaterniond::Identity()));
+    }
+    eval::AteOptions nearest;
+    nearest.alignment = eval::AlignmentKind::kNone;
+    CHECK(eval::absoluteTrajectoryError(estimate, truth, nearest).pairs == 0);
+
+    eval::AteOptions interpolate = nearest;
+    interpolate.association = eval::AssociationMode::kInterpolate;
+    interpolate.max_interpolation_gap = 150ms;
+    const auto ate = eval::absoluteTrajectoryError(estimate, truth, interpolate);
+    CHECK(ate.pairs >= 18);
+    CHECK(ate.translation.rmse == Approx(0.0).margin(1e-9));  // 匀速直线：插值精确
+    CHECK(ate.referenceCoverage() <= 1.0);
+}
+
+TEST_CASE("跟踪的传感器不同就拒绝比较，显式转换之后才能比", "[acceptance][eval]") {
+    eval::Trajectory body;
+    eval::Trajectory camera;
+    body.setTracked("body");
+    camera.setTracked("cam0");
+    for (int i = 0; i < 5; ++i) {
+        body.push(fw::Timestamp{i * 100ms}, SE3d::Identity());
+        camera.push(fw::Timestamp{i * 100ms}, SE3d::Identity());
+    }
+    CHECK_THROWS_AS(eval::absoluteTrajectoryError(body, camera, eval::AteOptions{}),
+                    eval::TrajectoryError);
+    const auto converted = eval::rightMultiplied(body, SE3d::Identity(), "cam0");
+    CHECK_NOTHROW(eval::absoluteTrajectoryError(converted, camera, eval::AteOptions{}));
+}
+
+// ─────────────────────────── 录制兼容 ───────────────────────────
+
+namespace {
+
+std::filesystem::path tempPath(const char* name) {
+    return std::filesystem::temp_directory_path() / name;
+}
+
+/// 按版本 2 的规则手写一个文件：元数据里的反斜杠按字面保存。
+void writeVersion2(const std::filesystem::path& path, const std::string& metadata) {
+    rec::ByteWriter header;
+    for (const char c : rec::kMagic) header.u8(static_cast<std::uint8_t>(c));
+    header.u16(2);
+    header.u64(0);
+    header.u32(static_cast<std::uint32_t>(metadata.size()));
+    rec::ByteWriter footer_payload;
+    footer_payload.u64(0);
+    rec::ByteWriter footer_header;
+    footer_header.u32(static_cast<std::uint32_t>(rec::RecordKind::kEndOfStream));
+    footer_header.u32(static_cast<std::uint32_t>(footer_payload.size()));
+    footer_header.i64(0);
+    std::vector<std::uint8_t> checked(footer_header.bytes().begin(), footer_header.bytes().end());
+    checked.insert(checked.end(), footer_payload.bytes().begin(), footer_payload.bytes().end());
+    rec::ByteWriter crc;
+    crc.u32(rec::crc32(checked.data(), checked.size()));
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(header.bytes().data()),
+               static_cast<std::streamsize>(header.size()));
+    file.write(metadata.data(), static_cast<std::streamsize>(metadata.size()));
+    file.write(reinterpret_cast<const char*>(footer_header.bytes().data()),
+               static_cast<std::streamsize>(footer_header.size()));
+    file.write(reinterpret_cast<const char*>(footer_payload.bytes().data()),
+               static_cast<std::streamsize>(footer_payload.size()));
+    file.write(reinterpret_cast<const char*>(crc.bytes().data()),
+               static_cast<std::streamsize>(crc.size()));
+}
+
+}  // namespace
+
+TEST_CASE("旧版本文件按旧规则读：字面反斜杠不被当成转义", "[acceptance][record]") {
+    const auto path = tempPath("simpleslam_v2_metadata.ssrec");
+    writeVersion2(path, "note: C:\\new\n");  // 文件里是 `note: C:\new`
+    rec::RecordReader reader(path.string());
+    CHECK(reader.formatVersion() == 2);
+    CHECK(reader.metadata().note == "C:\\new");  // 反斜杠加 n 原样保留，不是换行
+    while (reader.next()) {
+    }
+    CHECK(reader.complete());
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("校验和对、但载荷多出字节的记录被拒绝", "[acceptance][record]") {
+    const auto path = tempPath("simpleslam_trailing_payload.ssrec");
+    {
+        rec::RecordWriter writer(path.string());
+        fw::ImuSample sample;
+        sample.time = fw::Timestamp{1000};
+        writer.write(sample);
+        writer.close();
+    }
+    // 把第一条 IMU 记录的载荷改长 5 字节，并重算它的校验和
+    std::vector<char> bytes;
+    {
+        std::ifstream in(path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    rec::RecordReader probe(path.string());
+    const std::size_t header_size = 6 + 2 + 8 + 4 + probe.rawMetadata().size();
+    std::uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + header_size + 4, 4);
+    const std::uint32_t longer = length + 5;
+    std::memcpy(bytes.data() + header_size + 4, &longer, 4);
+    const auto payload_end = static_cast<std::ptrdiff_t>(header_size + 16 + length);
+    bytes.insert(bytes.begin() + payload_end, 5, '\0');
+    std::vector<std::uint8_t> checked(bytes.begin() + static_cast<std::ptrdiff_t>(header_size),
+                                      bytes.begin() + payload_end + 5);
+    const std::uint32_t crc = rec::crc32(checked.data(), checked.size());
+    std::memcpy(bytes.data() + payload_end + 5, &crc, 4);
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    rec::RecordReader reader(path.string());
+    CHECK_THROWS_AS(reader.next(), rec::RecordError);
+    std::filesystem::remove(path);
+}
+
+#if defined(__linux__)
+TEST_CASE("写不下时 close 如实失败", "[acceptance][record]") {
+    // 文件尺寸上限只在子进程里设，不影响测试进程本身
+    const auto path = tempPath("simpleslam_fsize_limit.ssrec");
+    const pid_t child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        std::signal(SIGXFSZ, SIG_IGN);
+        rlimit limit{256, 256};
+        setrlimit(RLIMIT_FSIZE, &limit);
+        try {
+            rec::RecordWriter writer(path.string());
+            for (int i = 0; i < 16; ++i) {
+                fw::ImuSample sample;
+                sample.time = fw::Timestamp{i};
+                writer.write(sample);
+            }
+            writer.close();
+        } catch (const rec::RecordError&) {
+            _exit(0);  // 如实失败：这是期望的结果
+        } catch (...) {
+            _exit(0);
+        }
+        _exit(1);  // 写不下却没报错
+    }
+    int status = 0;
+    waitpid(child, &status, 0);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    std::filesystem::remove(path);
+}
+#endif
+
+TEST_CASE("协方差有值却没声明为已知：拒绝导出，不静默丢", "[acceptance][calibration]") {
+    auto calibration = validCalibration();
+    calibration.extrinsics["lidar"].covariance(0, 0) = 1e-14;  // 没有声明 covariance_known
+    CHECK_THROWS_AS(cfg::dumpCalibration(calibration), cfg::CalibrationError);
+    CHECK_THROWS_AS(cfg::calibrationHash(calibration), cfg::CalibrationError);
+}

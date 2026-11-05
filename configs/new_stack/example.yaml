@@ -1,0 +1,25 @@
+# 新栈的示例配置。未知键会在加载时报错，所以拼错的项不会静默生效。
+# 校验：simpleslam-config check configs/new_stack/example.yaml
+name: example
+
+runtime:
+  offline: true
+  worker_threads: 1
+
+packetizer:
+  imu_required: true
+  post_support_s: 0.02
+
+odometry:
+  algorithm: constant_velocity
+  keyframe_distance_m: 1.0
+  max_iterations: 30
+
+backend:
+  place_recognizer: none
+  graph_optimizer: none
+
+evaluation:
+  output: /tmp/simpleslam_estimate.tum
+  format: tum
+  alignment: se3

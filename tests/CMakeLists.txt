@@ -2,6 +2,108 @@
 # 使用 Catch2 3.x 测试框架
 
 find_package(Catch2 3 REQUIRED)
+include(CTest)
+include(Catch)
+
+# ── 新栈测试（通信运行时 / 框架契约 / 模块层）────────────────────────────────
+# 这些目标只依赖 Asio + Eigen + manif + Catch2，因此在依赖不全的环境里
+# 用 -DSIMPLESLAM_NEW_STACK_ONLY=ON 也能全部构建并运行。
+foreach(t comm_names comm_topic comm_params comm_service comm_runtime comm_lifecycle)
+    add_executable(test_${t} unit/test_${t}.cpp)
+    target_link_libraries(test_${t} PRIVATE simpleslam_comm Catch2::Catch2WithMain)
+    catch_discover_tests(test_${t})
+endforeach()
+
+foreach(t framework_time framework_resources framework_packetizer)
+    add_executable(test_${t} unit/test_${t}.cpp)
+    target_link_libraries(test_${t} PRIVATE simpleslam_framework Catch2::Catch2WithMain)
+    catch_discover_tests(test_${t})
+endforeach()
+
+add_executable(test_slam_system unit/test_slam_system.cpp)
+target_link_libraries(test_slam_system PRIVATE simpleslam_modules Catch2::Catch2WithMain)
+catch_discover_tests(test_slam_system)
+
+# ── 评测 / 回放 / 配置 ──
+if(SIMPLESLAM_BUILD_TOOLING)
+    foreach(t eval_trajectory eval_metrics eval_baseline)
+        add_executable(test_${t} unit/test_${t}.cpp)
+        target_link_libraries(test_${t} PRIVATE simpleslam_eval Catch2::Catch2WithMain)
+        catch_discover_tests(test_${t})
+    endforeach()
+
+    add_executable(test_record_replay unit/test_record_replay.cpp)
+    target_link_libraries(test_record_replay PRIVATE simpleslam_record Catch2::Catch2WithMain)
+    catch_discover_tests(test_record_replay)
+
+    add_executable(test_framework_calibration unit/test_framework_calibration.cpp)
+    target_link_libraries(test_framework_calibration
+        PRIVATE simpleslam_config Catch2::Catch2WithMain)
+    catch_discover_tests(test_framework_calibration)
+
+    add_executable(test_sources_kitti unit/test_sources_kitti.cpp)
+    target_link_libraries(test_sources_kitti PRIVATE simpleslam_plugins Catch2::Catch2WithMain)
+    catch_discover_tests(test_sources_kitti)
+
+    add_executable(test_config_schema unit/test_config_schema.cpp)
+    target_link_libraries(test_config_schema PRIVATE simpleslam_config Catch2::Catch2WithMain)
+    catch_discover_tests(test_config_schema)
+
+    add_executable(test_system_evaluation unit/test_system_evaluation.cpp)
+    target_link_libraries(test_system_evaluation
+        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+                Catch2::Catch2WithMain)
+    catch_discover_tests(test_system_evaluation)
+
+    # 验收场景：按"系统在这种情形下必须怎样"组织，跨通信、打包、标定、评测、录制
+    add_executable(test_acceptance unit/test_acceptance.cpp)
+    target_link_libraries(test_acceptance
+        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+                Catch2::Catch2WithMain)
+    catch_discover_tests(test_acceptance)
+
+    # 相邻的状态转换：两件事紧挨着发生时，终态证据、寿命与结论是否仍然成立
+    add_executable(test_transitions unit/test_transitions.cpp)
+    target_link_libraries(test_transitions
+        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+                Catch2::Catch2WithMain)
+    catch_discover_tests(test_transitions)
+
+    add_executable(test_contract_boundaries unit/test_contract_boundaries.cpp)
+    target_link_libraries(test_contract_boundaries
+        PRIVATE simpleslam_modules Catch2::Catch2WithMain)
+    catch_discover_tests(test_contract_boundaries PROPERTIES TIMEOUT 30)
+
+    # Python 侧（配置渲染、轨迹、指标），外加与 C++ 的逐字节 / 逐数字比对。
+    # 没有 python3 就不登记：跳过要可见，不能假装通过。
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME python_suite
+                 COMMAND ${Python3_EXECUTABLE} -m unittest discover -s
+                         "${PROJECT_SOURCE_DIR}/python/tests"
+                 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        set_tests_properties(python_suite PROPERTIES ENVIRONMENT
+            "PYTHONPATH=${PROJECT_SOURCE_DIR}/python;SIMPLESLAM_BUILD_DIR=${PROJECT_BINARY_DIR}")
+    else()
+        message(STATUS "未找到 python3：Python 侧测试与 C++/Python 比对不登记")
+    endif()
+endif()
+
+# 新栈主要在头文件里实现。静态库 PRIVATE 链接的编译选项不会传播到这些测试的
+# 翻译单元；仅在链接时带 sanitizer 不能检测 Runtime / 模块的头文件代码。
+# 每个测试目标自己 PRIVATE 使用选项，不把工程内的警告规则传给库的消费者。
+get_property(simpleslam_new_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(test_target IN LISTS simpleslam_new_test_targets)
+    get_target_property(test_target_type ${test_target} TYPE)
+    if(test_target_type STREQUAL "EXECUTABLE")
+        target_link_libraries(${test_target} PRIVATE simpleslam_compiler_options)
+    endif()
+endforeach()
+
+if(SIMPLESLAM_NEW_STACK_ONLY)
+    return()
+endif()
+
 
 # ── 几何类型测试：验证 manif SE3d 别名和基本运算 ──
 add_executable(test_geometry unit/test_geometry.cpp)

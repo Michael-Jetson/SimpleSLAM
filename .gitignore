@@ -48,3 +48,7 @@ Thumbs.db
 .codex/
 .agents/
 .kimi-code/
+
+# Python 字节码（scripts/ 与 python/ 下都会产生）
+__pycache__/
+*.py[cod]

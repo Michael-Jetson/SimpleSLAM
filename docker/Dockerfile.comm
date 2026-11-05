@@ -1,0 +1,19 @@
+# 通信运行时的轻量构建环境
+#
+# 与仓库主 Dockerfile 的区别：只用 Ubuntu apt 源，不从 GitHub 拉取依赖。
+# 通信层（include/SimpleSLAM/comm）刻意不依赖 manif / Eigen / spdlog，
+# 因此这个镜像足以完整编译并运行它的单元测试，构建一次约一分钟。
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        libasio-dev \
+        catch2 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+CMD ["bash"]

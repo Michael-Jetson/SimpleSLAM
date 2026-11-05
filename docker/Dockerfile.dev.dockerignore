@@ -1,0 +1,24 @@
+# Dockerfile.dev 专用的构建上下文排除规则（BuildKit 会优先使用同名 .dockerignore）。
+# 与根 .dockerignore 的区别：放行 docker/deps/manif 的头文件——这个镜像不联网，
+# manif 由宿主机预先克隆后 COPY 进去。
+.git/
+build/
+cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+*.o
+*.a
+*.so
+compile_commands.json
+docker/deps/
+!docker/deps/manif/include/manif/**
+!docker/deps/manif/external/tl/**
+.vscode/
+.idea/
+.cache/
+.ccache/
+.agents/
+.codex/
+.claude/
+logs/
+*.zip

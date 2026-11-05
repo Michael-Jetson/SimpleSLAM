@@ -1,0 +1,32 @@
+# 开发构建环境（不联网）
+#
+# 仓库主 Dockerfile 在构建期从 GitHub 拉依赖，在容器网络受限的机器上会失败。
+# 这个镜像改为：能用 apt 的全部走 apt，只有 manif 由宿主机预先克隆到
+# docker/deps/manif（.gitignore 已忽略该目录），构建期只做 COPY。
+#
+# python3 是为了 CTest 能跑 Python 侧测试与 C++/Python 比对（ADR-0012 决策 9）：
+# 比对如果只能在宿主机跑，它迟早会不跑。Python 侧只用标准库，不需要 pip。
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        libasio-dev \
+        catch2 \
+        libeigen3-dev \
+        libspdlog-dev \
+        libfmt-dev \
+        libyaml-cpp-dev \
+        python3 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# manif 是 header-only，宿主机预先克隆（见 docs/Docker.md）。
+# manif 依赖 tl::optional，其源码随 manif 仓库一起分发在 external/tl。
+COPY docker/deps/manif/include/manif /usr/local/include/manif
+COPY docker/deps/manif/external/tl/tl /usr/local/include/tl
+
+WORKDIR /workspace
+CMD ["bash"]

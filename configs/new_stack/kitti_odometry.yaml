@@ -1,0 +1,33 @@
+# KITTI odometry 序列。真值用数据集自带的 poses/XX.txt，已换算到 body（激光）系。
+#
+#   simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \
+#       dataset.path=/data/kitti/odometry/sequences/00
+name: kitti-00
+
+dataset:
+  kind: kitti_odometry
+  path: /data/kitti/odometry/sequences/00
+  groundtruth_frame: body
+  max_scans: 0
+
+runtime:
+  offline: true
+  worker_threads: 1
+
+packetizer:
+  # odometry 序列没有 IMU。默认用数据源按实测给出的推荐策略（source_policy: source），
+  # 下面的字段只在 source_policy: config 时生效；实际用的是哪一份，入口会打印并写进报告。
+  imu_required: false
+
+odometry:
+  algorithm: my_lio
+  keyframe_distance_m: 1.5
+  keyframe_rotation_deg: 15.0
+  max_iterations: 30
+  voxel_size_m: 0.5
+
+evaluation:
+  output: /tmp/kitti00_estimate.tum
+  format: tum
+  alignment: se3
+  association_tolerance_s: 0.02
