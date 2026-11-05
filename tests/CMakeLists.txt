@@ -6,9 +6,9 @@ include(CTest)
 include(Catch)
 
 # ── 新栈测试（通信运行时 / 框架契约 / 模块层）────────────────────────────────
-# 这些目标只依赖 Asio + Eigen + manif + Catch2，因此在依赖不全的环境里
+# 这些目标只依赖 Eigen + manif + Catch2，因此在依赖不全的环境里
 # 用 -DSIMPLESLAM_NEW_STACK_ONLY=ON 也能全部构建并运行。
-foreach(t comm_names comm_topic comm_params comm_service comm_runtime comm_lifecycle)
+foreach(t comm_names comm_topic comm_params comm_service comm_runtime comm_lifecycle comm_module)
     add_executable(test_${t} unit/test_${t}.cpp)
     target_link_libraries(test_${t} PRIVATE simpleslam_comm Catch2::Catch2WithMain)
     catch_discover_tests(test_${t})

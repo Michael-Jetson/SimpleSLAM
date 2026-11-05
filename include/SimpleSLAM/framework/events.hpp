@@ -132,13 +132,9 @@ struct RelativeConstraint {
     [[nodiscard]] bool heuristic() const noexcept { return isHeuristic(source); }
 };
 
-/// 一条回环约束。一次性信息，必须有提交确认或可重建，不能只靠通知不丢。
-///
-/// `id` 是稳定身份：重发同一条约束不会在图里变成两条边，
-/// 端点尚未入图时也能凭它挂起等待，而不是就地丢弃。
+/// 一条回环约束。`id` 是这条边的稳定身份，诊断和图里的边都用它。
 struct LoopConstraint {
     ConstraintId id{};
-    std::uint64_t sequence = 0;
     KeyframeId query{};
     KeyframeId match{};
     SE3d T_match_query = SE3d::Identity();
@@ -148,28 +144,8 @@ struct LoopConstraint {
     double score = 0.0;
 };
 
-/// 约束的提交结果。"图是否优化成功"与"约束是否已进入真源"是两件事。
-enum class ConstraintCommit : std::uint8_t {
-    kCommitted,   ///< 已进入位姿图
-    kDuplicate,   ///< 同一身份此前已提交，未重复建边
-    kDeferred,    ///< 端点尚未入图，已挂起等待
-    kRejected,    ///< 端点不可能出现（会话不符等），已丢弃
-};
-
-/// 一条一次性约束的提交确认。发送方据此知道"约束进没进真源"，
-/// 也据此知道消费端的容量腾出来了——重试因此不必等下一帧业务数据到来
-/// 。
-struct ConstraintAck {
-    ConstraintId id{};
-    std::uint64_t sequence = 0;
-    ConstraintCommit result = ConstraintCommit::kRejected;
-};
-
-/// 原始数据的消费进度。打包器据此推进消费水位、回收原始 IMU。
-///
-/// 这是显式确认，不是"发出去就算用完了"——后者会让被拒或积压的那一段无法补回。
-/// 它是**累计**的：序号不大于 through 的包全部用完了。消费方按序处理，所以累计进度
-/// 是精确的；丢一条确认也不要紧，下一条会把前面的一并补上，订阅端因此可以只留最新值。
+/// 里程计的处理进度：序号不大于 through 的包都有了终态。入口据此算出还有多少包在途，
+/// 下游处理不过来时丢触发帧。它是**累计**的，订阅端只留最新一条就够。
 struct PacketConsumed {
     std::uint64_t through = 0;
 };
@@ -204,7 +180,7 @@ struct MapRebuildRequest {
 /// 系统级健康等级。与 TrackingStatus 分属两层，词汇不重叠。
 enum class HealthLevel : std::uint8_t { kHealthy, kWarning, kCritical, kFatal };
 
-/// 健康状态转移。属于可靠档诊断：影响算法决策，不能与可丢日志共用丢弃政策。
+/// 健康状态转移。影响算法决策，不能与可丢日志共用丢弃政策。
 struct HealthEvent {
     Timestamp time{0};
     HealthLevel level = HealthLevel::kHealthy;

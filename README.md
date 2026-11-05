@@ -15,19 +15,13 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 ## 架构概览
 
 ```
-+----------------------------------------------------------------------+
-|  SimpleSLAM                                                          |
-|                                                                      |
-|  SensorIO --> Odometry --> Topic<T> + CallbackSlots                  |
-|  (数据接入)    (LIO/VIO/       +----------+----------+              |
-|                 LVIO/LO)        v          v          v              |
-|                              核心后端   基础后端   扩展后端          |
-|                             (回环/PGO) (子图管理) (可视化...)        |
-|                                                                      |
-|  资源层:     KeyframeStore | CurrentState | PoseGraph                |
-|  基础设施:   Logger | Config | Timing | Clock                        |
-|  Runner:     组装全部组件 + 管理生命周期 + 四种运行模式              |
-+----------------------------------------------------------------------+
+数据来源 ─▶ 传感器接入（打包）─▶ 里程计 ─┬─▶ 轨迹收集
+                 ▲                │  ▲   └─▶ 位置识别 ─▶ 图优化 ─┐
+                 └── 处理进度 ─────┘  └───────── 校正 ───────────┘
+
+资源：关键帧库 · 位姿图 · 当前状态 · 标定          （版本化快照 + 单写者令牌）
+运行时：话题 · 服务 · 参数 · 定时器 · 模块收件箱    （进程内，用法接近 ROS1）
+工程设施：评测与精度基线 · 录制回放 · 配置
 ```
 
 五个顶层组件通过**数据流协作**，不是层叠依赖：
@@ -58,14 +52,12 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 ## 当前状态
 
-代码完成：v0 基础设施、v0.5 点云原语、v1.0 纯 LO（`configs/lo_kissicp.yaml` 可跑；精度基线验收待做，验收后版本号才进位 1.0.0）。下一步 v1.5 LIO 核心。
+仓库里有两套代码，迁移是施工项，两套不得在同一翻译单元混用：
 
-2026-09 起另有一套新栈在 `feat/comm-runtime` 上成形：进程内通信运行时（话题 / 服务 /
-参数，用法接近 ROS1 但没有句柄）、框架契约层、模块层，以及评测（TUM/KITTI 轨迹、
-ATE/RPE、精度基线门禁）、录制回放（实验回放包）、配置（C++ 真源 + YAML/Python 两种写法）
-三层工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
-决策见 ADR-0010 ~ ADR-0014。手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；
-不下载数据集也能冒烟测试整条链路：
+- **新栈**（`feat/comm-runtime` 分支，2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、录制回放、配置三层工程设施，设计见 `docs/design/README.md`。目标是写算法的人只实现算法接口，其余工程事务由框架承担。**目前只有占位算法，还没有真实算法跑过。**
+- **旧栈**：v0 基础设施、v0.5 点云原语、v1.0 纯 LO（`configs/lo_kissicp.yaml` 可跑）。精度基线验收待做，验收后版本号才进位 1.0.0。
+
+手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；不下载数据集也能冒烟测试整条链路：
 
 ```bash
 python3 scripts/make_kitti_fixture.py --out /tmp/fx          # 合成最小 KITTI 夹具
@@ -73,33 +65,20 @@ build/examples/simpleslam-lio-skeleton configs/new_stack/kitti_odometry.yaml \
     dataset.path=/tmp/fx/odometry/sequences/00
 ```
 
-新旧两栈不得在同一翻译单元混用，迁移是施工项。
-
-| 版本 | 内容 | 状态 |
-|------|------|------|
-| v1.0 | 纯 LO（VoxelHashTarget、IcpSolver、LoIcpOdometry） | 代码完成，精度基线验收待做 |
-| v1.5 | LIO 核心（ESIKF、IMU 预积分、ikd-Tree、iVox） | 计划中 |
-| v2.0 | 回环 + PGO（ScanContext、GTSAM iSAM2） | 计划中 |
-| v2.5 | 回环扩展 + 基础稠密地图 + 重定位 | 计划中 |
-| v3.0–v4.5 | 视觉特征 → VIO → LIVO | 计划中 |
-| v5.0+ | Research Backlog（GNSS/持久化/可视化/Python 绑定等） | 单独立项后进入主线 |
-
-版本轴唯一：路线图里程碑即软件版本，完整路线图与阶段 Not-Doing 清单见 `docs/blueprint.md` §17。
-
-精度目标：v1.0 KITTI ATE 达 KISS-ICP 级，v1.5 达 FAST-LIO2 级（EuRoC ATE < 0.12m）
+路线图、版本与不做的事见 `docs/future/roadmap.md`，未决问题见 `docs/backlog.md`。
 
 ## 快速开始
 
 ### 环境要求
 
 - Docker（推荐）或 Ubuntu 24.04+
-- GCC 13+（C++20 支持；基线见 `docs/blueprint.md` §14.4）
+- GCC 13+（C++20 支持；基线见 `docs/engineering.md` 第 3.11 节）
 
 ### Docker 构建
 
 ```bash
 # 1. 构建开发镜像（Ubuntu 24.04；源码依赖由镜像的 deps-builder 阶段自行从 GitHub 拉取，
-#    受限网络用 --network=host，详见 docs/Docker.md）
+#    受限网络用 --network=host，详见 docs/guides/docker.md）
 docker build -t simpleslam-dev .
 
 # 2. 编译 + 测试
@@ -136,59 +115,27 @@ python/simpleslam/    # Python 侧：配置渲染、轨迹读写、指标（sche
 configs/  tests/  docker/  scripts/  docs/
 ```
 
-概念到头文件、测试、架构锚点的逐条映射见 `docs/map.md`；文档体系（约束性架构 / ADR / 提案 / 调研 / 课程）见 `docs/README.md`。
+每个新栈代码目录的设计与文件表，在 `docs/design/` 下同名的文档里。
+
+## 文档
+
+从 [`docs/README.md`](docs/README.md) 开始：它按你要做的事指路，并说明文档怎么组织。
 
 ## 依赖
 
-### 核心依赖（simpleslam_core）
-
-| 库 | 用途 | 类型 | 引入版本 |
+| 库 | 用途 | 类型 | 谁需要 |
 |---|------|------|---------|
-| Eigen 3.4+ | 矩阵运算、四元数 | header-only | v0 |
-| manif | SE3d/SO3d 李群操作 | header-only | v0 |
-| spdlog | 异步日志 | 编译库 | v0 |
-| yaml-cpp | YAML 配置 | 编译库 | v0 |
-| fmt | 字符串格式化 | header-only | v0 |
-| nanoflann | KD-Tree 近邻搜索 | header-only | v0.5 |
-| tsl::robin_map | 高性能哈希表（体素哈希） | header-only | v0.5 |
-| Catch2 3.x | 单元测试 | 编译库 | v0 |
+| Eigen 3.4+ | 矩阵运算、四元数 | header-only | 新旧栈 |
+| manif | SE3d/SO3d 李群操作 | header-only | 新旧栈 |
+| yaml-cpp | 配置、精度基线、回放包 | 编译库 | 新栈工程设施；旧栈硬依赖 |
+| spdlog、fmt | 日志与格式化 | 编译库 / header-only | 旧栈 |
+| nanoflann | KD-Tree 近邻搜索 | header-only | 旧栈 |
+| tsl::robin_map | 体素哈希 | header-only | 旧栈 |
+| Catch2 3.x | 单元测试 | 编译库 | 测试 |
 
-### 可选依赖（按版本引入）
+依赖不全时可以只构建新栈：`cmake -B build -DSIMPLESLAM_NEW_STACK_ONLY=ON`。按版本引入的可选依赖（GTSAM、small_gicp、Ceres、OpenCV）见 `docs/engineering.md` 第 7.6 节，镜像见 `docs/guides/docker.md`。
 
-| 库 | 用途 | 引入版本 |
-|---|------|---------|
-| GTSAM 4.3+ | 因子图优化 | v2.0 |
-| small_gicp | 回环验证 ICP | v2.0 |
-| Ceres 2.1+ | 滑窗 BA | v3.5 |
-| OpenCV 4.5+ | 视觉前端 | v3.0 |
-
-## 编码规范
-
-| 类目 | 规范 | 示例 |
-|------|------|------|
-| 文件名 | `snake_case.hpp` / `.cpp` | `timing.hpp` |
-| 类名 | `PascalCase` | `TimingManager` |
-| 函数/变量 | `camelCase` | `processFrame` |
-| 成员变量 | `snake_case_` | `root_` |
-| 常量 | `kPascalCase` | `kMaxSamples` |
-| 所有具体类 | 标注 `final` | `class SystemClock final` |
-| 头文件保护 | `#pragma once` | |
-| 技术标准 | 语言锁 C++20；库特性允许 C++23 的 `std::expected` | 政策见蓝图 §14.4 |
-
-完整工程规范（版本与发布、变更控制、代码、构建与 CI、测试、文档、依赖、安全、完成定义）见 `docs/engineering.md`。
-
-## 技术栈
-
-```
-Eigen + manif — 基础数学层（李群、矩阵运算）
-    │
-    ├── ESIKF / IMU 预积分 — 手写，只依赖 Eigen + manif
-    │   (纯 LIO 路径在此层完全自洽)
-    │
-    ├── Ceres（可选）— 局部滑窗 BA / VIO
-    │
-    └── GTSAM（可选）— 全局因子图 / 回环优化
-```
+编码规范与完整工程规范（版本与发布、变更控制、代码、构建与 CI、测试、文档、依赖、安全、完成定义）见 `docs/engineering.md`。
 
 ## Star History
 

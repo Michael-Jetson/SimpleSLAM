@@ -5,7 +5,7 @@
 ///
 /// 单线程顺序执行：拉数据 → processLidar → drainAll → 循环。
 /// 确定性、可断点调试、不丢帧。
-/// 持有 TopicHub 实例（注入式，无全局单例——ADR-001）。
+/// 持有 TopicHub 实例（注入式，无全局单例）。
 
 #include <SimpleSLAM/backend/service_base.hpp>
 #include <SimpleSLAM/core/infra/comm/topic.hpp>

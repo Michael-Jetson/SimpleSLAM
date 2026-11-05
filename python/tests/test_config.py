@@ -12,7 +12,7 @@ def fake_schema() -> Schema:
             Field("name", "string", "default", "实验名", False),
             Field("seed", "int", "0", "随机种子", False),
             Field("runtime.offline", "bool", "true", "离线步进", False),
-            Field("runtime.worker_threads", "int", "2", "线程数", False),
+            Field("runtime.spin_budget", "int", "4096", "步进预算", False),
             Field("odometry.max_iterations", "int", "30", "迭代上限", True),
             Field("odometry.voxel_size_m", "double", "0.5", "体素边长", True),
         ]
@@ -52,7 +52,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(
             text,
             'name: "demo"\nseed: 0\n'
-            "\nruntime:\n  offline: true\n  worker_threads: 2\n"
+            "\nruntime:\n  offline: true\n  spin_budget: 4096\n"
             "\nodometry:\n  max_iterations: 30\n  voxel_size_m: 0.5\n",
         )
 

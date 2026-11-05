@@ -27,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <thread>
+#include <typeindex>
 #include <vector>
 
 #if defined(__linux__)
@@ -59,26 +60,8 @@ struct Client final : comm::Module {
     void onInit() override { cli = serviceClient<int, int>("/svc"); }
 };
 
-/// 收下回环约束但从不回确认：模拟"确认丢了"。
-struct NoAck final : comm::Module {
-    int received = 0;
-    void onInit() override {
-        subscribe<fw::LoopConstraint>(modules::topics::kLoopConstraint,
-                                      [this](const fw::LoopConstraint&) { ++received; },
-                                      comm::SubscribeOptions{64, comm::Delivery::kReliable});
-    }
-};
-
-/// 每个关键帧都报一条指向 1 号关键帧的回环。
-struct Loops final : plugin::PlaceRecognizerBase {
-    void onInsert(const fw::Keyframe&) override {}
-    std::vector<fw::LoopConstraint> onDetectLoops(const fw::Keyframe& keyframe) override {
-        if (keyframe.id.value <= 1) return {};
-        fw::LoopConstraint loop;
-        loop.match = fw::KeyframeId{1};
-        loop.query = keyframe.id;
-        return {loop};
-    }
+struct ParamWatcher final : comm::Module {
+    [[nodiscard]] std::uint64_t revision() const { return paramSnapshot()->revision; }
 };
 
 /// 每帧建议关键帧的里程计；可在 track 中注入一段钩子。
@@ -137,61 +120,49 @@ fw::CalibrationData validCalibration() {
 
 // ─────────────────────────── 通信与生命周期 ───────────────────────────
 
-TEST_CASE("收件箱已关时发布不算送达", "[acceptance][comm]") {
-    // 订阅端还活着、收件箱已经关了：消息进订阅队列也没有一格会来取它
-    comm::IoContext io;
-    auto box = comm::Mailbox::create(io, "/x", {});
-    auto topic = std::make_shared<comm::Topic<int>>("/x", comm::ErrorReporter{});
-    auto sub = topic->subscribe(box, [](const comm::MsgPtr<int>&) {},
-                                comm::SubscribeOptions{4, comm::Delivery::kReliable});
+TEST_CASE("收件箱已关时发布不留下无人认领的消息", "[acceptance][comm]") {
+    auto hub = std::make_shared<comm::Hub>();
+    auto box = std::make_shared<comm::Mailbox>("/x", hub, comm::ErrorReporter{});
+    auto topic = std::make_shared<comm::Topic>("/x", std::type_index(typeid(int)), hub, comm::ErrorReporter{}, 0);
+    auto sub = topic->subscribe(box, 4, [](const comm::AnyMsg&) {});
     box->close();
     comm::Publisher<int> pub(topic, comm::PublishOptions{});
-    const auto result = pub.publish(1);
-    CHECK_FALSE(result.deliveredTo(1));
-    CHECK(result.accepted == 0);
-    CHECK(result.closed == 1);
-    CHECK(sub->queuedForTest() == 0);  // 没留下无人认领的消息
+    pub.publish(1);
+    CHECK(sub->stats().depth == 0);
+    CHECK(hub->idle());
 }
 
 TEST_CASE("同批到期的一次性定时器里，先执行的能取消后一个", "[acceptance][comm]") {
-    comm::TimerQueue timers;
-    comm::TimerQueue::Id second = 0;
+    comm::TimerQueue timers(std::make_shared<std::atomic<std::uint64_t>>(0));
+    comm::TimerHandle second;
     int fired = 0;
-    (void)timers.schedule(comm::Time{1ns}, comm::Duration{0}, [&] { timers.cancel(second); });
+    (void)timers.schedule(comm::Time{1ns}, comm::Duration{0}, [&] { second.cancel(); });
     second = timers.schedule(comm::Time{1ns}, comm::Duration{0}, [&] { ++fired; });
-    timers.fireDue(comm::Time{1ns});
+    comm::fireDueTimers({&timers}, comm::Time{1ns});
     CHECK(fired == 0);
-    CHECK(timers.size() == 0);
+    CHECK_FALSE(timers.nextDue().has_value());
 }
 
-TEST_CASE("服务调用从受理到结案有界，结案回收定时器", "[acceptance][comm]") {
-    // 模块不被驱动时连续发起大量带长超时的调用：名额与超时定时器都不能无界增长；
-    // 驱动之后每个受理的调用恰好结案一次，定时器全部撤掉
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+TEST_CASE("每个受理的服务调用恰好结案一次，超时不会再结案第二次", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<Provider>("/p");
     auto& client = runtime.addModule<Client>("/c");
     runtime.init();
 
     int completions = 0;
-    int accepted = 0;
-    int rejected_at_entry = 0;
     for (int i = 0; i < 5000; ++i) {
-        const auto status = client.cli.asyncCall(i, 1h, [&](auto) { ++completions; });
-        if (status == comm::ServiceStatus::kOk) ++accepted;
-        if (status == comm::ServiceStatus::kRejected) ++rejected_at_entry;
+        REQUIRE(client.cli.asyncCall(i, 1h, [&](auto) { ++completions; }) == comm::ServiceStatus::kOk);
     }
-    CHECK(accepted == static_cast<int>(comm::ServiceClient<int, int>::kDefaultMaxPending));
-    CHECK(rejected_at_entry == 5000 - accepted);
-    CHECK(runtime.timers().size() <= static_cast<std::size_t>(accepted));
-
     settle(runtime);
-    CHECK(completions == accepted);
-    CHECK(client.cli.pendingCalls() == 0);
-    CHECK(runtime.timers().size() == 0);  // 结案即撤：不留一小时后才到期的定时器
+    CHECK(completions == 5000);
+
+    runtime.virtualClock()->advanceTo(2h);
+    settle(runtime);
+    CHECK(completions == 5000);
 }
 
-TEST_CASE("受理后调用方关闭：清理照做，未送达可见", "[acceptance][comm]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+TEST_CASE("受理后调用方关闭：不在已关闭的模块上回调，丢弃可见", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<Provider>("/p");
     auto& client = runtime.addModule<Client>("/c");
     runtime.init();
@@ -203,21 +174,18 @@ TEST_CASE("受理后调用方关闭：清理照做，未送达可见", "[accepta
     box->close();
     settle(runtime);
 
-    CHECK(completions == 0);                     // 不在已关闭的模块上回调
-    CHECK(client.cli.pendingCalls() == 0);       // 但操作已结案、名额已回收
-    CHECK(client.cli.undeliveredCompletions() == 1);
-    CHECK(box->undeliveredTasks() >= 1);         // 收件箱这一侧同样看得见
+    CHECK(completions == 0);
+    CHECK(box->stats().discarded >= 1);
 }
 
 TEST_CASE("关闭之后 spinFor 立即返回", "[acceptance][comm]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
-    (void)runtime.timers().schedule(comm::Time{1ns}, comm::Duration{0}, [] {});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.shutdown();
     CHECK(runtime.spinFor(10ns) == 0);
 }
 
 TEST_CASE("装配阶段之外不能加模块，init 只能一次", "[acceptance][comm]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<Provider>("/p");
     runtime.init();
     CHECK_THROWS_AS(runtime.addModule<Client>("/c"), comm::WiringError);
@@ -225,55 +193,47 @@ TEST_CASE("装配阶段之外不能加模块，init 只能一次", "[acceptance]
 }
 
 TEST_CASE("关闭开始后参数写入被拒，存储不变", "[acceptance][comm]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.params().preset("/x", std::int64_t{1});
     runtime.addModule<Client>("/c");
     runtime.init();
     runtime.shutdown();
     const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
     CHECK(result.status == comm::ParamCommit::kRejectedStopped);
-    CHECK(runtime.params().revision() == 0);
+    CHECK(runtime.params().snapshot()->revision == 0);
 }
 
-TEST_CASE("参数的已排队与已生效分开", "[acceptance][comm]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+TEST_CASE("提交只进了存储，模块在自己的收件箱里才换上", "[acceptance][comm]") {
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.params().preset("/x", std::int64_t{1});
-    auto& client = runtime.addModule<Client>("/c");
+    auto& watcher = runtime.addModule<ParamWatcher>("/c");
     runtime.init();
 
     const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
     REQUIRE(result.ok());
-    CHECK(result.fullyQueued());
-    CHECK_FALSE(runtime.paramsApplied(result.revision));  // 模块还没被驱动
-    CHECK(client.appliedParamRevision() == 0);
+    CHECK(watcher.revision() == 0);  // 模块还没被驱动
 
     settle(runtime);
-    CHECK(runtime.paramsApplied(result.revision));
-    CHECK(client.appliedParamRevision() == result.revision);
+    CHECK(watcher.revision() == result.revision);
 }
 
-TEST_CASE("并发发布到同一可靠订阅：每个生产者自己的顺序保持", "[acceptance][comm]") {
-    // 接纳点在订阅端锁内排进收件箱：同一订阅端里，进队列的次序就是格子的次序
-    comm::IoContext io;
-    auto box = comm::Mailbox::create(io, "/m", {});
-    auto topic = std::make_shared<comm::Topic<int>>("/t", comm::ErrorReporter{});
+TEST_CASE("并发发布到同一订阅端：每个生产者自己的顺序保持", "[acceptance][comm]") {
+    // 排格在订阅端锁内：同一订阅端里，进队列的次序就是格子的次序
+    auto hub = std::make_shared<comm::Hub>();
+    auto box = std::make_shared<comm::Mailbox>("/m", hub, comm::ErrorReporter{});
+    auto topic = std::make_shared<comm::Topic>("/t", std::type_index(typeid(int)), hub, comm::ErrorReporter{}, 0);
     std::vector<int> seen;
-    auto sub = topic->subscribe(box, [&](const comm::MsgPtr<int>& v) { seen.push_back(*v); },
-                                comm::SubscribeOptions{100000, comm::Delivery::kReliable});
+    auto sub = topic->subscribe(box, 0, [&](const comm::AnyMsg& m) { seen.push_back(*static_cast<const int*>(m.get())); });
     constexpr int kPerProducer = 2000;
-    std::atomic<int> undelivered{0};  // Catch2 的断言不能多线程并用：线程里只计数
     auto produce = [&](int base) {
         comm::Publisher<int> pub(topic, comm::PublishOptions{});
-        for (int i = 0; i < kPerProducer; ++i) {
-            if (!pub.publish(base + i).deliveredTo(1)) undelivered.fetch_add(1);
-        }
+        for (int i = 0; i < kPerProducer; ++i) pub.publish(base + i);
     };
     std::thread a(produce, 0);
     std::thread b(produce, 100000);
     a.join();
     b.join();
-    io.run();
-    CHECK(undelivered.load() == 0);
+    while (auto ready = hub->popReady()) ready->drainSome();
 
     REQUIRE(seen.size() == 2 * kPerProducer);
     int last_a = -1;
@@ -339,7 +299,6 @@ TEST_CASE("低频惯性流的不同相位下每一帧都发得出来", "[accepta
                 && samples.back().time >= packet->reference_time) {
                 ++bracketed;
             }
-            packetizer.notifyAdmitted(packet->sequence);
             packet = packetizer.poll();
         }
     };
@@ -353,19 +312,11 @@ TEST_CASE("低频惯性流的不同相位下每一帧都发得出来", "[accepta
     CHECK(packetizer.droppedTriggers() == 0);
 }
 
-TEST_CASE("拒收序号表与附件队列都有界", "[acceptance][packetizer]") {
+TEST_CASE("附件队列有界", "[acceptance][packetizer]") {
     fw::PacketizerPolicy policy;
     policy.imu = fw::ImuRequirement::kNotRequired;
-    policy.max_pending_packets = 4;
     policy.max_pending_attachments = 3;
     fw::Packetizer packetizer(policy);
-    for (int i = 1; i <= 20; ++i) {
-        auto packet = packetizer.feed(scanAt(fw::Timestamp{i * 100ms}));
-        REQUIRE(packet.has_value());
-        packetizer.notifyRejected(packet->sequence);  // 持续拒收
-    }
-    CHECK(packetizer.reclamationDesynchronized());  // 表超限即失同步，而不是无限增长
-
     for (int i = 0; i < 10; ++i) {
         auto fix = std::make_shared<fw::GnssFix>();
         fix->time = fw::Timestamp{50s + i * 1ms};
@@ -374,47 +325,10 @@ TEST_CASE("拒收序号表与附件队列都有界", "[acceptance][packetizer]")
     CHECK(packetizer.pendingAttachments() <= 3);
 }
 
-TEST_CASE("确认丢了：查真源结案，或有限次重发后显式放弃", "[acceptance][modules]") {
-    modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
-    auto keyframe_writer = resources.keyframes.acquireWriteToken();
-    auto graph_writer = resources.graph.acquireWriteToken();
-    auto& recognizer = runtime.addModule<modules::PlaceRecognizerModule>(
-        "/pr", std::make_unique<Loops>(), resources);
-    auto& sink = runtime.addModule<NoAck>("/sink");
-    runtime.init();
-
-    comm::Publisher<fw::KeyframeEvent> notify(
-        runtime.core().topic<fw::KeyframeEvent>(modules::topics::kKeyframe), comm::PublishOptions{});
-    for (std::uint64_t i = 1; i <= 3; ++i) {
-        keyframe_writer.modify([&](fw::KeyframeStoreData& store) {
-            auto frame = std::make_shared<fw::Keyframe>();
-            frame->id = fw::KeyframeId{i};
-            frame->sequence = i;
-            store.append(frame);
-        });
-        notify.publish(fw::KeyframeEvent{});
-        settle(runtime);
-    }
-    REQUIRE(recognizer.pendingLoops() == 2);
-
-    // 其中一条其实已经进了真源（只是回执丢了）：查真源就地结案
-    graph_writer.modify([](fw::PoseGraphData& graph) {
-        graph.committed_constraints.insert(fw::ConstraintId{1});
-    });
-    // 之后再没有业务帧：只靠定时器推进
-    for (int i = 0; i < 20; ++i) runtime.spinFor(1s);
-
-    CHECK(recognizer.pendingLoops() == 0);  // 不会永远挂着
-    CHECK(recognizer.recoveredFromGraph() == 1);
-    CHECK(recognizer.abandonedLoops() == 1);  // 另一条重发用尽，显式放弃
-    CHECK(sink.received > 2);                 // 确实重发过
-}
-
 // ─────────────────────────── 标定身份 ───────────────────────────
 
 TEST_CASE("帧处理中改标定：结果与关键帧都用帧开始时那一份", "[acceptance][calibration]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     modules::SlamResources resources;
     resources.setCalibration(validCalibration());
     bool changed = false;
@@ -605,7 +519,7 @@ TEST_CASE("去畸变：已补偿的原样保留，轨迹不覆盖的不外推", 
 TEST_CASE("图里混入不同标定的节点就不再产出校正", "[acceptance][graph]") {
     // 一张图只属于一份标定：换代之后再往里加节点，解对应的就不是任何一份标定了
     modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
     auto optimizer = std::make_unique<IdleOptimizer>();
     auto* idle = optimizer.get();

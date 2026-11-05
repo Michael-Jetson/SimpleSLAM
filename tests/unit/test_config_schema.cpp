@@ -20,7 +20,7 @@ TEST_CASE("缺省即默认值", "[config]") {
     const auto config = loadConfigString("odometry:\n  max_iterations: 7\n");
     CHECK(config.odometry.max_iterations == 7);
     CHECK(config.odometry.voxel_size_m == Approx(0.5));  // 没写的保持默认
-    CHECK(config.runtime.worker_threads == 2);
+    CHECK(config.runtime.spin_budget == 4096);
     CHECK(config.name == "default");
 }
 
@@ -34,7 +34,7 @@ TEST_CASE("类型不符是错误，不做隐式转换", "[config]") {
     CHECK_THROWS_AS(loadConfigString("odometry:\n  max_iterations: abc\n"), ConfigError);
     CHECK_THROWS_AS(loadConfigString("odometry:\n  max_iterations: 1.5\n"), ConfigError);
     CHECK_THROWS_AS(loadConfigString("runtime:\n  offline: 1\n"), ConfigError);
-    CHECK_THROWS_AS(loadConfigString("runtime:\n  worker_threads: \"4\"\n"), ConfigError);
+    CHECK_THROWS_AS(loadConfigString("runtime:\n  spin_budget: \"4\"\n"), ConfigError);
 }
 
 TEST_CASE("配置哈希只随内容变，不随注释与键序变", "[config]") {
@@ -78,7 +78,7 @@ TEST_CASE("未知的空映射也是未知键", "[config]") {
 }
 
 TEST_CASE("类型对了不等于值有意义", "[config]") {
-    CHECK_THROWS_AS(loadConfigString("runtime:\n  worker_threads: -1\n"), ConfigError);
+    CHECK_THROWS_AS(loadConfigString("runtime:\n  spin_budget: -1\n"), ConfigError);
     CHECK_THROWS_AS(loadConfigString("runtime:\n  spin_budget: 0\n"), ConfigError);
     CHECK_THROWS_AS(loadConfigString("packetizer:\n  post_support_s: -0.1\n"), ConfigError);
     CHECK_THROWS_AS(loadConfigString("packetizer:\n  post_support_s: nan\n"), ConfigError);
@@ -88,7 +88,7 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(loadConfigString("backend:\n  odometry_rotation_weight: 0\n"), ConfigError);
     // 命令行覆盖走同一套校验
     SlamConfig config;
-    CHECK_THROWS_AS(applyOverrides(config, {"runtime.worker_threads=0"}), ConfigError);
+    CHECK_THROWS_AS(applyOverrides(config, {"runtime.spin_budget=0"}), ConfigError);
 }
 
 TEST_CASE("命令行覆盖按 schema 的类型解析", "[config]") {
@@ -141,8 +141,8 @@ TEST_CASE("schema 从同一份字段清单导出", "[config]") {
             // 没有任何代码在运行期重新读它：标成可调的话，结果上的参数版本就是假的
             CHECK_FALSE(field.tunable);
         }
-        if (field.path == "runtime.worker_threads") {
-            CHECK_FALSE(field.tunable);  // 线程数改了要重启，不是"改了没生效"
+        if (field.path == "runtime.spin_budget") {
+            CHECK_FALSE(field.tunable);  // 步进预算改了要重启，不是"改了没生效"
             saw_fixed = true;
         }
     }
@@ -164,11 +164,11 @@ TEST_CASE("可调字段进参数存储，声明不覆盖它", "[config][params]"
     CHECK(store.snapshot()->get<double>(name) == 2.5);
 
     // 模块随后按代码默认值声明：配置给的值优先
-    CHECK(store.declare<double>(name, 1.0) == comm::ParamDeclare::kAlreadyPresent);
+    store.declare<double>(name, 1.0);
     CHECK(store.snapshot()->get<double>(name) == 2.5);
 
     // 不可调字段不进参数存储：改了也不会生效，不如根本不提供这个口子
-    CHECK_FALSE(store.snapshot()->has(configParamName("runtime.worker_threads")));
+    CHECK_FALSE(store.snapshot()->has(configParamName("runtime.spin_budget")));
 }
 
 TEST_CASE("运行期改过的可调字段可以读回配置", "[config][params]") {

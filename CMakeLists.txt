@@ -20,7 +20,7 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(CompilerOptions)
 
 # ── 构建范围 ──
-# 新栈 = 通信运行时 + 框架契约 + 模块层（只需要 Eigen / manif / Asio / Catch2）。
+# 新栈 = 通信运行时 + 框架契约 + 模块层（只需要 Eigen / manif / Catch2）。
 # 旧垂直（core/sensor_io/odometry/backend/runner）另需 nanoflann 与 robin-map，
 # 在依赖不全的环境里可以只构建新栈：cmake -DSIMPLESLAM_NEW_STACK_ONLY=ON
 option(SIMPLESLAM_NEW_STACK_ONLY "只构建通信/框架/模块新栈" OFF)
@@ -105,10 +105,9 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
-# ── 文档校验（scripts/doc_lint.py + doc_drift.py，规则见 docs/README.md）──
+# ── 文档校验（scripts/doc_lint.py，约定见 docs/README.md）──
 add_custom_target(docs-verify
     COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_lint.py
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${PROJECT_SOURCE_DIR}/scripts/doc_drift.py
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMENT "文档 lint + 漂移检测"
+    COMMENT "文档检查"
 )

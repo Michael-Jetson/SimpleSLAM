@@ -2,7 +2,7 @@
 
 三件事，和 C++ 侧的分工是明确的：
 
-* **配置**——真源在 C++（ADR-0005）。这里不重写 schema，而是读
+* **配置**——真源在 C++。这里不重写 schema，而是读
   ``simpleslam-config schema`` 的输出；配置可以用 Python 写（一个 ``.py``
   文件构造 :class:`~simpleslam.config.Config`），渲染成 YAML 交给 C++ 加载。
   规范化导出与哈希在两边各有一份实现，由 ``python/tests/test_cpp_parity.py``

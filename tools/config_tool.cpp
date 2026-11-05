@@ -4,7 +4,7 @@
 /// @file config_tool.cpp
 /// simpleslam-config：配置的命令行入口。
 ///
-/// 它存在的理由只有一个——配置的真源在 C++（ADR-0005），所以 schema 也必须由
+/// 它存在的理由只有一个——配置的真源在 C++，所以 schema 也必须由
 /// C++ 吐出来。Python 侧读这份输出做校验与补全，因此两边不会各自漂移。
 
 #include <SimpleSLAM/config/loader.hpp>

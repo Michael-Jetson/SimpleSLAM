@@ -29,7 +29,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -70,7 +69,7 @@ struct PoseGraphNode {
 
 struct PoseGraphEdge {
     EdgeKind kind = EdgeKind::kOdometry;
-    /// 一次性约束的稳定身份；里程计边可以为空（它由关键帧序列隐含决定）。
+    /// 回环边的稳定身份；里程计边可以为空（它由关键帧序列隐含决定）。
     ConstraintId id{};
     KeyframeId from{};
     KeyframeId to{};  ///< kPrior 时无效
@@ -120,8 +119,6 @@ struct PoseGraphData {
     /// 节点按 id 升序追加，因此可二分查找；边按提交顺序追加。
     AppendLog<PoseGraphNode> nodes;
     AppendLog<PoseGraphEdge> edges;
-    /// 已提交的一次性约束身份。用于去重：同一条回环重发不会变成两条边。
-    std::set<ConstraintId> committed_constraints;
     /// 图覆盖到的关键帧序号，用于"稍旧但兼容"的判断。
     std::uint64_t covered_until = 0;
     /// 这张图建立时用的标定版本（取自第一个节点）。
@@ -155,10 +152,6 @@ struct PoseGraphData {
             }
         }
         return nullptr;
-    }
-
-    [[nodiscard]] bool hasConstraint(ConstraintId id) const {
-        return id.valid() && committed_constraints.count(id) != 0;
     }
 
     [[nodiscard]] std::size_t nodeCount() const noexcept { return nodes.size(); }

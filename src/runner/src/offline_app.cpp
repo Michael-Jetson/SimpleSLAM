@@ -1,5 +1,5 @@
 /// @file offline_app.cpp
-/// L1 配置驱动离线应用实现（ADR / R1c）。
+/// L1 配置驱动离线应用实现。
 
 #include <SimpleSLAM/runner/offline_app.hpp>
 

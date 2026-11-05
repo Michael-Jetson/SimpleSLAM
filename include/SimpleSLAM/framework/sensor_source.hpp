@@ -8,22 +8,16 @@
 ///
 /// 来源只需要产出四类内部类型之一；打包器把它们组织成 SensorPacket，并负责时间契约。
 ///
-/// ## 三条水位线
+/// ## 一条水位线
 ///
-/// "生成成功"不等于"下游接纳"，更不等于"下游用完了"。把三者合成一个
-/// `consumed_until_` 会让被拒的那一包的 IMU 无法补回：第一包被拒后，
-/// 下一包的区间仍从被拒帧的时刻起算，中间那段 IMU 永久丢失。所以分成三条：
+/// **生成水位** `generated_until_`：已经组装出包的最后一个参考时刻。下一包的 IMU 区间从这里起算，
+/// 更早的原始 IMU 也从这里开始回收。包拷走了自己的 IMU，所以回收不需要等下游。
 ///
-/// - **生成水位** `generated_until_`：已经组装出包的最后一个参考时刻。只作诊断。
-/// - **接纳水位** `admitted_until_`：下游确认接纳的最后一个参考时刻。
-///   下一包的 IMU 区间从这里起算——被拒的包不推进它。
-/// - **消费水位** `released_until_`：下游确认用完的最后一个参考时刻。
-///   只有它才允许回收原始 IMU；在此之前的样本一律保留。
+/// ## 过载只丢触发帧
 ///
-/// 三条水位线靠一本**逐包账本**推进，账本在消费确认之前不得删除条目：接纳时就删的话，
-/// 之后消费确认找不到条目，只能拿当前接纳水位顶替，于是"只确认了第 1 包"会把消费
-/// 水位推到第 2 包。消费水位只沿**已确认的连续前缀**推进——中间有一包没确认，
-/// 后面的确认就不算数。
+/// 下游处理不过来时，能丢的只有触发帧，不能丢 IMU：状态传播要连续，丢一段 IMU 算法就接不上了。
+/// 在途的包（已发出、下游还没报告处理完）达到上限时，凑齐括点的触发帧直接丢掉，
+/// 生成水位不动，它那段 IMU 自然并入下一包。
 ///
 /// ## IMU 是能力，不是前提
 ///
@@ -43,7 +37,6 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -186,12 +179,12 @@ struct PacketizerPolicy {
     ClockDomainId clock_domain = kReferenceClock;
     /// IMU 积压上限。超限即显式报缺口，而不是无声增长。
     std::size_t max_imu_backlog = 100000;
-    /// 等待括点的触发帧队列上限。低频惯性流下几个触发帧可能同时在等；
-    /// 队列有界，超限丢最旧的并报缺口。
-    std::size_t max_pending_triggers = 8;
-    /// 逐包账本的上限。下游长期不确认时，账本不能无界增长；超限即丢最旧的条目
-    /// 并报缺口——"永不丢"只在声明的容量之内成立。
-    std::size_t max_pending_packets = 4096;
+    /// 等待括点的触发帧队列上限。低频惯性流下几个触发帧可能同时在等，IMU 晚到时等得更多。
+    /// 冗余给足：200 帧是 10 Hz 激光的 20 秒。超限丢最旧的，它那段 IMU 并入下一包。
+    std::size_t max_pending_triggers = 200;
+    /// 在途上限：已发出、下游还没报告处理完的包数。达到上限时凑齐括点的触发帧直接丢掉，
+    /// 它那段 IMU 并入下一包。0 表示不限：离线逐包步进，不需要丢。
+    std::size_t max_in_flight = 0;
     /// 待附着的图像 / GNSS 上限。附不上的旧附件按时间窗清掉，数量另有此上限。
     std::size_t max_pending_attachments = 256;
     /// 附件的时间容差：超过它就不附带，而不是硬塞一个最近的。
@@ -204,10 +197,7 @@ struct PacketizerPolicy {
 ///
 /// feed() 喂一条数据，可能返回一个包；一条 IMU 可能同时让队列里好几个触发帧凑齐
 /// 括点，所以之后要反复 poll() 直到它返回空。要自己控制每一步发几个包时，用 ingest()
-/// 只收数据，再按预算 poll()。**同一时刻至多有一个包悬而未决**：
-/// 上一个包得到 notifyAdmitted() 或 notifyRejected() 之前，不会生成下一个——
-/// 下一包的 IMU 区间从接纳水位起算，上一包的结局未定时算出来的区间是错的
-/// （被接纳就重叠，被拒收就漏掉）。
+/// 只收数据，再按预算 poll()。
 class Packetizer {
 public:
     explicit Packetizer(PacketizerPolicy policy = {}) : policy_(policy) {}
@@ -222,146 +212,39 @@ public:
     /// 包——一条 IMU 可能同时让好几帧凑齐括点，一步只该发预算允许的那几个。
     void ingest(const SensorDatum& datum) { accept(datum); }
 
-    /// 取下一个已凑齐的包。上一个包还悬而未决、或没有凑齐的触发帧时返回空。
+    /// 取下一个已凑齐的包。没有凑齐的触发帧时返回空。下游处理不过来时，凑齐的触发帧在这里被丢掉。
     std::optional<SensorPacket> poll() {
-        if (unresolved_ || pending_triggers_.empty()) return std::nullopt;
-        if (policy_.imu == ImuRequirement::kRequired) {
-            // 等到终点（加算法要的余量）之后的第一条样本：那就是右括点
-            const Timestamp watermark =
-                pending_triggers_.front().reference_time + policy_.post_support;
-            if (imu_.empty() || imu_.back()->time < watermark) return std::nullopt;
+        while (frontReady()) {
+            if (!overloaded()) return buildFront();
+            dropFront();
         }
-        return buildFront();
+        return std::nullopt;
     }
 
     /// 数据结束。还在等括点的触发帧按"已有多少 IMU 就声明多少"逐个发出，
-    /// 并标 kImuGap——丢掉最后几帧不如如实交代它们缺支撑。每次调用发一个，
-    /// 与 poll() 一样受"至多一个悬而未决"约束。
+    /// 并标 kImuGap——丢掉最后几帧不如如实交代它们缺支撑。每次调用发一个。
+    /// 这里不看在途上限：剩下的帧有限，也没有更新的帧要让路。
     std::optional<SensorPacket> flush() {
-        if (unresolved_ || pending_triggers_.empty()) return std::nullopt;
+        if (pending_triggers_.empty()) return std::nullopt;
         return buildFront();
     }
 
-    // ── 三条水位线的推进 ──
-
-    /// 下游已接纳。下一包的 IMU 区间从此处起算。重复确认是幂等的。
-    void notifyAdmitted(std::uint64_t sequence) {
-        if (unresolved_ == sequence) unresolved_ = 0;
-        auto* entry = find(sequence);
-        if (entry == nullptr || entry->admitted) return;
-        entry->admitted = true;
-        admitted_until_ = std::max(admitted_until_, entry->reference_time);
-        has_admitted_ = true;
+    /// 下游的处理进度：序号不大于 sequence 的包都处理完了。累计的，丢一条由下一条补上。
+    void notifyConsumedThrough(std::uint64_t sequence) noexcept {
+        consumed_through_ = std::max(consumed_through_, std::min(sequence, sequence_));
     }
 
-    /// 下游拒收。接纳水位不动，IMU 一条不丢，下一包自然把这段接回去。
-    ///
-    /// 被拒的包从未交付，下游手里没有它，所以它在回收的连续前缀里是可跳过的——
-    /// 与账本超限丢掉的未确认条目不同，后者是"交付了但证据没了"。
-    void notifyRejected(std::uint64_t sequence) {
-        if (unresolved_ == sequence) unresolved_ = 0;
-        for (auto it = ledger_.begin(); it != ledger_.end(); ++it) {
-            if (it->sequence != sequence) continue;
-            ledger_.erase(it);
-            rejected_sequences_.insert(sequence);
-            pending_gap_ = GapReason::kDroppedTrigger;
-            // 拒收序号表也有界：持续拒收而前缀迟迟不推进时，同样按失同步处理
-            if (rejected_sequences_.size() > policy_.max_pending_packets) {
-                rejected_sequences_.clear();
-                reclaim_desynchronized_ = true;
-                ++ledger_overflows_;
-            }
-            return;
-        }
-    }
-
-    /// 下游已用完。消费水位只沿已确认的连续前缀推进：中间断了一包，
-    /// 后面的确认就不能替它作数。重复确认是幂等的。
-    ///
-    /// "连续"按**序号**判定，不是"账本里挨着"。
-    /// 账本超限时会丢掉最旧的未确认条目，此后账本里挨着的两条中间其实缺了一段；
-    /// 只看"front 是否已确认"就会跨过这个缺口继续推进，把"只沿已证明完成的连续
-    /// 前缀推进"变成一句空话。现在跨不过去：账本一旦丢过未确认条目，回收就进入
-    /// **失同步**状态并停在原地，直到使用者显式 resyncReclamation() 认下这个缺口。
-    void notifyConsumed(std::uint64_t sequence) {
-        if (auto* entry = find(sequence); entry != nullptr) entry->consumed = true;
-        advanceRelease();
-    }
-
-    /// 累计确认：序号不大于 sequence 的包全部用完了。
-    ///
-    /// 消费方按序处理，所以累计进度是精确的；它的好处是**丢一条不要紧**——下一条
-    /// 累计确认会把前面的一并补上，不需要重发也不需要逐条回执。
-    void notifyConsumedThrough(std::uint64_t sequence) {
-        for (auto& entry : ledger_) {
-            if (entry.sequence > sequence) break;
-            entry.consumed = true;
-        }
-        advanceRelease();
-    }
-
-private:
-    void advanceRelease() {
-        bool advanced = false;
-        while (!ledger_.empty() && ledger_.front().consumed) {
-            if (reclaim_desynchronized_) break;  // 缺口未认领，不许跨过去
-            // 被拒的序号从未交付，可以跳过；其余空洞一律挡住
-            while (next_release_sequence_ < ledger_.front().sequence
-                   && rejected_sequences_.erase(next_release_sequence_) > 0) {
-                ++next_release_sequence_;
-            }
-            if (ledger_.front().sequence != next_release_sequence_) break;
-            released_until_ = std::max(released_until_, ledger_.front().reference_time);
-            next_release_sequence_ = ledger_.front().sequence + 1;
-            ledger_.pop_front();
-            advanced = true;
-        }
-        // 前缀已经越过的拒收序号不再有用
-        rejected_sequences_.erase(rejected_sequences_.begin(),
-                                  rejected_sequences_.lower_bound(next_release_sequence_));
-        if (!advanced) return;
-        has_released_ = true;
-        trimImu();
-    }
-
-public:
-
-    /// 认下账本缺口，允许回收水位越过被丢弃的那些包重新跟上。
-    ///
-    /// 这是一个**显式决定**：越过缺口意味着那几包的原始 IMU 从此可回收，而没有任何
-    /// 证据表明下游用完了它们。调用方要自己决定这个代价能不能接受，并记进产物。
-    void resyncReclamation() {
-        if (!reclaim_desynchronized_) return;
-        reclaim_desynchronized_ = false;
-        next_release_sequence_ = ledger_.empty() ? sequence_ + 1 : ledger_.front().sequence;
-        rejected_sequences_.erase(rejected_sequences_.begin(),
-                                  rejected_sequences_.lower_bound(next_release_sequence_));
-    }
-
-    /// 回收水位是否已失同步（账本丢过未确认条目）。
-    [[nodiscard]] bool reclamationDesynchronized() const noexcept {
-        return reclaim_desynchronized_;
-    }
-    /// 账本超限丢弃未确认条目的累计次数。非零就说明下游确认跟不上发包。
-    [[nodiscard]] std::uint64_t ledgerOverflows() const noexcept { return ledger_overflows_; }
-
-    /// 过载时丢掉一个尚未发出的触发帧：IMU 不丢，并入下一包，同时标记缺口。
-    void dropTrigger() {
-        if (pending_triggers_.empty()) return;
-        pending_triggers_.pop_front();
-        pending_gap_ = GapReason::kDroppedTrigger;
-    }
+    /// 在途上限。由装配决定：有处理进度可看时才设。
+    void setMaxInFlight(std::size_t limit) noexcept { policy_.max_in_flight = limit; }
 
     [[nodiscard]] bool waitingForWatermark() const noexcept { return !pending_triggers_.empty(); }
-    /// 上一个包是否还悬而未决（等着接纳或拒收的结论）。
-    [[nodiscard]] bool hasUnresolved() const noexcept { return unresolved_ != 0; }
     /// 正在等括点的触发帧数。
     [[nodiscard]] std::size_t pendingTriggers() const noexcept { return pending_triggers_.size(); }
     /// 因为不在参考时钟域里而被拒收的数据条数。
     [[nodiscard]] std::uint64_t foreignClockDrops() const noexcept { return foreign_clock_drops_; }
     /// 因为时间倒流或重复而被丢弃的 IMU 条数。
     [[nodiscard]] std::uint64_t outOfOrderImu() const noexcept { return imu_out_of_order_; }
-    /// 因为触发帧队列满而被丢弃的触发帧数。
+    /// 被丢掉的触发帧数：下游处理不过来，或者等括点的队列满了。它们的 IMU 都并入了下一包。
     [[nodiscard]] std::uint64_t droppedTriggers() const noexcept { return dropped_triggers_; }
     /// 因为时刻不前进而被拒收的触发帧数。
     [[nodiscard]] std::uint64_t rejectedTriggers() const noexcept { return rejected_triggers_; }
@@ -374,8 +257,10 @@ public:
         return pending_images_.size() + pending_gnss_.size();
     }
     [[nodiscard]] std::size_t imuBacklog() const noexcept { return imu_.size(); }
-    /// 已发出但尚未确认消费的包数。长期不降说明下游没有回确认。
-    [[nodiscard]] std::size_t inFlight() const noexcept { return ledger_.size(); }
+    /// 在途的包数：已发出、下游还没报告处理完。
+    [[nodiscard]] std::size_t inFlight() const noexcept {
+        return static_cast<std::size_t>(sequence_ - consumed_through_);
+    }
     [[nodiscard]] std::uint64_t sequence() const noexcept { return sequence_; }
     [[nodiscard]] Timestamp generatedUntil() const noexcept { return generated_until_; }
     /// **数据时间水位**：已收下的数据（参考时钟域内、时间有序）里最晚的时刻。
@@ -386,18 +271,8 @@ public:
     [[nodiscard]] Timestamp observedUntil() const noexcept { return observed_until_; }
     /// 收下的第一条数据的时刻。离线运行据此确定时钟原点。还没收到数据时为空。
     [[nodiscard]] std::optional<Timestamp> firstObserved() const noexcept { return first_observed_; }
-    [[nodiscard]] Timestamp admittedUntil() const noexcept { return admitted_until_; }
-    [[nodiscard]] Timestamp releasedUntil() const noexcept { return released_until_; }
 
 private:
-    /// 逐包账本的一条。生成时入账，消费确认后才出账。
-    struct PacketRecord {
-        std::uint64_t sequence = 0;
-        Timestamp reference_time{0};
-        bool admitted = false;
-        bool consumed = false;
-    };
-
     /// 收下一条数据。时钟域不对的一律拒收：跨域融合要先经显式换算。
     void accept(const SensorDatum& datum) {
         if (const auto* imu = std::get_if<Ptr<ImuSample>>(&datum)) {
@@ -465,10 +340,7 @@ private:
         pending_triggers_.push_back(PendingTrigger{std::move(trigger), reference_time});
         observe(reference_time);
         if (pending_triggers_.size() > policy_.max_pending_triggers) {
-            // 等括点的触发帧太多：丢最旧的并报缺口，它的 IMU 并入下一包
-            pending_triggers_.pop_front();
-            ++dropped_triggers_;
-            pending_gap_ = GapReason::kDroppedTrigger;
+            dropFront();  // 等括点的触发帧太多
         }
     }
 
@@ -482,6 +354,25 @@ private:
         }
     }
 
+    /// 队首的触发帧凑齐了没有：要 IMU 时等到终点（加算法要的余量）之后的第一条样本，那就是右括点。
+    [[nodiscard]] bool frontReady() const {
+        if (pending_triggers_.empty()) return false;
+        if (policy_.imu != ImuRequirement::kRequired) return true;
+        const Timestamp watermark = pending_triggers_.front().reference_time + policy_.post_support;
+        return !imu_.empty() && imu_.back()->time >= watermark;
+    }
+
+    [[nodiscard]] bool overloaded() const noexcept {
+        return policy_.max_in_flight > 0 && inFlight() >= policy_.max_in_flight;
+    }
+
+    /// 丢掉队首的触发帧。生成水位不动，它那段 IMU 留给下一包，所以这不算缺支撑。
+    void dropFront() {
+        pending_triggers_.pop_front();
+        ++dropped_triggers_;
+        ++dropped_since_packet_;
+    }
+
     SensorPacket buildFront() {
         auto front = std::move(pending_triggers_.front());
         pending_triggers_.pop_front();
@@ -491,19 +382,18 @@ private:
     SensorPacket buildPacket(Trigger trigger, Timestamp reference_time) {
         SensorPacket packet;
         packet.sequence = ++sequence_;
-        unresolved_ = packet.sequence;
         packet.trigger = std::move(trigger);
         packet.reference_time = reference_time;
         packet.time_offset_support = policy_.post_support;
 
-        // 需求由触发帧与接纳水位决定，不由现有数据反推。状态传播从上次已接纳的参考
-        // 时刻起算（不是"已生成"）；首包没有这个时刻，从本帧采集起点起算——拿"现有的
-        // 第一条 IMU"当起点，等于用数据的缺失来定义需求，缺口就永远不会被发现。
+        // 需求由触发帧与生成水位决定，不由现有数据反推。状态传播从上一包的参考时刻起算；
+        // 首包没有这个时刻，从本帧采集起点起算——拿"现有的第一条 IMU"当起点，等于用数据
+        // 的缺失来定义需求，缺口就永远不会被发现。
         // 去畸变还要覆盖整帧采集区间，所以支撑的需求是两者的并集。
         const Timestamp capture_begin =
             std::min(captureBegin(packet.trigger, reference_time), reference_time);
         const Timestamp propagation_begin =
-            has_admitted_ ? std::min(admitted_until_, reference_time) : capture_begin;
+            has_generated_ ? std::min(generated_until_, reference_time) : capture_begin;
         const Timestamp end = reference_time + policy_.post_support;
         packet.propagation = TimeRange{propagation_begin, end};
         packet.imu_required = TimeRange{std::min(propagation_begin, capture_begin), end};
@@ -547,25 +437,18 @@ private:
         pruneStale(pending_images_, reference_time);
         pruneStale(pending_gnss_, reference_time);
         packet.gap = gap;
+        packet.dropped_triggers = dropped_since_packet_;
+        dropped_since_packet_ = 0;
 
         pending_gap_ = GapReason::kNone;
         generated_until_ = reference_time;
-        if (ledger_.empty() && !has_released_) next_release_sequence_ = packet.sequence;
-        ledger_.push_back(PacketRecord{packet.sequence, reference_time, false, false});
-        if (ledger_.size() > policy_.max_pending_packets) {
-            // 下游长期不确认：账本有界，丢最旧的一条。但丢掉的是"消费与否的证据"，
-            // 所以回收水位就地失同步，不再假装连续前缀还在推进。
-            const bool unconfirmed = !ledger_.front().consumed;
-            ledger_.pop_front();
-            ++ledger_overflows_;
-            if (unconfirmed) reclaim_desynchronized_ = true;
-            pending_gap_ = GapReason::kDroppedTrigger;
-        }
+        has_generated_ = true;
+        trimImu();
         return packet;
     }
 
     /// 取 [begin, end] 的样本，并向两侧各多取一个跨越端点的样本。
-    /// 不从 imu_ 里移除——回收只由消费水位决定。
+    /// 不从 imu_ 里移除——回收由 trimImu() 跟着生成水位做。
     [[nodiscard]] std::vector<ImuSample> takeImuSpan(Timestamp begin, Timestamp end) const {
         std::vector<ImuSample> taken;
         if (imu_.empty()) return taken;
@@ -591,21 +474,12 @@ private:
         return taken;
     }
 
-    /// 回收原始 IMU：保留 released_until_ - pre_support 之后的全部样本，
-    /// 外加一个跨越该时刻的边界样本。
+    /// 回收原始 IMU：保留 生成水位 - pre_support 之后的全部样本，外加一个跨越该时刻的边界样本。
     void trimImu() {
-        if (!has_released_) return;
-        const Timestamp keep_from = released_until_ - policy_.pre_support;
+        const Timestamp keep_from = generated_until_ - policy_.pre_support;
         while (imu_.size() >= 2 && imu_[1]->time <= keep_from) {
             imu_.pop_front();
         }
-    }
-
-    [[nodiscard]] PacketRecord* find(std::uint64_t sequence) {
-        for (auto& entry : ledger_) {
-            if (entry.sequence == sequence) return &entry;
-        }
-        return nullptr;  // 找不到就是找不到：绝不拿别的时刻顶替
     }
 
     template <class T>
@@ -646,8 +520,6 @@ private:
 
     PacketizerPolicy policy_;
     std::deque<PendingTrigger> pending_triggers_;
-    /// 已生成、尚未得到接纳或拒收结论的包序号。非零时不生成下一个包。
-    std::uint64_t unresolved_ = 0;
     std::uint64_t foreign_clock_drops_ = 0;
     std::uint64_t imu_out_of_order_ = 0;
     std::uint64_t dropped_triggers_ = 0;
@@ -657,21 +529,13 @@ private:
     std::deque<Ptr<ImuSample>> imu_;
     std::deque<Ptr<CameraFrame>> pending_images_;
     std::deque<Ptr<GnssFix>> pending_gnss_;
-    std::deque<PacketRecord> ledger_;
-    /// 下一个允许推进回收水位的包序号。连续前缀按它判定，不按"账本里挨着"。
-    std::uint64_t next_release_sequence_ = 0;
-    /// 被下游拒收因而从未交付的序号。它们在连续前缀里可跳过。
-    std::set<std::uint64_t> rejected_sequences_;
-    std::uint64_t ledger_overflows_ = 0;
-    bool reclaim_desynchronized_ = false;
+    std::uint64_t consumed_through_ = 0;
+    std::uint32_t dropped_since_packet_ = 0;
 
     Timestamp generated_until_{0};
     Timestamp observed_until_{0};
     std::optional<Timestamp> first_observed_;
-    Timestamp admitted_until_{0};
-    Timestamp released_until_{0};
-    bool has_admitted_ = false;
-    bool has_released_ = false;
+    bool has_generated_ = false;
 
     GapReason pending_gap_ = GapReason::kNone;
     std::uint64_t sequence_ = 0;

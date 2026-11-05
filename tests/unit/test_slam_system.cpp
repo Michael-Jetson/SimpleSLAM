@@ -171,7 +171,6 @@ protected:
 modules::SlamSystem::Options offlineOptions() {
     modules::SlamSystem::Options options;
     options.offline = true;
-    options.worker_threads = 1;
     return options;
 }
 
@@ -301,11 +300,9 @@ TEST_CASE("写令牌保证资源单写者", "[modules][system]") {
     CHECK_THROWS_AS(system.resources().graph.acquireWriteToken(), std::logic_error);
 }
 
-TEST_CASE("约束先到、节点后到时挂起等待而不是丢弃", "[modules][system][constraint]") {
-    // 端点尚未入图时就地丢弃的话，这条回环永远不会再来一次，
-    // 最终图里只剩里程计边——而回环是一次性信息，补读补不回来。
+TEST_CASE("处理约束之前先追平关键帧，通知排在后面也读得到端点", "[modules][system][constraint]") {
     modules::SlamSystem system(offlineOptions());
-    system.setSource(std::make_unique<SyntheticSource>(8));
+    auto& io = system.setSource(std::make_unique<SyntheticSource>(8));
     system.setOdometry<ConstantVelocityOdometry>();
     auto& optimizer = system.setGraphOptimizer<ShrinkingOptimizer>();
     system.init();
@@ -314,39 +311,52 @@ TEST_CASE("约束先到、节点后到时挂起等待而不是丢弃", "[modules
         system.runtime().core().topic<fw::LoopConstraint>(modules::topics::kLoopConstraint),
         comm::PublishOptions{});
 
-    // 先发一条指向尚未存在的关键帧的约束
-    fw::LoopConstraint early;
-    early.id = fw::ConstraintId{7};
-    early.query = fw::KeyframeId{3};
-    early.match = fw::KeyframeId{1};
-    early.T_match_query = SE3d::Identity();
-    early.information = Mat6d::Identity() * 10.0;
-    publisher.publish(early);
+    // 约束排在关键帧通知前面。关键帧先入库后通知，所以只要入过库，图优化就读得到端点
+    io.pump(4);
+    fw::LoopConstraint loop;
+    loop.id = fw::ConstraintId{7};
+    loop.query = fw::KeyframeId{2};
+    loop.match = fw::KeyframeId{1};
+    loop.T_match_query = SE3d::Identity();
+    loop.information = Mat6d::Identity() * 10.0;
+    publisher.publish(loop);
+    system.odometry()->mailbox()->drainSome();  // 关键帧入库，通知排到约束后面
     system.settle();
 
-    CHECK(optimizer.deferredConstraints() == 1);
-    CHECK(optimizer.committedConstraints() == 0);
-
-    // 跑完数据，关键帧补齐，挂起的约束应当被重试并提交
-    system.runOffline();
-    CHECK(optimizer.deferredConstraints() == 0);
     CHECK(optimizer.committedConstraints() == 1);
+    CHECK(optimizer.rejectedConstraints() == 0);
 
     std::size_t loop_edges = 0;
     system.resources().graph.snapshot()->edges.forEach([&](const fw::PoseGraphEdge& edge) {
         if (edge.kind == fw::EdgeKind::kLoop) ++loop_edges;
     });
     CHECK(loop_edges == 1);
+}
 
-    // 同一身份重发不会变成第二条边
-    publisher.publish(early);
-    system.settle();
-    CHECK(system.diagnostics().countEvent("graph.constraint_duplicate") == 1);
-    std::size_t after = 0;
-    system.resources().graph.snapshot()->edges.forEach([&](const fw::PoseGraphEdge& edge) {
-        if (edge.kind == fw::EdgeKind::kLoop) ++after;
-    });
-    CHECK(after == 1);
+TEST_CASE("端点不存在的约束被拒绝，并记进运行结局", "[modules][system][constraint]") {
+    modules::SlamSystem system(offlineOptions());
+    system.setSource(std::make_unique<SyntheticSource>(4));
+    system.setOdometry<ConstantVelocityOdometry>();
+    auto& optimizer = system.setGraphOptimizer<ShrinkingOptimizer>();
+    system.init();
+
+    auto publisher = comm::Publisher<fw::LoopConstraint>(
+        system.runtime().core().topic<fw::LoopConstraint>(modules::topics::kLoopConstraint),
+        comm::PublishOptions{});
+    fw::LoopConstraint orphan;
+    orphan.id = fw::ConstraintId{7};
+    orphan.query = fw::KeyframeId{300};
+    orphan.match = fw::KeyframeId{100};
+    orphan.T_match_query = SE3d::Identity();
+    orphan.information = Mat6d::Identity() * 10.0;
+    publisher.publish(orphan);
+    system.runOffline();
+
+    CHECK(optimizer.rejectedConstraints() == 1);
+    CHECK(optimizer.committedConstraints() == 0);
+    CHECK(system.diagnostics().countEvent("graph.constraint_rejected") == 1);
+    CHECK(system.runOutcome().rejected_constraints == 1);
+    CHECK_FALSE(system.runOutcome().outputComplete());
 }
 
 TEST_CASE("校正事件自带解快照，身份与数据同源", "[modules][system][solution]") {
@@ -355,14 +365,10 @@ TEST_CASE("校正事件自带解快照，身份与数据同源", "[modules][syst
     system.setOdometry<ConstantVelocityOdometry>();
     system.setPlaceRecognizer<ScriptedPlaceRecognizer>();
     system.setGraphOptimizer<ShrinkingOptimizer>();
-    system.init();
-
     std::vector<fw::CorrectionEvent> seen;
-    auto topic = system.runtime().core().topic<fw::CorrectionEvent>(modules::topics::kCorrection);
-    auto mailbox = comm::Mailbox::create(system.runtime().core().io(), "/observer", nullptr);
-    auto sub = topic->subscribe(mailbox, [&](const comm::MsgPtr<fw::CorrectionEvent>& e) {
-        seen.push_back(*e);
-    }, comm::SubscribeOptions{8, comm::Delivery::kReliable});
+    system.runtime().node().subscribe<fw::CorrectionEvent>(
+        modules::topics::kCorrection, 0, [&](const fw::CorrectionEvent& e) { seen.push_back(e); });
+    system.init();
 
     system.runOffline();
     REQUIRE(seen.size() == 1);
@@ -378,7 +384,7 @@ TEST_CASE("校正事件自带解快照，身份与数据同源", "[modules][syst
     CHECK(system.resources().graph.snapshot()->nodeCount() == 10);
 }
 
-TEST_CASE("原始数据的消费确认回到打包器", "[modules][system][watermark]") {
+TEST_CASE("处理进度回到打包器，原始 IMU 生成之后就回收", "[modules][system][watermark]") {
     modules::SlamSystem system(offlineOptions());
     auto& io = system.setSource(std::make_unique<SyntheticSource>(6));
     system.setOdometry<ConstantVelocityOdometry>();
@@ -387,8 +393,8 @@ TEST_CASE("原始数据的消费确认回到打包器", "[modules][system][water
 
     CHECK(io.publishedPackets() == 6);
     CHECK(io.consumedPackets() == 6);
-    CHECK(io.packetizer().admittedUntil() == io.packetizer().releasedUntil());
-    CHECK(io.packetizer().imuBacklog() <= 2);  // 消费确认之后只留边界样本
+    CHECK(io.packetizer().inFlight() == 0);
+    CHECK(io.packetizer().imuBacklog() <= 2);  // 只留跨越生成水位的边界样本
 }
 
 TEST_CASE("离线虚拟时钟随数据时间推进", "[modules][system][clock]") {
@@ -406,10 +412,7 @@ TEST_CASE("离线虚拟时钟随数据时间推进", "[modules][system][clock]")
     CHECK(system.runtime().clock().now().count() == 100'000'000);
 }
 
-TEST_CASE("约束的重试由提交确认触发，不等下一帧业务数据",
-          "[modules][system][constraint]") {
-    // 只在下一关键帧时重试的话，数据跑完之后没有下一帧，
-    // 卡在待办表里的那条就永远发不出去。
+TEST_CASE("回环约束一次送达进图，不需要回执", "[modules][system][constraint]") {
     modules::SlamSystem system(offlineOptions());
     system.setSource(std::make_unique<SyntheticSource>(12));
     system.setOdometry<ConstantVelocityOdometry>();
@@ -419,11 +422,8 @@ TEST_CASE("约束的重试由提交确认触发，不等下一帧业务数据",
     system.runOffline();
 
     CHECK(recognizer.loopsFound() == 1);
-    CHECK(recognizer.pendingLoops() == 0);
-    // 确认是"进没进真源"的回执，与"优化收没收敛"是两件事
-    CHECK(recognizer.acks() >= 1);
-    CHECK(recognizer.confirmedLoops() == 1);
     CHECK(optimizer.committedConstraints() == 1);
+    CHECK(optimizer.rejectedConstraints() == 0);
 }
 
 TEST_CASE("解不可用就不进真源，也不发校正", "[modules][graph]") {
@@ -472,10 +472,8 @@ private:
 
 }  // namespace
 
-TEST_CASE("下游满载时 pump 让出执行权", "[modules][sensor_io]") {
-    // 预算按成功数计的话，"下游满载 → 继续读来源 → 还是满载"会一直转下去；
-    // 单工作线程配置下消费者根本没有机会被调度。
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+TEST_CASE("pump 按预算返回，不空转读来源", "[modules][sensor_io]") {
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     modules::SlamResources resources;
     auto source = std::make_unique<EndlessScanSource>();
     auto* raw = source.get();
@@ -484,20 +482,15 @@ TEST_CASE("下游满载时 pump 让出执行权", "[modules][sensor_io]") {
     policy.imu = fw::ImuRequirement::kNotRequired;
     auto& io = runtime.addModule<modules::SensorIoModule>("/slam/sensor_io", std::move(source),
                                                           policy, resources);
-    // 一个容量为 1 的可靠订阅端，但从不驱动它
     struct Idle final : comm::Module {
         void onInit() override {
-            subscribe<fw::SensorPacket>(modules::topics::kSensorPacket,
-                                        [](const fw::SensorPacket&) {},
-                                        comm::SubscribeOptions{1, comm::Delivery::kReliable});
+            subscribe<fw::SensorPacket>(modules::topics::kSensorPacket, 0, [](const fw::SensorPacket&) {});
         }
     };
     runtime.addModule<Idle>("/idle");
     runtime.init();
 
-    const auto first = io.pump(10);
-    CHECK(first.published == 1);      // 第一包进了那个容量为 1 的队列
-    CHECK(first.rejected == 1);       // 第二包被拒
-    CHECK(first.yielded);             // 于是立刻返回，把执行权让出去
-    CHECK(raw->reads() <= 3);         // 没有空转读来源
+    const auto first = io.pump(3);
+    CHECK(first.published == 3);
+    CHECK(raw->reads() == 3);  // 够了就停，不多读
 }

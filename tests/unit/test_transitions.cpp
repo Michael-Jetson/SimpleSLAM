@@ -4,7 +4,7 @@
 /// 相邻的状态转换：两件事紧挨着发生时，终态证据、寿命与结论是否仍然成立。
 ///
 /// 一个局部 API 的错误输入只能说明那个函数；这里测的是**顺序**——算法出错之后又成功、
-/// 服务受理之后服务端关闭、首次发送被拒之后再没有业务帧、读完之后终结再查结果、
+/// 服务受理之后服务端关闭、末条通知丢失之后再没有业务帧、读完之后终结再查结果、
 /// 一条 IMU 同时释放好几帧、报告里的协议转存成基线。每个用例断言的都是结论
 /// 该有的样子，而不是"多了一个字段"。
 
@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <typeindex>
 #include <variant>
 #include <vector>
 
@@ -144,7 +145,8 @@ fw::SensorPacket packetAt(fw::Timestamp t, bool gap) {
 
 struct Ticker final : comm::Module {
     int ticks = 0;
-    void onInit() override { (void)createTimer(100ms, [this] { ++ticks; }); }
+    comm::TimerHandle timer;
+    void onInit() override { timer = createTimer(100ms, [this] { ++ticks; }); }
 };
 
 /// 定时器回调里抛异常、谁也没处理：执行边界接住它，但这份工作确实丢了。
@@ -168,26 +170,9 @@ struct Client final : comm::Module {
     void onInit() override { cli = serviceClient<int, int>("/svc"); }
 };
 
-/// 容量只有一格、从不回确认的回环消费端。
-struct TightSink final : comm::Module {
-    int received = 0;
-    void onInit() override {
-        subscribe<fw::LoopConstraint>(modules::topics::kLoopConstraint,
-                                      [this](const fw::LoopConstraint&) { ++received; },
-                                      comm::SubscribeOptions{1, comm::Delivery::kReliable});
-    }
-};
-
-/// 每个关键帧都报一条指向 1 号关键帧的回环。
-struct Loops final : plugin::PlaceRecognizerBase {
-    void onInsert(const fw::Keyframe&) override {}
-    std::vector<fw::LoopConstraint> onDetectLoops(const fw::Keyframe& keyframe) override {
-        if (keyframe.id.value <= 1) return {};
-        fw::LoopConstraint loop;
-        loop.match = fw::KeyframeId{1};
-        loop.query = keyframe.id;
-        return {loop};
-    }
+struct ParamWatcher final : comm::Module {
+    std::atomic<std::uint64_t> revision{0};
+    void onParamsChanged(const comm::ParamSnapshot& snapshot) override { revision = snapshot.revision; }
 };
 
 /// 第 fail_on 次求解报数值失败，其余照常收敛。
@@ -269,7 +254,7 @@ TEST_CASE("算法在中间一帧失败、之后又成功：那一帧有失败终
     CHECK(outcome.packets_without_outcome == 0);
     CHECK_FALSE(outcome.processingComplete());
     CHECK_FALSE(outcome.complete());
-    // 失败帧同样确认了消费：账本清空说明每包都有终态，不说明每包都成功
+    // 失败帧同样报告了进度：在途清零说明每包都有终态，不说明每包都成功
     CHECK(system.sensorIo()->packetizer().inFlight() == 0);
     CHECK(system.trajectory()->odometry().size() == 2);
 
@@ -353,7 +338,6 @@ TEST_CASE("一条 IMU 同时让四帧凑齐括点：单步只发预算允许的�
 
     auto step = io.pump(1);
     CHECK(step.published == 1);
-    CHECK_FALSE(io.packetizer().hasUnresolved());   // 没有留下没有结论的悬空包
     CHECK(io.packetizer().pendingTriggers() == 3);  // 其余三帧留在打包器里
     system.settle();
 
@@ -394,38 +378,9 @@ TEST_CASE("来源读完时还有好几帧在等括点：排空同样逐步进行
 
 // ─────────────────────────── 未决操作能否结案 ───────────────────────────
 
-TEST_CASE("首次发送被拒、之后再没有业务帧：约束仍在有限时间内结案", "[transitions][loops]") {
-    modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
-    auto keyframe_writer = resources.keyframes.acquireWriteToken();
-    auto& recognizer = runtime.addModule<modules::PlaceRecognizerModule>(
-        "/pr", std::make_unique<Loops>(), resources);
-    auto& sink = runtime.addModule<TightSink>("/sink");
-    runtime.init();
-
-    comm::Publisher<fw::KeyframeEvent> notify(
-        runtime.core().topic<fw::KeyframeEvent>(modules::topics::kKeyframe), comm::PublishOptions{});
-    comm::Publisher<fw::LoopConstraint> filler(
-        runtime.core().topic<fw::LoopConstraint>(modules::topics::kLoopConstraint),
-        comm::PublishOptions{});
-    appendKeyframe(keyframe_writer, 1);
-    appendKeyframe(keyframe_writer, 2);
-    notify.publish(fw::KeyframeEvent{});
-    // 先占满消费端唯一的一格：真约束第一次发送被拒
-    REQUIRE(filler.publish(fw::LoopConstraint{}).deliveredTo(1));
-    settle(runtime);
-    REQUIRE(recognizer.pendingLoops() == 1);
-
-    // 之后再没有关键帧、也没有确认：只靠定时器推进
-    for (int i = 0; i < 25; ++i) runtime.spinFor(1s);
-    CHECK(recognizer.pendingLoops() == 0);   // 不会永远挂着
-    CHECK(recognizer.abandonedLoops() == 1);  // 送到了但始终没有确认，有限次之后显式放弃
-    CHECK(sink.received >= 2);               // 占位那一条之外，真约束确实送到过
-}
-
-TEST_CASE("服务受理之后、执行之前服务端收件箱关闭：调用照样结案，名额归还",
+TEST_CASE("服务受理之后、执行之前服务端收件箱关闭：调用照样结案",
           "[transitions][service]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto& provider = runtime.addModule<Provider>("/p");
     auto& client = runtime.addModule<Client>("/c");
     runtime.init();
@@ -439,15 +394,11 @@ TEST_CASE("服务受理之后、执行之前服务端收件箱关闭：调用照
 
     REQUIRE(results.size() == 1);
     CHECK(results.front() == comm::ServiceStatus::kStopped);
-    CHECK(client.cli.pendingCalls() == 0);
-    const auto service = runtime.core().findService<int, int>("/svc").lock();
-    REQUIRE(service != nullptr);
-    CHECK(service->inFlight() == 0);
 }
 
 TEST_CASE("阻塞调用等待期间服务端收件箱关闭：立即得到终态，不会等到超时",
           "[transitions][service]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto& provider = runtime.addModule<Provider>("/p");
     auto& client = runtime.addModule<Client>("/c");
     runtime.init();
@@ -459,7 +410,7 @@ TEST_CASE("阻塞调用等待期间服务端收件箱关闭：立即得到终态
         status.store(static_cast<int>(result.status));
     });
     // 等请求排进服务端收件箱，再把它关掉
-    while (provider.mailbox()->pendingTasks() == 0) std::this_thread::yield();
+    while (provider.mailbox()->stats().depth == 0) std::this_thread::yield();
     provider.mailbox()->close();
     caller.join();
 
@@ -471,35 +422,30 @@ TEST_CASE("阻塞调用等待期间服务端收件箱关闭：立即得到终态
 
 TEST_CASE("requestStop 生效起参数写入被拒；此前受理的提交在关闭排空时生效",
           "[transitions][params]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.params().preset("/x", std::int64_t{1});
-    runtime.addModule<Ticker>("/m");
+    auto& watcher = runtime.addModule<ParamWatcher>("/m");
     runtime.init();
 
     const auto accepted = runtime.setParams({{"/x", comm::ParamValue{std::int64_t{2}}}});
     REQUIRE(accepted.ok());
-    CHECK_FALSE(runtime.paramsApplied(accepted.revision));  // 只排进了收件箱
+    CHECK(watcher.revision.load() == 0);  // 只排进了收件箱
 
     runtime.requestStop();
     const auto late = runtime.setParams({{"/x", comm::ParamValue{std::int64_t{3}}}});
     CHECK(late.status == comm::ParamCommit::kRejectedStopped);
-    CHECK(runtime.params().revision() == accepted.revision);  // 存储不变
+    CHECK(runtime.params().snapshot()->revision == accepted.revision);  // 存储不变
 
     runtime.shutdown();
-    CHECK(runtime.paramsApplied(accepted.revision));  // 按关闭协议排空时生效，关闭后照样可查
+    CHECK(watcher.revision.load() == accepted.revision);  // 按关闭协议排空时生效
 }
 
-TEST_CASE("在线运行中并发查询参数生效、提交参数：查询安全，最后一代终会生效",
-          "[transitions][params]") {
-    comm::Runtime runtime(comm::RuntimeOptions{2, false});
+TEST_CASE("在线运行中并发提交参数：快照按版本顺序换上，最后一代终会生效", "[transitions][params]") {
+    comm::Runtime runtime(comm::RuntimeOptions{false});
     runtime.params().preset("/x", std::int64_t{0});
-    runtime.addModule<Ticker>("/m");
+    auto& watcher = runtime.addModule<ParamWatcher>("/m");
     runtime.init();
-    std::thread spinner([&] { runtime.spin(); });
-    std::atomic<bool> stop{false};
-    std::thread reader([&] {
-        while (!stop.load()) (void)runtime.paramsApplied(1);
-    });
+    runtime.start();
 
     std::uint64_t last = 0;
     bool all_ok = true;
@@ -508,18 +454,11 @@ TEST_CASE("在线运行中并发查询参数生效、提交参数：查询安全
         all_ok = all_ok && result.ok();
         last = result.revision;
     }
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (!runtime.paramsApplied(last) && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(1ms);
-    }
-    const bool applied = runtime.paramsApplied(last);
-    stop.store(true);
-    reader.join();
-    runtime.requestStop();
-    spinner.join();
+    CHECK(runtime.waitIdle(5s));
+    runtime.shutdown();
 
     CHECK(all_ok);
-    CHECK(applied);
+    CHECK(watcher.revision.load() == last);
 }
 
 // ─────────────────────────── 产物与评测协议 ───────────────────────────
@@ -705,7 +644,7 @@ TEST_CASE("去畸变：没有惯性支撑时覆盖区间退化成一点，不能
 TEST_CASE("后端追平按输入版本判：新回环没进最后一次成功求解就是没追平，只追加里程计节点不算",
           "[transitions][graph]") {
     modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
     auto& graph = runtime.addModule<modules::GraphOptimizerModule>(
         "/graph", std::make_unique<FlakyOptimizer>(2), resources);
@@ -750,31 +689,27 @@ TEST_CASE("Runtime 销毁之后用旧句柄：调用、取消、发布都安全�
     comm::TimerHandle timer;
     comm::Publisher<int> publisher;
     {
-        comm::Runtime runtime(comm::RuntimeOptions{1, true});
+        comm::Runtime runtime(comm::RuntimeOptions{true});
         runtime.addModule<Provider>("/p");
         auto& client = runtime.addModule<Client>("/c");
         auto& ticker = runtime.addModule<Ticker>("/t");
         runtime.init();
-        (void)ticker;
         kept = client.cli;
-        timer = comm::TimerHandle(runtime.core().timerLink(), 1, nullptr);
+        timer = ticker.timer;
         publisher = comm::Publisher<int>(runtime.core().topic<int>("/x"), comm::PublishOptions{});
     }
     int callbacks = 0;
     CHECK(kept.asyncCall(1, 1s, [&](auto) { ++callbacks; }) == comm::ServiceStatus::kStopped);
     CHECK(kept.call(1, 1s).status == comm::ServiceStatus::kStopped);
     CHECK(callbacks == 0);
-    timer.cancel();  // 定时器队列已经没了：空操作
-    const auto result = publisher.publish(1);
-    CHECK_FALSE(result.ok());
-    CHECK(result.topic_closed);
+    timer.cancel();
+    CHECK_NOTHROW(publisher.publish(1));
 }
 
-TEST_CASE("没有绑定话题的发布端不报成功", "[transitions][lifetime]") {
+TEST_CASE("没有绑定话题的发布端，发布是空操作", "[transitions][lifetime]") {
     comm::Publisher<int> unbound;
-    const auto result = unbound.publish(1);
+    CHECK_NOTHROW(unbound.publish(1));
     CHECK_FALSE(unbound.valid());
-    CHECK_FALSE(result.ok());
 }
 
 namespace {
@@ -793,7 +728,8 @@ struct BrokenShutdown final : comm::Module {
 }  // namespace
 
 TEST_CASE("latch 值被顶掉时旧值在锁外析构：析构里再调话题不自锁", "[transitions][lifetime]") {
-    auto topic = std::make_shared<comm::Topic<Reentrant>>("/latched", comm::ErrorReporter{});
+    auto topic = std::make_shared<comm::Topic>("/latched", std::type_index(typeid(Reentrant)),
+                                               std::make_shared<comm::Hub>(), comm::ErrorReporter{}, 0);
     int reentered = 0;
     auto old = std::make_shared<Reentrant>();
     old->on_destroy = [weak = std::weak_ptr(topic), &reentered] {
@@ -809,11 +745,11 @@ TEST_CASE("latch 值被顶掉时旧值在锁外析构：析构里再调话题不
 }
 
 TEST_CASE("收尾钩子抛异常：关闭照常完成，异常被计数", "[transitions][lifetime]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<BrokenShutdown>("/broken");
     runtime.init();
     CHECK_NOTHROW(runtime.shutdown());
-    CHECK(runtime.state() == comm::RuntimeState::kTornDown);
+    CHECK(runtime.state() == comm::RuntimeState::kDone);
     CHECK(runtime.isolatedFailures() == 1);
 }
 
@@ -867,10 +803,9 @@ private:
 struct KeyframeObserver final : comm::Module {
     std::vector<std::uint64_t> sequences;
     void onInit() override {
-        subscribe<fw::KeyframeEvent>(modules::topics::kKeyframe,
-                                     [this](const fw::KeyframeEvent& event) {
-                                         sequences.push_back(event.sequence);
-                                     });
+        subscribe<fw::KeyframeEvent>(modules::topics::kKeyframe, 0, [this](const fw::KeyframeEvent& event) {
+            sequences.push_back(event.sequence);
+        });
     }
 };
 
@@ -888,7 +823,7 @@ void publishPacket(comm::Publisher<fw::SensorPacket>& publisher, std::uint64_t s
 TEST_CASE("校正准备失败：校正不生效，算法重新初始化，之后的帧不顶着新校正的身份",
           "[transitions][correction]") {
     modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto algorithm = std::make_unique<RebuildFails>();
     auto* raw = algorithm.get();
     auto& odometry =
@@ -933,7 +868,7 @@ TEST_CASE("标定换代之后，早期关键帧仍能取到当时的标定内容
     fw::CalibrationData first;
     first.imu.gravity = 9.81;
     resources.setCalibration(first);
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<modules::OdometryModule>("/odometry",
                                                std::make_unique<EveryFrameKeyframe>(), resources);
     runtime.init();
@@ -957,7 +892,7 @@ TEST_CASE("标定换代之后，早期关键帧仍能取到当时的标定内容
 
 TEST_CASE("关键帧通知的序号是关键帧库的序号：断号才意味着缺口", "[transitions][keyframes]") {
     modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<modules::OdometryModule>(
         "/odometry", std::make_unique<EveryFrameKeyframe>(std::vector<bool>{true, false, true}),
         resources);
@@ -1091,7 +1026,7 @@ TEST_CASE("时长换算四舍五入，装不下的量拒绝，配置里的离谱
 TEST_CASE("末条关键帧通知丢了、之后再没有输入：终结时后端主动补读，追上全部关键帧",
           "[transitions][finish]") {
     modules::SlamResources resources;
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
     auto& graph = runtime.addModule<modules::GraphOptimizerModule>(
         "/graph", std::make_unique<FlakyOptimizer>(0), resources);
@@ -1113,7 +1048,7 @@ TEST_CASE("末条关键帧通知丢了、之后再没有输入：终结时后端
 
 TEST_CASE("取消运行：不再排空，排队中的调用明确结案，结果如实标为取消",
           "[transitions][finish]") {
-    comm::Runtime runtime(comm::RuntimeOptions{1, true});
+    comm::Runtime runtime(comm::RuntimeOptions{true});
     runtime.addModule<Provider>("/p");
     auto& client = runtime.addModule<Client>("/c");
     runtime.init();
@@ -1124,8 +1059,7 @@ TEST_CASE("取消运行：不再排空，排队中的调用明确结案，结果
     CHECK(runtime.cancelled());
     CHECK_FALSE(runtime.shutdownDrained());
     CHECK(callbacks == 0);                         // 没有排空：服务端没处理，回调也送不到
-    CHECK(client.cli.pendingCalls() == 0);         // 但调用结案了，名额归还
-    CHECK(client.cli.undeliveredCompletions() == 1);  // 送不到的终态可见
+    CHECK(client.mailbox()->stats().discarded >= 1);  // 送不到的终态可见
 
     modules::SlamSystem system;
     system.setSource(std::make_unique<ListSource>(scans(3)), lidarOnly());
@@ -1222,11 +1156,9 @@ private:
 struct ResultObserver final : comm::Module {
     std::vector<fw::OdometryResult> results;
     void onInit() override {
-        subscribe<fw::OdometryResult>(modules::topics::kOdometry,
-                                      [this](const fw::OdometryResult& result) {
-                                          results.push_back(result);
-                                      },
-                                      comm::SubscribeOptions{64, comm::Delivery::kReliable});
+        subscribe<fw::OdometryResult>(modules::topics::kOdometry, 0, [this](const fw::OdometryResult& result) {
+            results.push_back(result);
+        });
     }
 };
 

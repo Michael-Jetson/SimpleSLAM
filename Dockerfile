@@ -112,7 +112,7 @@ WORKDIR /workspace
 #   docker build --target verify -t simpleslam-ci .
 #
 # NOTE: this compiles the FULL source tree (module libraries under src/,
-# public headers under include/). See docs/Docker.md.
+# public headers under include/). See docs/guides/docker.md.
 ###############################################################################
 FROM build-env AS verify
 COPY . /workspace

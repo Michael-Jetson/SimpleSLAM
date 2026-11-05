@@ -43,8 +43,6 @@ struct RunOutcome {
     // ── 处理 ──
     bool drained = true;                       ///< 每次步进都跑到了静止
     bool shutdown_drained = true;              ///< 关闭时把已接纳的工作排空了
-    std::uint64_t rejected_packets = 0;        ///< 被下游拒收的包
-    std::uint64_t closed_publishes = 0;        ///< 因话题已关没发出去的包
     std::uint64_t packets_without_outcome = 0; ///< 送达里程计、却没有终态的包
     std::uint64_t contract_errors = 0;         ///< 违反包契约、没进估计的帧
     std::uint64_t failed_frames = 0;           ///< 算法失败（含状态不能再用）、没有结果的帧
@@ -53,24 +51,19 @@ struct RunOutcome {
     std::uint64_t isolated_failures = 0;       ///< 回调异常：执行边界接住的丢失工作
     std::uint64_t foreign_clock_drops = 0;     ///< 不在参考时钟域、被拒收的数据
     std::uint64_t out_of_order_imu = 0;        ///< 时间倒流或重复、被丢弃的 IMU
-    std::uint64_t dropped_triggers = 0;        ///< 等括点时被挤掉的触发帧
+    std::uint64_t dropped_triggers = 0;        ///< 下游处理不过来或等括点积压、被丢掉的触发帧
     std::uint64_t rejected_triggers = 0;       ///< 时刻不前进、被拒收的触发帧
     std::uint64_t imu_backlog_drops = 0;       ///< IMU 积压超限被丢掉的样本
     std::uint64_t attachment_drops = 0;        ///< 待附着队列超限被丢掉的图像 / GNSS
     std::size_t pending_triggers = 0;          ///< 到最后都没发出的触发帧
-    bool reclamation_desynchronized = false;   ///< 消费证据丢过：部分包用没用完已无从证明
 
     // ── 输出 ──
-    std::uint64_t undelivered_results = 0;     ///< 里程计结果没被全部可靠订阅端收下
     std::uint64_t trajectory_missing = 0;      ///< 发布了、轨迹却没收到的结果
     std::uint64_t trajectory_skipped = 0;      ///< 时间不递增、被轨迹跳过的结果
     std::size_t graph_missing_keyframes = 0;   ///< 图没追上的关键帧
     std::size_t index_missing_keyframes = 0;   ///< 位置识别没索引到的关键帧
     std::size_t unsolved_constraints = 0;      ///< 没进最后一次成功求解的必需约束
-    std::size_t unconfirmed_constraints = 0;   ///< 到最后都没确认的回环
-    std::uint64_t abandoned_constraints = 0;   ///< 重发用尽或到期、放弃的回环
-    std::size_t deferred_constraints = 0;      ///< 后端挂起、端点始终没出现的约束
-    std::uint64_t backlog_rejected_constraints = 0;  ///< 后端挂起表满、被拒的约束
+    std::uint64_t rejected_constraints = 0;    ///< 内容不合法或端点不存在、没进图的回环
     bool calibration_mixed = false;            ///< 图里混入了不同标定的节点
 
     // ── 按政策处理、有说明的 ──
@@ -90,19 +83,16 @@ struct RunOutcome {
         return input == fw::SourceOutcome::kCleanEof;
     }
     [[nodiscard]] bool processingComplete() const noexcept {
-        return !cancelled && drained && shutdown_drained && rejected_packets == 0
-               && closed_publishes == 0 && packets_without_outcome == 0 && contract_errors == 0
+        return !cancelled && drained && shutdown_drained && packets_without_outcome == 0 && contract_errors == 0
                && failed_frames == 0 && failed_corrections == 0 && reinitializations == 0
                && isolated_failures == 0 && foreign_clock_drops == 0 && out_of_order_imu == 0
                && dropped_triggers == 0 && rejected_triggers == 0 && imu_backlog_drops == 0
-               && attachment_drops == 0 && pending_triggers == 0 && !reclamation_desynchronized;
+               && attachment_drops == 0 && pending_triggers == 0;
     }
     [[nodiscard]] bool outputComplete() const noexcept {
-        return undelivered_results == 0 && trajectory_missing == 0 && trajectory_skipped == 0
+        return trajectory_missing == 0 && trajectory_skipped == 0
                && graph_missing_keyframes == 0 && index_missing_keyframes == 0
-               && unsolved_constraints == 0 && unconfirmed_constraints == 0
-               && abandoned_constraints == 0 && deferred_constraints == 0
-               && backlog_rejected_constraints == 0 && !calibration_mixed;
+               && unsolved_constraints == 0 && rejected_constraints == 0 && !calibration_mixed;
     }
     [[nodiscard]] bool complete() const noexcept {
         return inputComplete() && processingComplete() && outputComplete();
@@ -119,8 +109,6 @@ struct RunOutcome {
         add(cancelled, "运行被取消：" + cancel_reason);
         add(!drained, "排空预算用尽，仍有未处理的工作");
         add(!shutdown_drained && !cancelled, "关闭时排空预算用尽，已接纳的工作没有做完");
-        add(rejected_packets > 0, n(rejected_packets) + " 个包被下游拒收");
-        add(closed_publishes > 0, n(closed_publishes) + " 个包因话题已关没发出");
         add(packets_without_outcome > 0, n(packets_without_outcome) + " 个送达的包没有终态");
         add(contract_errors > 0, n(contract_errors) + " 帧违反包契约、没进估计");
         add(failed_frames > 0, n(failed_frames) + " 帧算法失败、没有结果");
@@ -130,13 +118,11 @@ struct RunOutcome {
         add(isolated_failures > 0, n(isolated_failures) + " 次回调异常，对应的工作没有做完");
         add(foreign_clock_drops > 0, n(foreign_clock_drops) + " 条数据不在参考时钟域、被拒收");
         add(out_of_order_imu > 0, n(out_of_order_imu) + " 条 IMU 时间倒流或重复");
-        add(dropped_triggers > 0, n(dropped_triggers) + " 个触发帧等括点时被挤掉");
+        add(dropped_triggers > 0, n(dropped_triggers) + " 个触发帧被丢掉（下游处理不过来，或等括点积压）");
         add(rejected_triggers > 0, n(rejected_triggers) + " 个触发帧时刻不前进、被拒收");
         add(imu_backlog_drops > 0, n(imu_backlog_drops) + " 条 IMU 因积压超限被丢掉");
         add(attachment_drops > 0, n(attachment_drops) + " 条图像 / GNSS 因待附着队列超限被丢掉");
         add(pending_triggers > 0, n(pending_triggers) + " 个触发帧到最后都没发出");
-        add(reclamation_desynchronized, "原始数据回收失同步：部分包用没用完已无从证明");
-        add(undelivered_results > 0, n(undelivered_results) + " 个里程计结果没被全部订阅端收下");
         add(trajectory_missing > 0, "轨迹少了 " + n(trajectory_missing) + " 个已发布的结果");
         add(trajectory_skipped > 0, "轨迹跳过了 " + n(trajectory_skipped) + " 个时间不递增的结果");
         add(graph_missing_keyframes > 0, "位姿图少了 " + n(graph_missing_keyframes) + " 个关键帧");
@@ -144,11 +130,7 @@ struct RunOutcome {
             "位置识别少索引了 " + n(index_missing_keyframes) + " 个关键帧");
         add(unsolved_constraints > 0,
             n(unsolved_constraints) + " 条回环 / 先验约束没有进入最后一次成功求解");
-        add(unconfirmed_constraints > 0, n(unconfirmed_constraints) + " 条回环到最后都没确认");
-        add(abandoned_constraints > 0, n(abandoned_constraints) + " 条回环没能结案、被放弃");
-        add(deferred_constraints > 0, n(deferred_constraints) + " 条约束的端点始终没出现");
-        add(backlog_rejected_constraints > 0,
-            n(backlog_rejected_constraints) + " 条约束因后端挂起表满被拒");
+        add(rejected_constraints > 0, n(rejected_constraints) + " 条回环内容不合法或端点不存在、没进图");
         add(calibration_mixed, "位姿图混入了不同标定的节点，未产出校正");
         return out;
     }
@@ -189,11 +171,13 @@ struct RunResult {
 /// 装配选项。放在命名空间作用域而不是嵌套在类里：嵌套类的默认成员初始化器
 /// 要到外层类结束才完整，无法用于外层类自己的默认实参。
 struct SlamSystemOptions {
-    /// 离线：单线程步进、虚拟时钟、可重复。在线：多线程 + 单调时钟。
+    /// 离线：单线程步进、虚拟时钟、可重复。在线：一个模块一个线程 + 单调时钟。
     bool offline = true;
-    std::size_t worker_threads = 2;
     /// 每轮步进的任务预算，防止持续到达的消息让一次步进不返回。
     std::size_t spin_budget = 4096;
+    /// 在线时入口允许多少包在途。队列只为突发准备，冗余给足：200 包是 10 Hz 激光的 20 秒。
+    /// 超过它就丢触发帧，IMU 并入下一包，并记进运行结局。离线不限，不丢。
+    std::size_t online_max_in_flight = 200;
     /// 是否收集轨迹。评测、导出、回归都要它，代价是每帧一个位姿。
     bool collect_trajectory = true;
 };
@@ -206,7 +190,7 @@ public:
 
     explicit SlamSystem(Options options = Options{})
         : options_(options),
-          runtime_(comm::RuntimeOptions{options.worker_threads, options.offline}) {
+          runtime_(comm::RuntimeOptions{.offline = options.offline}) {
         runtime_.setErrorReporter([this](std::string_view where, std::string_view what) {
             fw::DiagnosticRecord record;
             record.header.module = std::string(where);
@@ -287,6 +271,10 @@ public:
                                         + "（数据集没有给出，也没有外部标定文件补上）");
             }
         }
+        // 没有里程计就没有处理进度，也就谈不上在途多少
+        if (!options_.offline && sensor_io_ != nullptr && odometry_ != nullptr) {
+            sensor_io_->packetizer().setMaxInFlight(options_.online_max_in_flight);
+        }
         if (options_.collect_trajectory && trajectory_ == nullptr) {
             trajectory_ = &runtime_.addModule<TrajectoryModule>("/slam/trajectory", resources_);
         }
@@ -315,11 +303,10 @@ public:
         if (sensor_io_ == nullptr || finalized_) return 0;
         std::size_t processed = 0;
         std::size_t attempts = 0;
-        while ((max_packets == 0 || attempts < max_packets)
-               && runtime_.state() < comm::RuntimeState::kStopping) {
+        while ((max_packets == 0 || attempts < max_packets) && !runtime_.stopRequested()) {
             const auto pumped = sensor_io_->pump(1);
             processed += pumped.published;
-            attempts += pumped.published + pumped.rejected;
+            attempts += pumped.published;
             advanceClockToData();
             settle();
             if (pumped.finished || pumped.stopped) break;
@@ -350,7 +337,7 @@ public:
             const auto first = packetizer.firstObserved();
             if (!first) return;
             if (first->count() > 0 && clock->now().count() == 0) {
-                runtime_.timers().shiftAll(comm::Duration{first->count()});
+                runtime_.shiftTimers(comm::Duration{first->count()});
                 clock->advanceTo(comm::Time{first->count()});
             }
             origin_set_ = true;
@@ -379,6 +366,7 @@ public:
         return total;
     }
 
+    void start() { runtime_.start(); }
     void spin() { runtime_.spin(); }
     void requestStop() { runtime_.requestStop(); }
 
@@ -412,7 +400,7 @@ private:
         }
         if (finalized_) return;
         runtime_.shutdown(mode);
-        if (runtime_.state() != comm::RuntimeState::kTornDown) {
+        if (runtime_.state() != comm::RuntimeState::kDone) {
             throw std::logic_error("运行时尚未完成收尾，不能生成最终结果");
         }
         resources_.freeze();
@@ -439,10 +427,7 @@ private:
         const auto keyframes = resources_.keyframes.snapshot()->size();
         if (sensor_io_ != nullptr) {
             outcome.input = sensor_io_->outcome();
-            outcome.rejected_packets = sensor_io_->rejectedPackets();
-            outcome.closed_publishes = sensor_io_->closedPublishes();
             const auto& packetizer = sensor_io_->packetizer();
-            outcome.reclamation_desynchronized = packetizer.reclamationDesynchronized();
             outcome.foreign_clock_drops = packetizer.foreignClockDrops();
             outcome.out_of_order_imu = packetizer.outOfOrderImu();
             outcome.dropped_triggers = packetizer.droppedTriggers();
@@ -460,9 +445,8 @@ private:
             outcome.awaiting_support_frames = odometry_->awaitingSupportFrames();
             outcome.rejected_for_gap_frames = odometry_->rejectedForGapFrames();
             outcome.degraded_for_gap_frames = odometry_->degradedForGapFrames();
-            outcome.undelivered_results = odometry_->undeliveredResults();
             if (sensor_io_ != nullptr) {
-                // 主消费者收下的每一包都要有终态：少了就是"送达了却没有下落"
+                // 送到里程计的每一包都要有终态：少了就是"送达了却没有下落"
                 const auto delivered = sensor_io_->publishedPackets();
                 const auto received = odometry_->receivedPackets();
                 outcome.packets_without_outcome = delivered > received ? delivered - received : 0;
@@ -475,16 +459,13 @@ private:
         }
         if (trajectory_ != nullptr) outcome.trajectory_skipped = trajectory_->skipped();
         if (place_recognizer_ != nullptr) {
-            outcome.unconfirmed_constraints = place_recognizer_->pendingLoops();
-            outcome.abandoned_constraints = place_recognizer_->abandonedLoops();
             const auto indexed = place_recognizer_->indexedFrames();
             outcome.index_missing_keyframes = keyframes > indexed ? keyframes - indexed : 0;
         }
         const auto graph = resources_.graph.snapshot();
         if (graph_optimizer_ != nullptr) {
-            outcome.deferred_constraints = graph_optimizer_->deferredConstraints();
             outcome.failed_solutions = graph_optimizer_->failedSolutions();
-            outcome.backlog_rejected_constraints = graph_optimizer_->rejectedByBacklog();
+            outcome.rejected_constraints = graph_optimizer_->rejectedConstraints();
             outcome.unsolved_constraints = graph_optimizer_->unsolvedRequiredConstraints();
             const auto nodes = graph->nodeCount();
             outcome.graph_missing_keyframes = keyframes > nodes ? keyframes - nodes : 0;

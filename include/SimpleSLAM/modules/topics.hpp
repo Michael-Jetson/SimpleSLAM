@@ -26,7 +26,6 @@ inline constexpr const char* kPacketConsumed = "/slam/packet_consumed";
 inline constexpr const char* kOdometry = "/slam/odometry";
 inline constexpr const char* kKeyframe = "/slam/keyframe";
 inline constexpr const char* kLoopConstraint = "/slam/loop_constraint";
-inline constexpr const char* kConstraintAck = "/slam/constraint_ack";
 inline constexpr const char* kCorrection = "/slam/correction";
 inline constexpr const char* kTrackingLost = "/slam/tracking_lost";
 inline constexpr const char* kRelocationRequest = "/slam/relocation_request";

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 /// 运行时：模块串行执行、虚拟时钟定时器、离线双跑一致、参数帧边界生效、
-/// 接线诊断，以及"停止 → 静止 → 销毁"三段式关闭协议。
+/// 接线诊断，以及关闭协议。
 
 #include <SimpleSLAM/comm/runtime.hpp>
 
@@ -35,7 +35,7 @@ public:
     std::vector<int> order;
 
     void onInit() override {
-        subscribe("/tick", &Counter::onTick, SubscribeOptions{4096, Delivery::kDropOldest});
+        subscribe("/tick", 0, &Counter::onTick);
     }
 
     void onTick(const Tick& tick) {
@@ -65,7 +65,7 @@ public:
 
     void onInit() override {
         iterations_ = param<std::int64_t>("~iterations", 20);
-        subscribe("/tick", &Configurable::onTick, {});
+        subscribe("/tick", 0, &Configurable::onTick);
     }
     void onTick(const Tick&) {
         // 一次回调之内读到的快照必须稳定
@@ -79,7 +79,7 @@ public:
 class SelfStopper final : public Module {
 public:
     Runtime* runtime = nullptr;
-    void onInit() override { subscribe("/tick", &SelfStopper::onTick, {}); }
+    void onInit() override { subscribe("/tick", 0, &SelfStopper::onTick); }
     void onTick(const Tick&) {
         if (runtime != nullptr) runtime->shutdown();
     }
@@ -100,7 +100,7 @@ public:
     explicit Blocking(std::shared_ptr<Shared> shared) : shared_(std::move(shared)) {}
     ~Blocking() override { shared_->destroyed.store(true); }
 
-    void onInit() override { subscribe("/tick", &Blocking::onTick, {}); }
+    void onInit() override { subscribe("/tick", 0, &Blocking::onTick); }
 
     void onTick(const Tick&) {
         {
@@ -122,7 +122,7 @@ private:
 }  // namespace
 
 TEST_CASE("同一模块的处理严格串行", "[comm][runtime]") {
-    Runtime runtime(RuntimeOptions{4, /*virtual_clock=*/false});
+    Runtime runtime(RuntimeOptions{false});
     auto& counter = runtime.addModule<Counter>("/counter");
     runtime.init();
 
@@ -148,7 +148,7 @@ TEST_CASE("同一模块的处理严格串行", "[comm][runtime]") {
 }
 
 TEST_CASE("虚拟时钟驱动定时器，不依赖墙钟等待", "[comm][runtime]") {
-    Runtime runtime(RuntimeOptions{1, /*virtual_clock=*/true});
+    Runtime runtime(RuntimeOptions{true});
     auto& ticker = runtime.addModule<Ticker>("/ticker");
     runtime.init();
 
@@ -163,7 +163,7 @@ TEST_CASE("虚拟时钟驱动定时器，不依赖墙钟等待", "[comm][runtime
 
 TEST_CASE("离线双跑的处理顺序逐条一致", "[comm][runtime]") {
     auto run = [] {
-        Runtime runtime(RuntimeOptions{1, true});
+        Runtime runtime(RuntimeOptions{true});
         auto& a = runtime.addModule<Counter>("/a");
         auto& b = runtime.addModule<Counter>("/b");
         runtime.init();
@@ -182,7 +182,7 @@ TEST_CASE("离线双跑的处理顺序逐条一致", "[comm][runtime]") {
 }
 
 TEST_CASE("参数提交在帧边界生效", "[comm][runtime]") {
-    Runtime runtime(RuntimeOptions{1, true});
+    Runtime runtime(RuntimeOptions{true});
     auto& module = runtime.addModule<Configurable>("/cfg");
     runtime.init();
 
@@ -204,7 +204,7 @@ TEST_CASE("参数提交在帧边界生效", "[comm][runtime]") {
 }
 
 TEST_CASE("接线诊断能抓出只发无订与只订无发", "[comm][runtime]") {
-    Runtime runtime(RuntimeOptions{1, true});
+    Runtime runtime(RuntimeOptions{true});
     runtime.addModule<Counter>("/counter");  // 订阅 /tick
     runtime.init();
 
@@ -217,8 +217,8 @@ TEST_CASE("接线诊断能抓出只发无订与只订无发", "[comm][runtime]")
 }
 
 TEST_CASE("两个运行时互不干扰", "[comm][runtime]") {
-    Runtime first(RuntimeOptions{1, true});
-    Runtime second(RuntimeOptions{1, true});
+    Runtime first(RuntimeOptions{true});
+    Runtime second(RuntimeOptions{true});
     auto& a = first.addModule<Counter>("/counter");
     auto& b = second.addModule<Counter>("/counter");
     first.init();
@@ -240,33 +240,32 @@ public:
     explicit OutlivingCounter(std::shared_ptr<std::atomic<int>> counter)
         : counter_(std::move(counter)) {}
 
-    void onInit() override { subscribe("/tick", &OutlivingCounter::onTick, {}); }
+    void onInit() override { subscribe("/tick", 0, &OutlivingCounter::onTick); }
     void onTick(const Tick&) { counter_->fetch_add(1); }
 
 private:
     std::shared_ptr<std::atomic<int>> counter_;
 };
 
-TEST_CASE("停止后不再接纳新消息", "[comm][runtime][lifecycle]") {
+TEST_CASE("停止后入口不再接纳新消息", "[comm][runtime][lifecycle]") {
     auto processed = std::make_shared<std::atomic<int>>(0);
-    Runtime runtime(RuntimeOptions{1, true});
+    Runtime runtime(RuntimeOptions{true});
     runtime.addModule<OutlivingCounter>("/counter", processed);
     runtime.init();
 
-    auto publisher = Publisher<Tick>(runtime.core().topic<Tick>("/tick"), PublishOptions{});
+    auto publisher = runtime.inputPublisher<Tick>("/tick");
     publisher.publish(Tick{1});
     runtime.spinOnce();
     CHECK(processed->load() == 1);
 
     runtime.requestStop();
-    CHECK(runtime.state() == RuntimeState::kStopping);
-    const auto rejected = publisher.publish(Tick{2});
-    CHECK(rejected.accepted == 0);  // 话题的接纳口已关
+    CHECK(runtime.stopRequested());
+    publisher.publish(Tick{2});
     runtime.spinOnce();
     CHECK(processed->load() == 1);
 
     runtime.shutdown();
-    CHECK(runtime.state() == RuntimeState::kTornDown);
+    CHECK(runtime.state() == RuntimeState::kDone);
     publisher.publish(Tick{3});
     runtime.spinOnce();
     CHECK(processed->load() == 1);
@@ -275,7 +274,7 @@ TEST_CASE("停止后不再接纳新消息", "[comm][runtime][lifecycle]") {
 TEST_CASE("已接纳的消息在关闭时仍被处理完", "[comm][runtime][lifecycle]") {
     auto processed = std::make_shared<std::atomic<int>>(0);
     {
-        Runtime runtime(RuntimeOptions{1, true});
+        Runtime runtime(RuntimeOptions{true});
         runtime.addModule<OutlivingCounter>("/counter", processed);
         runtime.init();
         auto publisher = Publisher<Tick>(runtime.core().topic<Tick>("/tick"), PublishOptions{});
@@ -289,7 +288,7 @@ TEST_CASE("已接纳的消息在关闭时仍被处理完", "[comm][runtime][life
 
 TEST_CASE("关闭等回调退出后才收尾，析构时才销毁模块", "[comm][runtime][lifecycle]") {
     auto shared = std::make_shared<Blocking::Shared>();
-    auto runtime = std::make_unique<Runtime>(RuntimeOptions{1, /*virtual_clock=*/false});
+    auto runtime = std::make_unique<Runtime>(RuntimeOptions{false});
     runtime->addModule<Blocking>("/blocking", shared);
     runtime->init();
 
@@ -322,11 +321,9 @@ TEST_CASE("关闭等回调退出后才收尾，析构时才销毁模块", "[comm
     CHECK(shared->destroyed.load());
 }
 
-TEST_CASE("关闭阶段不再接纳新的执行者", "[comm][runtime][lifecycle]") {
-    // 等已有参与者退出 ≠ 禁止新参与者进入。
-    // 静止之后、销毁之前，另一个线程调 spinOnce() 仍能拿到执行权。
+TEST_CASE("结束之后不再步进", "[comm][runtime][lifecycle]") {
     auto processed = std::make_shared<std::atomic<int>>(0);
-    Runtime runtime(RuntimeOptions{1, true});
+    Runtime runtime(RuntimeOptions{true});
     runtime.addModule<OutlivingCounter>("/counter", processed);
     runtime.init();
 
@@ -334,17 +331,15 @@ TEST_CASE("关闭阶段不再接纳新的执行者", "[comm][runtime][lifecycle]
     publisher.publish(Tick{1});
     CHECK(runtime.spinOnce() > 0);
     CHECK(processed->load() == 1);
-    CHECK_FALSE(runtime.executionClosed());
 
     runtime.shutdown();
-    CHECK(runtime.executionClosed());
-    // 入口已封：即便有已接纳的工作，外部线程也拿不到执行权
+    publisher.publish(Tick{2});
     CHECK(runtime.spinOnce() == 0);
     CHECK(processed->load() == 1);
 }
 
 TEST_CASE("在运行时线程内调用 shutdown 只停输入，不自等", "[comm][runtime][lifecycle]") {
-    Runtime runtime(RuntimeOptions{1, true});
+    Runtime runtime(RuntimeOptions{true});
     auto& stopper = runtime.addModule<SelfStopper>("/stopper");
     stopper.runtime = &runtime;
     runtime.init();
@@ -357,7 +352,8 @@ TEST_CASE("在运行时线程内调用 shutdown 只停输入，不自等", "[com
     runtime.spinOnce();
 
     CHECK(reported);
-    CHECK(runtime.state() == RuntimeState::kStopping);  // 只停输入，没有拆掉自己
-    runtime.shutdown();                                 // 从控制线程关，这次才真正销毁
-    CHECK(runtime.state() == RuntimeState::kTornDown);
+    CHECK(runtime.stopRequested());  // 只停输入，没有拆掉自己
+    CHECK(runtime.state() == RuntimeState::kReady);
+    runtime.shutdown();              // 从控制线程关，这次才真正收尾
+    CHECK(runtime.state() == RuntimeState::kDone);
 }

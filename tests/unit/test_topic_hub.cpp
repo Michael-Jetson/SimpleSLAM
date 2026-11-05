@@ -55,7 +55,7 @@ TEST_CASE("TopicHub drainAll BFS 顺序", "[topic_hub]") {
     REQUIRE(order[1] == "b:101");
 }
 
-TEST_CASE("drainAll 按话题名有序分发（确定性回放，ADR-R1b）", "[topic_hub][determinism]") {
+TEST_CASE("drainAll 按话题名有序分发（确定性回放）", "[topic_hub][determinism]") {
     TopicHub hub(true);
     std::vector<std::string> order;
 
@@ -147,7 +147,7 @@ TEST_CASE("TopicHub 成员函数指针订阅", "[topic_hub]") {
     REQUIRE(recv.data == "hello");
 }
 
-TEST_CASE("两个 TopicHub 实例互不串扰（无全局共享，ADR-001）", "[topic_hub][injection]") {
+TEST_CASE("两个 TopicHub 实例互不串扰（无全局共享）", "[topic_hub][injection]") {
     TopicHub hubA(true);
     TopicHub hubB(true);
 

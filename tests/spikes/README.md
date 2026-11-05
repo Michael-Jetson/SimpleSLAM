@@ -30,4 +30,4 @@ ctest --test-dir /tmp/simpleslam-comm-spike-standalone --output-on-failure
 
 局限：没有命名发现、一般 Topic 扇出、完整订阅生命周期、服务端异常封装、显式取消、模块关闭屏障、有界服务准入、虚拟时钟或跨进程传输。参数实验使用一个固定结构体，只证明提交方式，不代替生产 schema。LatestSlot 是单消费者实验，不是待直接合入的通用 Topic。
 
-测试通过证明这些机制可以组合，不证明生产 API 已实现，也不证明一般在线多线程执行与离线回放逐位一致。拟议 API 与迁移边界见 `docs/proposals/2026-09-20-ROS风格进程内通信提案.md`。
+测试通过证明这些机制可以组合，不证明生产 API 已实现，也不证明一般在线多线程执行与离线回放逐位一致。现行设计见 `docs/design/comm.md`，候选取舍见 `docs/research/通信层第三方库调研_2026.md`。

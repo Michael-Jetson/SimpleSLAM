@@ -68,8 +68,7 @@ public:
 protected:
     void onInit() override {
         // 只订阅里程计结果：校正的生效时机写在结果里，不必也不该在这里重建
-        subscribe(topics::kOdometry, &TrajectoryModule::onOdometry,
-                  comm::SubscribeOptions{256, comm::Delivery::kReliable});
+        subscribe(topics::kOdometry, 0, &TrajectoryModule::onOdometry);
     }
 
 private:

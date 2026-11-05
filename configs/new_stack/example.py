@@ -14,7 +14,7 @@ IMU_HZ = 200.0
 
 config = Config(name="example")
 config.update(
-    runtime={"offline": True, "worker_threads": 1},
+    runtime={"offline": True},
     # 支撑区间取两个 IMU 周期：够做终点插值，也够在线估时间偏置
     packetizer={"imu_required": True, "post_support_s": 2.0 / IMU_HZ},
     odometry={

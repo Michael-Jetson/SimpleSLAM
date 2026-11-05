@@ -47,8 +47,7 @@ namespace fw = simpleslam::fw;
 
 [[nodiscard]] inline comm::RuntimeOptions toRuntimeOptions(const RuntimeSection& section) {
     comm::RuntimeOptions options;
-    options.worker_threads = static_cast<std::size_t>(section.worker_threads);
-    options.virtual_clock = section.offline;  // 离线用虚拟时钟，不等墙钟
+    options.offline = section.offline;  // 离线用虚拟时钟，不等墙钟
     return options;
 }
 

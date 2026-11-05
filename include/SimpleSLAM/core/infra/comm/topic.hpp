@@ -584,7 +584,7 @@ private:
 
 // ── TopicHub：命名话题注册表 + BFS 协调分发 ──
 
-/// 命名话题注册表。注入式 comm：无全局单例（ADR-001）。Runner 持有 TopicHub 实例，
+/// 命名话题注册表。注入式 comm：无全局单例。Runner 持有 TopicHub 实例，
 /// 经 initialize(hub) 注入各模块。隔离/L3 用法：`TopicHub hub; hub.createPublisher<T>(...)`。
 class TopicHub {
 public:
@@ -604,7 +604,7 @@ public:
             {
                 std::lock_guard lock(mutex_);
                 // 按话题名排序后 drain：unordered_map 迭代是哈希序（跨平台/编译器不定），
-                // 排序保证离线回放分发顺序确定、可复现（蓝图 A.3 / ADR-R1b）。
+                // 排序保证离线回放分发顺序确定、可复现。
                 std::vector<std::string> ready_names;
                 ready_names.reserve(topics_.size());
                 for (auto& [name, entry] : topics_) {

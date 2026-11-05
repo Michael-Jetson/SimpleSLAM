@@ -1,5 +1,5 @@
 /// @file offline_runner.cpp
-/// OfflineRunner 实现——离线主循环 + 持有注入式 TopicHub 实例（ADR-001）
+/// OfflineRunner 实现——离线主循环 + 持有注入式 TopicHub 实例
 
 #include <SimpleSLAM/runner/offline_runner.hpp>
 

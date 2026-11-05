@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file config.hpp
-/// 配置聚合体：配置的真源在 C++，不在 YAML（ADR-0005）。
+/// 配置聚合体：配置的真源在 C++，不在 YAML。
 ///
 /// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、哈希、schema 导出、
 /// 推送到运行期参数存储，全部从它派生。加一个字段只需要改一处，
@@ -49,9 +49,8 @@ struct CalibrationSection {
 };
 
 struct RuntimeSection {
-    /// 离线：单线程步进 + 虚拟时钟 + 可逐位复现。在线：多线程 + 单调时钟。
+    /// 离线：单线程步进 + 虚拟时钟 + 可逐位复现。在线：一个模块一个线程 + 单调时钟。
     bool offline = true;
-    std::int64_t worker_threads = 2;
     std::int64_t spin_budget = 4096;
 };
 
@@ -155,7 +154,6 @@ void visitConfig(Config& c, Visitor&& visit) {
           "标定文件路径（留空则用数据源自带的标定）", Tunable::kNo);
 
     visit("runtime.offline", c.runtime.offline, "离线步进（虚拟时钟、可复现）", Tunable::kNo);
-    visit("runtime.worker_threads", c.runtime.worker_threads, "在线工作线程数", Tunable::kNo);
     visit("runtime.spin_budget", c.runtime.spin_budget, "每轮步进的任务预算", Tunable::kNo);
 
     visit("packetizer.source_policy", c.packetizer.source_policy,

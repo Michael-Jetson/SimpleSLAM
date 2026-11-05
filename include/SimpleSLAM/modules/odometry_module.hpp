@@ -8,7 +8,7 @@
 ///
 /// 算法本体只实现 plugin::OdometryBase::track()，本模块负责其余全部工程事务：
 /// 订阅数据包、写真源（先入库再通知，断号可补读）、更新当前状态、
-/// 在帧边界应用后端校正、确认原始数据已消费、发布诊断。
+/// 在帧边界应用后端校正、报告处理进度、发布诊断。
 ///
 /// 两条与数学接口有关的纪律：
 /// - 算法声明的信息矩阵来源原样入库，不由"矩阵是否为零"反推；
@@ -73,12 +73,8 @@ public:
     /// 算法状态推进到的时刻与下一包的传播起点接不上的次数：缺失区间进入帧上下文，
     /// 与来源缺口一起执行算法声明的缺支撑政策。
     [[nodiscard]] std::uint64_t propagationGaps() const noexcept { return propagation_gaps_; }
-    /// 发布出去的里程计结果数，以及没被全部可靠订阅端收下的那部分。
-    /// 后者非零，轨迹就少了帧——结果只发一次，不会补。
+    /// 发布出去的里程计结果数。
     [[nodiscard]] std::uint64_t publishedResults() const noexcept { return published_results_; }
-    [[nodiscard]] std::uint64_t undeliveredResults() const noexcept {
-        return undelivered_results_;
-    }
     /// 真正生效了的最新一份解的版本。准备失败的解不算。
     [[nodiscard]] std::uint64_t appliedSolution() const noexcept { return applied_solution_; }
     /// 处理过的最新一份解的版本：生效了的，或准备失败、不再尝试的。更旧的解直接跳过。
@@ -92,12 +88,10 @@ protected:
         lost_pub_ = advertise<fw::TrackingLostEvent>(topics::kTrackingLost);
         consumed_pub_ = advertise<fw::PacketConsumed>(topics::kPacketConsumed);
 
-        // 数据包是构建真源的输入：用可靠档，满载时让上游知道而不是悄悄丢
-        subscribe(topics::kSensorPacket, &OdometryModule::onPacket,
-                  comm::SubscribeOptions{8, comm::Delivery::kReliable});
+        // 包不能在这里丢：丢包等于丢它带的 IMU，状态传播就接不上了。过载由入口丢触发帧
+        subscribe(topics::kSensorPacket, 0, &OdometryModule::onPacket);
         // 校正事件自带解快照；取最新一份即可，旧解不需要逐个应用
-        subscribe(topics::kCorrection, &OdometryModule::onCorrection,
-                  comm::SubscribeOptions{1, comm::Delivery::kLatest});
+        subscribe(topics::kCorrection, 1, &OdometryModule::onCorrection);
     }
 
 private:
@@ -126,7 +120,7 @@ private:
             ++contract_errors_;
             report(fw::DiagnosticClass::kControl, "odometry.contract_error", e.what());
             if (e.stage() == plugin::ContractStage::kOutput) reinitialize();
-            // 每个终态都要确认消费：否则打包器会一直保留这段原始数据
+            // 每个终态都要报进度：否则入口以为下游一直在忙
             acknowledge(*packet);
             return;
         } catch (const std::exception& e) {
@@ -183,12 +177,8 @@ private:
             ++keyframes_;
         }
 
-        const auto delivery = odometry_pub_.publish(result);
+        odometry_pub_.publish(result);
         ++published_results_;
-        if (delivery.topic_closed || delivery.reliable_accepted < delivery.reliable_subscribers) {
-            ++undelivered_results_;
-            report(fw::DiagnosticClass::kControl, "odometry.result_undelivered", "");
-        }
 
         if (result.status == fw::TrackingStatus::kLost) {
             fw::TrackingLostEvent lost;
@@ -201,11 +191,10 @@ private:
         report(fw::DiagnosticClass::kMetric, "odometry.inliers",
                static_cast<double>(result.inliers));
 
-        // 关键帧已经持有整包的所有权，打包器那份历史可以回收了
         acknowledge(*packet);
     }
 
-    /// 这一包有了终态：确认消费。累计确认，按序处理，序号即进度。
+    /// 这一包有了终态：报告处理进度。累计的，按序处理，序号即进度。
     void acknowledge(const fw::SensorPacket& packet) {
         consumed_pub_.publish(fw::PacketConsumed{packet.sequence});
     }
@@ -236,7 +225,7 @@ private:
             algorithm_->reinitialize();
         } catch (const std::exception& e) {
             report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", e.what());
-            return;  // 基类保留不可用状态；本包仍须确认消费
+            return;  // 基类保留不可用状态；本包仍须报告进度
         } catch (...) {
             report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", "复位抛出未知异常");
             return;
@@ -383,7 +372,6 @@ private:
     std::uint64_t rejected_for_gap_ = 0;
     std::uint64_t degraded_for_gap_ = 0;
     std::uint64_t published_results_ = 0;
-    std::uint64_t undelivered_results_ = 0;
     std::uint64_t keyframes_ = 0;
     std::uint64_t applied_solution_ = 0;
     std::uint64_t handled_solution_ = 0;

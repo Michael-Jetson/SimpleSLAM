@@ -6,7 +6,7 @@
 /// @file graph_optimizer.hpp
 /// 图优化算法接口。
 ///
-/// 这是**插件**（ADR-0004 三分法）：纯算法，不碰总线、不碰资源。
+/// 这是**插件**：纯算法，不碰总线、不碰资源。
 /// 位姿图的唯一写者是图优化**模块**，由写令牌在类型上保证
 /// （`framework/resources.hpp`、`modules/graph_optimizer_module.hpp`）。
 ///

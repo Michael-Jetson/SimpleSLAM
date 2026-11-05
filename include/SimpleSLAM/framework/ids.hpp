@@ -29,7 +29,7 @@ SIMPLESLAM_FW_DEFINE_ID(SessionId);
 /// 请求代号：防止旧任务的结果覆盖新任务。
 SIMPLESLAM_FW_DEFINE_ID(RequestGeneration);
 /// 约束代号：一次性约束的稳定身份，用于去重、重试与提交确认。
-/// 通知可以丢、可以重发，但"这条约束是否已经进入真源"必须由它判定。
+/// "这条约束是否已经进入真源"由它判定。
 SIMPLESLAM_FW_DEFINE_ID(ConstraintId);
 
 #undef SIMPLESLAM_FW_DEFINE_ID

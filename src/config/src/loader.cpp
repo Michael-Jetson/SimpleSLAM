@@ -319,7 +319,6 @@ void validateConfig(const SlamConfig& config) {
         }
     });
 
-    requireAtLeast("runtime.worker_threads", config.runtime.worker_threads, 1);
     requireAtLeast("runtime.spin_budget", config.runtime.spin_budget, 1);
     requireAtLeast("packetizer.max_imu_backlog", config.packetizer.max_imu_backlog, 1);
     requireAtLeast("odometry.max_iterations", config.odometry.max_iterations, 1);

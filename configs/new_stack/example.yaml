@@ -4,7 +4,6 @@ name: example
 
 runtime:
   offline: true
-  worker_threads: 1
 
 packetizer:
   imu_required: true

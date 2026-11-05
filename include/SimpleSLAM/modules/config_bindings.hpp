@@ -15,7 +15,6 @@ namespace simpleslam::modules {
 [[nodiscard]] inline SlamSystemOptions toSystemOptions(const config::SlamConfig& config) {
     SlamSystemOptions options;
     options.offline = config.runtime.offline;
-    options.worker_threads = static_cast<std::size_t>(config.runtime.worker_threads);
     options.spin_budget = static_cast<std::size_t>(config.runtime.spin_budget);
     return options;
 }

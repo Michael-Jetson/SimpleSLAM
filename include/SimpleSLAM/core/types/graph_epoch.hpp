@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file graph_epoch.hpp
-/// GraphEpoch —— PoseGraph 版本号强类型（ADR-002 / 蓝图不变量4）。
+/// GraphEpoch —— PoseGraph 版本号强类型（不变量 4）。
 ///
 /// 后端校正携带"其计算所基于的图版本"；消费者（SubMapManager / Odometry）
 /// 据此拒绝过期或基于错误版本的校正。对标 GTSAM iSAM2 的 update_count_。

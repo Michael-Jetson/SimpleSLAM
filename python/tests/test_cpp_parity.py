@@ -81,7 +81,7 @@ class ConfigParityTest(unittest.TestCase):
                 "backend.loop_score_threshold": 0.75,
                 "odometry.voxel_size_m": 1.0 / 3.0,
             }),
-            Config(**{"evaluation.output": "/tmp/est.tum", "runtime.worker_threads": 4}),
+            Config(**{"evaluation.output": "/tmp/est.tum", "runtime.spin_budget": 1024}),
         ]
         with tempfile.TemporaryDirectory() as directory:
             for index, config in enumerate(cases):

@@ -117,7 +117,6 @@ eval::Trajectory groundTruth(int scans) {
 modules::SlamSystemOptions offlineOptions() {
     modules::SlamSystemOptions options;
     options.offline = true;
-    options.worker_threads = 1;
     return options;
 }
 
@@ -235,7 +234,6 @@ TEST_CASE("配置驱动打包器：纯 LiDAR 声明不需要 IMU", "[system][con
     const auto config = config::loadConfigString(R"(
 runtime:
   offline: true
-  worker_threads: 1
 packetizer:
   imu_required: false
 )");
@@ -321,7 +319,7 @@ TEST_CASE("运行期改参数走的是同一套校验", "[config][params]") {
     const auto bad = store.commit({comm::ParamChange{name, comm::ParamValue{-1.0}}});
     CHECK_FALSE(bad.ok());
     CHECK(bad.status == comm::ParamCommit::kRejectedValue);
-    CHECK(store.revision() == 0);  // 整批拒绝，版本不变
+    CHECK(store.snapshot()->revision == 0);  // 整批拒绝，版本不变
 
     const auto good = store.commit({comm::ParamChange{name, comm::ParamValue{2.0}}});
     REQUIRE(good.ok());
@@ -349,7 +347,6 @@ TEST_CASE("回放不完整时实验产物要说出来", "[record][eval]") {
 
     modules::SlamSystem::Options options;
     options.offline = true;
-    options.worker_threads = 1;
     modules::SlamSystem system(options);
     fw::PacketizerPolicy policy;
     policy.imu = fw::ImuRequirement::kNotRequired;

@@ -12,7 +12,6 @@ dataset:
 
 runtime:
   offline: true
-  worker_threads: 1
 
 packetizer:
   # odometry 序列没有 IMU。默认用数据源按实测给出的推荐策略（source_policy: source），

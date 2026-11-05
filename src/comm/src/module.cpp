@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 SimpleSLAM contributors
+
+#include <SimpleSLAM/comm/module.hpp>
+
+#include <exception>
+#include <functional>
+#include <utility>
+
+namespace simpleslam::comm {
+
+void Module::attach(RuntimeCore& core, std::string resolved_name) {
+    if (!isValidResolvedName(resolved_name)) throw WiringError("模块名必须是合法绝对名: " + resolved_name);
+    core_ = &core;
+    name_ = std::move(resolved_name);
+    mailbox_ = std::make_shared<Mailbox>(name_, core.hub(), core.reporter(), core.defaultPolicy());
+    params_ = core.params().snapshot();
+}
+
+void Module::initialize() {
+    params_ = core_->params().snapshot();
+    onInit();
+    initialized_ = true;
+}
+
+template <class F>
+void Module::runHook(F&& hook) noexcept {
+    detail::RuntimeThreadMark mark;
+    try {
+        hook();
+    } catch (const std::exception& e) {
+        hook_failures_.fetch_add(1, std::memory_order_relaxed);
+        detail::reportSafely(core_->reporter(), name_, e.what());
+        core_->hub()->recordFailure({name_, e.what(), std::current_exception()}, false);
+    } catch (...) {
+        hook_failures_.fetch_add(1, std::memory_order_relaxed);
+        detail::reportSafely(core_->reporter(), name_, "模块钩子抛出未知异常");
+    }
+}
+
+void Module::start() {
+    if (started_ || !initialized_ || stopped_) return;
+    started_ = true;
+    runHook([this] { onStart(); });
+}
+
+void Module::remap(std::string_view from, std::string_view to) {
+    remaps_[resolveName(from, name_)] = resolveName(to, name_);
+}
+
+std::string Module::resolveEndpoint(std::string_view name) const {
+    std::string resolved = resolveName(name, name_);
+    if (auto it = remaps_.find(resolved); it != remaps_.end()) return it->second;
+    return resolved;
+}
+
+void Module::logEvery(Duration period, LogLevel level, std::string_view text, std::source_location where) {
+    const auto key = std::hash<std::string_view>{}(where.file_name()) ^ (static_cast<std::uint64_t>(where.line()) << 1);
+    const Time now = core_->clock().now();
+    auto [it, first] = log_marks_.try_emplace(key, now);
+    if (!first && now - it->second < period) return;
+    it->second = now;
+    core_->log(level, name_, text);
+}
+
+void Module::finish() {
+    if (finished_ || stopped_ || !initialized_) return;
+    finished_ = true;
+    runHook([this] { onFinish(); });
+}
+
+void Module::shutdown() {
+    if (stopped_) return;
+    stopped_ = true;
+    for (auto& sub : subscriptions_) sub->close();
+    for (const auto& timer : timers_) timer.cancel();
+    if (initialized_) runHook([this] { onShutdown(); });
+    mailbox_->close();
+}
+
+void Module::adoptParams(ParamSnapshotPtr snapshot) {
+    params_ = std::move(snapshot);
+    onParamsChanged(*params_);
+}
+
+ServiceCaller Module::makeCaller(RuntimeCore& core, std::string resolved, std::type_index request,
+                                 std::type_index response, MailboxPtr caller) {
+    std::weak_ptr<RuntimeCore> weak = core.weak_from_this();
+    return ServiceCaller(
+        [weak, resolved = std::move(resolved), request, response]() -> std::shared_ptr<ServiceEndpoint> {
+            auto alive = weak.lock();
+            return alive ? alive->findService(resolved, request, response) : nullptr;
+        },
+        std::move(caller), core.hub(), &core.clock());
+}
+
+TimerHandle Module::createTimer(Duration period, std::function<void()> cb) {
+    return scheduleTimer(period, period, std::move(cb));
+}
+
+TimerHandle Module::createOneShot(Duration delay, std::function<void()> cb) {
+    return scheduleTimer(delay, Duration{0}, std::move(cb));
+}
+
+TimerHandle Module::scheduleTimer(Duration delay, Duration period, std::function<void()> cb) {
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+    auto queued = std::make_shared<std::atomic<bool>>(false);
+    auto body = std::make_shared<std::function<void()>>(std::move(cb));
+    TimerHandle handle = mailbox_->scheduleTimer(
+        core_->clock().now() + delay, period,
+        [box = mailbox_, alive, queued, body] {
+            if (queued->exchange(true, std::memory_order_acq_rel)) return;
+            const bool posted = box->post([alive, queued, body] {
+                queued->store(false, std::memory_order_release);
+                if (alive->load(std::memory_order_acquire)) (*body)();
+            });
+            if (!posted) queued->store(false, std::memory_order_release);
+        },
+        alive);
+    timers_.push_back(handle);
+    return handle;
+}
+
+}  // namespace simpleslam::comm

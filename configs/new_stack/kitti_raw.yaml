@@ -17,7 +17,6 @@ dataset:
 
 runtime:
   offline: true
-  worker_threads: 1
 
 odometry:
   algorithm: my_lio
