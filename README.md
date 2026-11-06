@@ -81,7 +81,9 @@ evaluation:
 
 命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个**任务记录**目录：还原后的完整任务、身份与哈希、运行结局、轨迹与真值、生效的标定、结论 `result.json` 和逐样本的评测表格；同一个任务原样重跑，得到同一个任务哈希。
 
-评测是可选的，只读任务记录，所以跑完立刻评与事后补评数字一样：`<入口> evaluate <任务记录> [evaluation.…=值]` 补评，或换评测函数、换协议重评，不重跑；`simpleslam-eval <估计> <真值> --out <目录>` 评测别的系统跑出来的轨迹，写成同一种任务记录，能和自己的结果放进一张表。评测函数与算法插件是同一套机制，内置 `ate`、`rpe`，用户写的在入口里登记，一样在任务里选。
+评测是可选的，只读任务记录，所以跑完立刻评与事后补评数字一样：`<入口> evaluate <任务记录> [evaluation.…=值]` 补评，或换评测函数、换协议重评，不重跑；`simpleslam-eval <估计> <真值> --out <目录>` 评测别的系统跑出来的轨迹，写成同一种任务记录，能和自己的结果放进一张表（不给 `--out` 时只打印结论）。评测函数与算法插件是同一套机制，内置 `ate`、`rpe`，用户写的在入口里登记，一样在任务里选。
+
+旧版本的写法照样能用：v2 的任务文件、覆盖项、基线文件与结论在加载时按新写法理解，并给出照着改的新写法。
 
 写错了在运行之前就报，带完整路径和可选项，例如
 `system.modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
