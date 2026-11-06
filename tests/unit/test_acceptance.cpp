@@ -35,6 +35,25 @@ namespace eval = simpleslam::eval;
 
 namespace {
 
+/// 一个运行中可改、只有外部写的整数参数 x。
+void defineX(comm::Runtime& runtime, std::int64_t initial) {
+    runtime.params().define({comm::ParamDefinition{.name = "x",
+                                                   .type = comm::ParamType::kInt,
+                                                   .fallback = std::int64_t{0},
+                                                   .doc = "",
+                                                   .min = std::nullopt,
+                                                   .max = std::nullopt,
+                                                   .runtime = true,
+                                                   .writers = {}}},
+                            {{"x", initial}});
+}
+
+/// 直接把内置模块挂到运行时上时，参数要先定义：按内置模块的声明，取默认值。
+void defineModuleParams(comm::Runtime& runtime) {
+    auto resolved = comm::resolveParams(modules::builtinModuleParams(true), {});
+    runtime.params().define(std::move(resolved.definitions), std::move(resolved.values));
+}
+
 struct Provider final : comm::Module {
     int handle(const int& n) { return n + 1; }
     void onInit() override { advertiseService<int, int>("/svc", &Provider::handle); }
@@ -179,22 +198,22 @@ TEST_CASE("装配阶段之外不能加模块，init 只能一次", "[acceptance]
 
 TEST_CASE("关闭开始后参数写入被拒，存储不变", "[acceptance][comm]") {
     comm::Runtime runtime(comm::RuntimeOptions{true});
-    runtime.params().preset("/x", std::int64_t{1});
+    defineX(runtime, 1);
     runtime.addModule<Client>("/c");
     runtime.init();
     runtime.shutdown();
-    const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
+    const auto result = runtime.setParams({{"x", std::int64_t{2}}});
     CHECK(result.status == comm::ParamCommit::kRejectedStopped);
     CHECK(runtime.params().snapshot()->revision == 0);
 }
 
 TEST_CASE("提交只进了存储，模块在自己的收件箱里才换上", "[acceptance][comm]") {
     comm::Runtime runtime(comm::RuntimeOptions{true});
-    runtime.params().preset("/x", std::int64_t{1});
+    defineX(runtime, 1);
     auto& watcher = runtime.addModule<ParamWatcher>("/c");
     runtime.init();
 
-    const auto result = runtime.setParams({{"/x", std::int64_t{2}}});
+    const auto result = runtime.setParams({{"x", std::int64_t{2}}});
     REQUIRE(result.ok());
     CHECK(watcher.revision() == 0);  // 模块还没被驱动
 
@@ -508,6 +527,7 @@ TEST_CASE("图里混入不同标定的节点就不再产出校正", "[acceptance
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
     auto optimizer = std::make_unique<IdleOptimizer>();
     auto* idle = optimizer.get();
+    defineModuleParams(runtime);
     auto& graph_module = runtime.addModule<modules::GraphOptimizerModule>(
         "/graph", std::move(optimizer), resources);
     runtime.init();

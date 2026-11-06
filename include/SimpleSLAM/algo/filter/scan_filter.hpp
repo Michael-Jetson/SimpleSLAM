@@ -10,6 +10,7 @@
 /// 输入各列长度一致、坐标有限，调实现，再核对输出同样成立；实现的错在接缝处就被拦下。
 /// 输出不多于输入；可选列（强度、逐点时间、线号）跟着保留下来的点一起走。
 
+#include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/framework/sensor_data.hpp>
 #include <SimpleSLAM/logging/logger.hpp>
 
@@ -17,7 +18,7 @@
 
 namespace simpleslam::algo {
 
-class ScanFilter : public logging::Loggable {
+class ScanFilter : public logging::Loggable, public comm::ParamUser {
 public:
     static constexpr std::string_view kInterfaceName = "ScanFilter";
 

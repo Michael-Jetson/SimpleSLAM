@@ -13,9 +13,9 @@
 /// 所以由模块在帧边界取**一次**快照，打包成这个不可变上下文传进算法：
 /// 算法用它、产物标它，三者必然是同一份。
 ///
-/// 参数同理：带的是**快照本身**，不只是版本号。算法每帧从这里读阈值，结果上标的
-/// 参数版本才名副其实——只传版本号、值却在启动时拷进了成员的话，版本变了，
-/// 用的值没变，标签就是假的。
+/// 参数同理：带的是**快照本身**，不只是版本号。算法用 `param(k)` 读到的就是这一份（所属模块
+/// 这次回调的快照），结果上标的参数版本才名副其实——只传版本号、值却在启动时拷进了成员的话，
+/// 版本变了，用的值没变，标签就是假的。
 
 #include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/framework/calibration.hpp>
@@ -37,14 +37,6 @@ struct FrameContext {
     /// 当前估计状态与包的传播起点之间缺少的输入。来源包本身不改写；
     /// 框架将这段缺口纳入 supportGapPolicy，降级算法可在 context() 里检查它。
     std::optional<TimeRange> missing_propagation;
-
-    /// 从本帧的参数快照取值；没有这个名字或类型不符时返回默认值。
-    template <class T>
-    [[nodiscard]] T param(const std::string& name, T default_value) const {
-        if (!params) return default_value;
-        if (auto value = params->get<T>(name)) return *value;
-        return default_value;
-    }
 
     [[nodiscard]] std::uint64_t calibrationRevision() const noexcept {
         return calibration ? calibration->revision : 0;

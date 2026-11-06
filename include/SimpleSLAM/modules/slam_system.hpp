@@ -143,6 +143,9 @@ inline constexpr std::string_view kPlaceRecognizerModule = "/slam/place_recogniz
 inline constexpr std::string_view kGraphOptimizerModule = "/slam/graph_optimizer";
 inline constexpr std::string_view kTrajectoryModule = "/slam/trajectory";
 
+/// 内置模块自己用到的参数，写者是模块本身。有后端（位置识别与图优化）时才有图优化模块的。
+[[nodiscard]] std::vector<comm::ParamComponent> builtinModuleParams(bool with_backend);
+
 /// 装配、离线步进、结果查询与终结由控制线程串行调用；在线模块通过 requestStop()
 /// 请求停止，控制线程待 spin() 返回后完成 shutdown()/cancel()。
 class SlamSystem {
@@ -204,7 +207,8 @@ public:
     }
 
     /// 装配完成。来源要求的外参此刻必须已知——"来源有哪些标定"与"最终装配齐没齐"
-    /// 是两件事：数据集可以缺外参，只要外部标定文件补上了就行。
+    /// 是两件事：数据集可以缺外参，只要外部标定文件补上了就行。参数存储还没定义时（没有经过
+    /// 入口装配），按内置模块的声明以默认值定义；入口在这之前把全部组件的参数连同配置的值定好。
     void init();
 
     /// 离线跑完整个数据源：喂一包、把虚拟时钟推到该包的数据时刻、跑到静止，

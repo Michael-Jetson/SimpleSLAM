@@ -15,6 +15,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <span>
 #include <sstream>
 #include <system_error>
 #include <string_view>
@@ -31,6 +32,26 @@ std::string formatDouble(double value) {
     std::snprintf(buffer, sizeof(buffer), "%.17g", value);
     return buffer;
 }
+
+/// 分段的键：段由字母、数字与 _ 组成，用 . 隔开，不在两头、不连写。来源的键与参数名都这样写。
+bool dottedKey(std::string_view key) {
+    if (key.empty() || key.front() == '.' || key.back() == '.') return false;
+    bool previous_dot = false;
+    for (const char c : key) {
+        const bool dot = c == '.';
+        if (dot && previous_dot) return false;
+        if (!dot && !(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_')) return false;
+        previous_dot = dot;
+    }
+    return true;
+}
+
+std::string renamedNote(const RenamedField& renamed) {
+    return std::string(renamed.old_path) + " 改写成了 " + std::string(renamed.new_path)
+           + "：这次按新写法读，请改成新写法";
+}
+
+constexpr std::string_view kParamsPrefix = "system.params.";
 
 std::string quoteJson(const std::string& text) {
     std::string out = "\"";
@@ -232,6 +253,25 @@ void assign(PluginMap& target, const YAML::Node& node, const std::string& path,
     }
 }
 
+/// 参数的值：名字 → 标量。名字里可以有 `.`（分段），整个当一个键；值只收标量，类型由声明
+/// 它的组件在装配时核对。
+void assign(ParamMap& target, const YAML::Node& node, const std::string& path,
+            const std::string& origin) {
+    if (node.IsNull()) {
+        target.clear();
+        return;
+    }
+    if (!node.IsMap()) throw ConfigError(origin + ": " + path + " 要写成映射：参数名 → 值");
+    target.clear();
+    for (const auto& item : node) {
+        const std::string name = item.first.as<std::string>();
+        if (!item.second.IsScalar()) {
+            throw ConfigError(origin + ": " + path + "." + name + " 参数的值只收标量");
+        }
+        target.insert_or_assign(name, scalarValue(item.second));
+    }
+}
+
 const char* typeName(const bool&) { return "bool"; }
 const char* typeName(const std::int64_t&) { return "int"; }
 const char* typeName(const double&) { return "double"; }
@@ -239,6 +279,7 @@ const char* typeName(const std::string&) { return "string"; }
 const char* typeName(const std::vector<std::string>&) { return "list"; }
 const char* typeName(const PluginSpec&) { return "slot"; }
 const char* typeName(const PluginMap&) { return "slots"; }
+const char* typeName(const ParamMap&) { return "params"; }
 
 std::string listText(const std::vector<std::string>& items) {
     std::string out = "[";
@@ -254,6 +295,14 @@ std::string defaultText(const double& v) { return formatDouble(v); }
 std::string defaultText(const std::string& v) { return v; }
 std::string defaultText(const std::vector<std::string>& v) { return listText(v); }
 std::string defaultText(const PluginSpec& v) { return v.type; }
+std::string defaultText(const ParamMap& v) {
+    std::string out = "{";
+    for (const auto& [name, value] : v) {
+        out += (out.size() == 1 ? "" : ", ") + name + ": "
+               + std::visit([](const auto& x) { return defaultText(x); }, value);
+    }
+    return out + "}";
+}
 std::string defaultText(const PluginMap& v) {
     std::string out = "{";
     for (const auto& [name, spec] : v) {
@@ -324,6 +373,7 @@ void requireDuration(const std::string& path, double seconds) {
 
 template <class T>
 inline constexpr bool kOpaque = std::is_same_v<T, PluginSpec> || std::is_same_v<T, PluginMap>
+                                || std::is_same_v<T, ParamMap>
                                 || std::is_same_v<T, std::vector<std::string>>;
 
 /// 字段路径，以及其中不往下展开的那些（插件节点、列表）。
@@ -335,7 +385,7 @@ struct FieldPaths {
 FieldPaths fieldPaths() {
     TaskConfig defaults;
     FieldPaths paths;
-    visitConfig(defaults, [&](const char* path, const auto& value, const char*, Tunable) {
+    visitConfig(defaults, [&](const char* path, const auto& value, const char*) {
         paths.all.insert(path);
         if constexpr (kOpaque<std::decay_t<decltype(value)>>) paths.opaque.insert(path);
     });
@@ -420,17 +470,25 @@ void applyToPlugin(PluginSpec& spec, const std::vector<std::string>& rest, const
     spec.params[key] = scalarValue(value);
 }
 
-void applyAssignment(TaskConfig& config, const std::string& assignment) {
+void applyAssignment(TaskConfig& config, const std::string& assignment, Renames* renames) {
     const auto equals = assignment.find('=');
     if (equals == std::string::npos || equals == 0) {
         throw ConfigError("覆盖项要写成 路径=值，得到 " + assignment);
     }
-    const std::string path = assignment.substr(0, equals);
+    std::string path = assignment.substr(0, equals);
+    for (const auto& renamed : renamedFields()) {
+        if (path != renamed.old_path) continue;
+        path = std::string(renamed.new_path);
+        if (renames != nullptr) {
+            renames->notes.push_back(renamedNote(renamed));
+            renames->params.insert(path.substr(kParamsPrefix.size()));
+        }
+    }
     const std::string text = assignment.substr(equals + 1);
     const YAML::Node value = parseOverrideValue(text);
 
     bool found = false;
-    visitConfig(config, [&](const char* field_path, auto& field, const char*, Tunable) {
+    visitConfig(config, [&](const char* field_path, auto& field, const char*) {
         if (found) return;
         using T = std::decay_t<decltype(field)>;
         const std::string name = field_path;
@@ -448,6 +506,12 @@ void applyAssignment(TaskConfig& config, const std::string& assignment) {
                                       + "={名字: {type: …}}，或 " + path + ".<名字>.type=…");
                 }
                 assign(field, value, path, "覆盖项");
+            } else if constexpr (std::is_same_v<T, ParamMap>) {
+                if (!value.IsMap()) {
+                    throw ConfigError("覆盖项 " + path + " 是参数的值：写 " + path
+                                      + "={名字: 值}，或 " + path + ".<名字>=值");
+                }
+                assign(field, value, path, "覆盖项");
             } else if constexpr (std::is_same_v<T, std::string>) {
                 field = value.IsScalar() ? value.Scalar() : text;
             } else {
@@ -461,6 +525,13 @@ void applyAssignment(TaskConfig& config, const std::string& assignment) {
             if (below) {
                 found = true;
                 applyToPlugin(field, splitPath(path.substr(name.size() + 1)), value, path);
+            }
+        } else if constexpr (std::is_same_v<T, ParamMap>) {
+            if (below) {
+                // 参数名里的 `.` 是名字的一部分：剩下的整段是一个名字
+                found = true;
+                if (!value.IsScalar()) throw ConfigError("覆盖项 " + path + " 参数的值只收标量");
+                field.insert_or_assign(path.substr(name.size() + 1), scalarValue(value));
             }
         } else if constexpr (std::is_same_v<T, PluginMap>) {
             if (below) {
@@ -486,7 +557,7 @@ std::string dump(const TaskConfig& config) {
     std::ostringstream out;
     std::vector<std::string> open;
     bool first_section = true;
-    visitConfig(config, [&](const char* path, const auto& value, const char*, Tunable) {
+    visitConfig(config, [&](const char* path, const auto& value, const char*) {
         auto parts = splitPath(path);
         const std::string key = parts.back();
         parts.pop_back();
@@ -505,6 +576,16 @@ std::string dump(const TaskConfig& config) {
         if constexpr (std::is_same_v<std::decay_t<decltype(value)>, PluginSpec>) {
             out << pad << key << ":\n";
             emitPlugin(out, value, pad.size() + 2);
+        } else if constexpr (std::is_same_v<std::decay_t<decltype(value)>, ParamMap>) {
+            // 参数按名字排序；一个都没有写成 {}。名字里的 `.` 是名字的一部分，加引号写出
+            if (value.empty()) {
+                out << pad << key << ": {}\n";
+            } else {
+                out << pad << key << ":\n";
+                for (const auto& [name, param] : value) {
+                    out << pad << "  " << quoteYaml(name) << ": " << canonicalText(param) << '\n';
+                }
+            }
         } else if constexpr (std::is_same_v<std::decay_t<decltype(value)>, PluginMap>) {
             // 一组插件节点按名字排序；一个都没有写成 {}
             if (value.empty()) {
@@ -548,24 +629,52 @@ std::string pluginJson(const PluginSpec& spec) {
     return out + "}}";
 }
 
+/// 一组参数声明的 JSON：名字、类型、默认值、说明、范围、运行中改不改、写不写。
+std::string paramsJson(const std::vector<comm::ParamUse>& params) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        const auto& use = params[i];
+        const auto fallback = use.fallback();
+        std::string value;
+        if (const auto* text = std::get_if<std::string>(&fallback)) {
+            value = quoteJson(*text);
+        } else if (const auto* real = std::get_if<double>(&fallback)) {
+            value = formatDouble(*real);
+        } else if (const auto* integer = std::get_if<std::int64_t>(&fallback)) {
+            value = std::to_string(*integer);
+        } else {
+            value = std::get<bool>(fallback) ? "true" : "false";
+        }
+        const auto bound = [](const std::optional<double>& b) {
+            return b ? formatDouble(*b) : std::string("null");
+        };
+        out += (i == 0 ? "" : ", ") + std::string("{\"name\": ") + quoteJson(std::string(use.name))
+               + ", \"type\": " + quoteJson(std::string(comm::toString(use.type)))
+               + ", \"default\": " + value + ", \"doc\": " + quoteJson(std::string(use.doc))
+               + ", \"min\": " + bound(use.min) + ", \"max\": " + bound(use.max)
+               + ", \"runtime\": " + (use.runtime ? "true" : "false")
+               + ", \"writes\": " + (use.writes ? "true" : "false") + "}";
+    }
+    return out + "]";
+}
+
 }  // namespace
 
 std::vector<FieldSchema> schema() {
     TaskConfig defaults;
     std::vector<FieldSchema> fields;
-    visitConfig(defaults, [&](const char* path, const auto& value, const char* doc,
-                              Tunable tunable) {
+    visitConfig(defaults, [&](const char* path, const auto& value, const char* doc) {
         fields.push_back(FieldSchema{.path = path,
                                      .type = typeName(value),
                                      .default_value = defaultText(value),
-                                     .doc = doc,
-                                     .tunable = tunable == Tunable::kYes});
+                                     .doc = doc});
     });
     return fields;
 }
 
 std::string schemaJson(const std::map<std::string, std::string>& slots,
-                       const std::vector<PluginSchema>& plugins) {
+                       const std::vector<PluginSchema>& plugins,
+                       const std::vector<ModuleParams>& modules) {
     std::ostringstream out;
     out << "{\n  \"fields\": [\n";
     const auto fields = schema();
@@ -573,12 +682,17 @@ std::string schemaJson(const std::map<std::string, std::string>& slots,
         const auto& field = fields[i];
         out << "    {\"path\": " << quoteJson(field.path) << ", \"type\": "
             << quoteJson(field.type) << ", \"default\": " << quoteJson(field.default_value)
-            << ", \"doc\": " << quoteJson(field.doc) << ", \"tunable\": "
-            << (field.tunable ? "true" : "false") << "}" << (i + 1 < fields.size() ? "," : "")
+            << ", \"doc\": " << quoteJson(field.doc) << "}" << (i + 1 < fields.size() ? "," : "")
             << '\n';
     }
-    out << "  ],\n  \"slots\": {";
+    out << "  ],\n  \"renamed\": {";
     std::size_t n = 0;
+    for (const auto& renamed : renamedFields()) {
+        out << (n++ == 0 ? "\n" : ",\n") << "    " << quoteJson(std::string(renamed.old_path))
+            << ": " << quoteJson(std::string(renamed.new_path));
+    }
+    out << (n == 0 ? "" : "\n  ") << "},\n  \"slots\": {";
+    n = 0;
     for (const auto& [path, interface_name] : slots) {
         out << (n++ == 0 ? "\n" : ",\n") << "    " << quoteJson(path) << ": "
             << quoteJson(interface_name);
@@ -598,15 +712,31 @@ std::string schemaJson(const std::map<std::string, std::string>& slots,
             }
             out << "}";
         }
-        out << "]}";
+        out << "], \"params\": " << paramsJson(plugin.params) << "}";
     }
-    out << (plugins.empty() ? "" : "\n  ") << "]\n}\n";
+    out << (plugins.empty() ? "" : "\n  ") << "],\n  \"modules\": [";
+    for (std::size_t i = 0; i < modules.size(); ++i) {
+        out << (i == 0 ? "\n" : ",\n") << "    {\"module\": " << quoteJson(modules[i].module)
+            << ", \"params\": " << paramsJson(modules[i].params) << "}";
+    }
+    out << (modules.empty() ? "" : "\n  ") << "]\n}\n";
     return out.str();
+}
+
+std::span<const RenamedField> renamedFields() {
+    // 两个兜底权重从图优化模块的配置字段变成了它声明的参数
+    static constexpr RenamedField kRenamed[] = {
+        {"system.modules.graph_optimizer.odometry_translation_weight",
+         "system.params.graph.odometry_translation_weight"},
+        {"system.modules.graph_optimizer.odometry_rotation_weight",
+         "system.params.graph.odometry_rotation_weight"},
+    };
+    return kRenamed;
 }
 
 void validateConfig(const TaskConfig& config) {
     // 有限性：类型检查拦得住 "abc"，拦不住 1e400 这种溢出成 inf 的写法
-    visitConfig(config, [](const char* path, const auto& value, const char*, Tunable) {
+    visitConfig(config, [](const char* path, const auto& value, const char*) {
         if constexpr (std::is_same_v<std::decay_t<decltype(value)>, double>) {
             if (!std::isfinite(value)) throw ConfigError(std::string(path) + " 必须是有限实数");
         }
@@ -628,12 +758,16 @@ void validateConfig(const TaskConfig& config) {
     requireDuration("system.packetizer.attachment_tolerance_s",
                     system.packetizer.attachment_tolerance_s);
     requireDuration("system.packetizer.max_imu_gap_s", system.packetizer.max_imu_gap_s);
-    const auto& graph = system.modules.graph_optimizer;
-    if (!(graph.odometry_translation_weight > 0.0)) {
-        throw ConfigError("system.modules.graph_optimizer.odometry_translation_weight 必须为正");
-    }
-    if (!(graph.odometry_rotation_weight > 0.0)) {
-        throw ConfigError("system.modules.graph_optimizer.odometry_rotation_weight 必须为正");
+    // 参数名的写法：段由字母、数字与 _ 组成，用 . 隔开。类型与范围由声明它的组件在装配时核对
+    for (const auto& [name, value] : system.params) {
+        if (!dottedKey(name)) {
+            throw ConfigError("system.params 里的参数名 " + name
+                              + " 要由字母、数字与 _ 组成，用 . 分段");
+        }
+        const auto* real = std::get_if<double>(&value);
+        if (real != nullptr && !std::isfinite(*real)) {
+            throw ConfigError("system.params." + name + " 必须是有限实数");
+        }
     }
 
     // 序列名是子任务记录的目录名，也写进子进程的覆盖项：只收不用转义、不会越出任务记录目录的名字
@@ -686,24 +820,11 @@ void validateConfig(const TaskConfig& config) {
     requireOneOf("outputs.log.console", log.console, {"debug", "info", "warn", "error"});
     requireOneOf("outputs.log.file", log.file, {"debug", "info", "warn", "error"});
     // 键与配置路径同一种写法：段由字母、数字与 _ 组成，用 . 隔开
-    const auto valid_key = [](std::string_view key) {
-        if (key.empty() || key.front() == '.' || key.back() == '.') return false;
-        bool previous_dot = false;
-        for (const char c : key) {
-            const bool dot = c == '.';
-            if (dot && previous_dot) return false;
-            if (!dot && !(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_')) {
-                return false;
-            }
-            previous_dot = dot;
-        }
-        return true;
-    };
     std::set<std::string> keys;
     for (const auto& rule : log.levels) {
         const auto equals = rule.find('=');
         const std::string key = rule.substr(0, equals);
-        if (equals == std::string::npos || !valid_key(key)) {
+        if (equals == std::string::npos || !dottedKey(key)) {
             throw ConfigError("outputs.log.levels 的每条要写成 <来源的键>=<等级>，如 "
                               "odometry.plugin.map=debug，得到 " + rule);
         }
@@ -750,6 +871,53 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         throw ConfigError(origin + ": system 要写成系统文件的路径");
     }
 
+    // 改过写法的配置项：搬到新写法的位置，说明替换用的新写法
+    for (const auto& renamed : renamedFields()) {
+        // 只读地往下找（const 的 operator[] 不插入空键）；节点要用 reset 换指向，赋值会改写原节点
+        const auto parts = splitPath(std::string(renamed.old_path));
+        YAML::Node parent;
+        parent.reset(root);
+        bool present = true;
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            const YAML::Node& view = parent;
+            if (!view.IsMap() || !view[parts[i]]) {
+                present = false;
+                break;
+            }
+            if (i + 1 < parts.size()) parent.reset(view[parts[i]]);
+        }
+        if (!present) continue;
+        const YAML::Node& view = parent;
+        const YAML::Node value = YAML::Clone(view[parts.back()]);
+        parent.remove(parts.back());
+        // 去掉之后空下来的映射也去掉：空映射也算一个叶子，留着会被当成拼错的键
+        for (std::size_t depth = parts.size() - 1; depth > 0; --depth) {
+            YAML::Node container;
+            container.reset(root);
+            for (std::size_t i = 0; i + 1 < depth; ++i) {
+                const YAML::Node& step = container;
+                container.reset(step[parts[i]]);
+            }
+            const YAML::Node& holder = container;
+            const YAML::Node child = holder[parts[depth - 1]];
+            if (!child || !child.IsMap() || child.size() != 0) break;
+            container.remove(parts[depth - 1]);
+        }
+        const std::string new_path(renamed.new_path);
+        const std::string name = new_path.substr(kParamsPrefix.size());
+        const YAML::Node& top = root;  // 旧写法在 system 下找到了，所以 system 一定在
+        if (const YAML::Node params = top["system"]["params"];
+            params && params.IsMap() && params[name]) {
+            const std::string& where =
+                loaded.source.system_file.empty() ? origin : loaded.source.system_file;
+            throw ConfigError(where + ": " + std::string(renamed.old_path) + " 与 " + new_path
+                              + " 是同一项，新旧两种写法都写了：删掉旧写法");
+        }
+        root["system"]["params"][name] = value;
+        loaded.renames.notes.push_back(renamedNote(renamed));
+        loaded.renames.params.insert(name);
+    }
+
     // 未知键先查：拼错的键静默忽略，比报错难查得多
     const FieldPaths paths = fieldPaths();
     std::vector<std::string> present;
@@ -761,13 +929,13 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         throw ConfigError(where + ": 未知配置项 " + path);
     }
 
-    visitConfig(loaded.config, [&](const char* path, auto& value, const char*, Tunable) {
+    visitConfig(loaded.config, [&](const char* path, auto& value, const char*) {
         const YAML::Node node = nodeAt(root, path);
         if (!node || node.IsNull()) return;  // 缺省即默认值
         assign(value, node, path, origin);
     });
     // 类型对了不等于值有意义：覆盖全部到位之后整体校验
-    applyOverrides(loaded.config, loaded.source.overrides);
+    applyOverrides(loaded.config, loaded.source.overrides, &loaded.renames);
     return loaded;
 }
 
@@ -777,8 +945,9 @@ LoadedTask loadTaskFile(const std::string& path, const std::vector<std::string>&
                           parent.empty() ? std::string(".") : parent.string(), overrides);
 }
 
-void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments) {
-    for (const auto& assignment : assignments) applyAssignment(config, assignment);
+void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
+                    Renames* renames) {
+    for (const auto& assignment : assignments) applyAssignment(config, assignment, renames);
     validateConfig(config);
 }
 

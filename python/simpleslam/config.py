@@ -108,6 +108,7 @@ def _require_int64(value: int, path: str) -> int:
 
 
 _ENTRY_NAME = re.compile(r"[A-Za-z0-9_]+")
+_PARAM_NAME = re.compile(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*")
 
 
 def _check_entry_name(table: str, name: str) -> None:
@@ -117,8 +118,27 @@ def _check_entry_name(table: str, name: str) -> None:
                           "它是指标名的第一段，也是表格的文件名")
 
 
+def _check_param_name(name: str) -> None:
+    """参数名：段由字母、数字与 _ 组成，用 . 隔开，与 C++ 一致。"""
+    if not _PARAM_NAME.fullmatch(name):
+        raise ConfigError(f"system.params 里的参数名 {name} 要由字母、数字与 _ 组成，用 . 分段")
+
+
+def _coerce_param(value: Any, path: str) -> Any:
+    """参数的值只收标量；类型对不对由声明它的组件在 C++ 装配时核对。"""
+    if isinstance(value, bool) or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return _require_int64(value, path)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ConfigError(f"{path} 必须是有限实数")
+        return value
+    raise ConfigError(f"{path} 参数的值只收标量，得到 {value!r}")
+
+
 def _coerce_kind(kind: str, value: Any, path: str) -> Any:
-    """配置字段的值（bool / int / double / string / list / slot / slots）。"""
+    """配置字段的值（bool / int / double / string / list / slot / slots / params）。"""
     if kind == "bool":
         if not isinstance(value, bool):
             raise ConfigError(f"{path} 需要 bool，得到 {value!r}")
@@ -149,6 +169,14 @@ def _coerce_kind(kind: str, value: Any, path: str) -> Any:
             _check_entry_name(path, name)
             out[name] = _coerce_kind("slot", node, f"{path}.{name}")
         return out
+    if kind == "params":
+        if not isinstance(value, Mapping):
+            raise ConfigError(f"{path} 是参数的值，要写成 {{参数名: 值}}")
+        params: dict[str, Any] = {}
+        for name, item in value.items():
+            _check_param_name(name)
+            params[name] = _coerce_param(item, f"{path}.{name}")
+        return params
     if not isinstance(value, str):
         raise ConfigError(f"{path} 需要字符串，得到 {value!r}")
     return value
@@ -216,6 +244,11 @@ def _emit(values: Mapping[str, Any], fields: list[Field]) -> str:
             for name in sorted(value):
                 lines.append(f"{pad}  {name}:")
                 _emit_plugin(lines, value[name], len(pad) + 4)
+        elif field.type == "params":
+            # 名字里的 . 是名字的一部分：加引号写出（与 C++ 的 dump 一致）
+            lines.append(f"{pad}{key}:" + ("" if value else " {}"))
+            for name in sorted(value):
+                lines.append(f"{pad}  {_quote_yaml(name)}: {_format_value(value[name])}")
         else:
             lines.append(f"{pad}{key}: {_format_value(value)}")
     return "\n".join(lines) + "\n" if lines else ""
@@ -241,10 +274,14 @@ def _slot_containing(path: str, schema: Schema) -> str | None:
 
 
 def _table_of(path: str, schema: Schema) -> str | None:
-    """路径是不是插件节点表里的一项（``<表>.<名字>``），是就返回表的路径。"""
+    """路径是不是表里的一项，是就返回表的路径：插件节点表是 ``<表>.<名字>``；参数的值是
+    ``<表>.<参数名>``，参数名里可以有 ``.``，表后面的整段是一个名字。"""
     table, dot, _ = path.rpartition(".")
     if dot and table in schema and schema.field(table).type == "slots":
         return table
+    for field in schema:
+        if field.type == "params" and path.startswith(field.path + "."):
+            return field.path
     return None
 
 
@@ -356,7 +393,10 @@ class Config:
             path, equals, _ = item.partition("=")
             if not equals or not path:
                 raise ConfigError(f"覆盖项要写成 路径=值，得到 {item}")
-            if path not in schema and _slot_containing(path, schema) is None:
+            known = (path in schema or path in schema.renamed
+                     or _slot_containing(path, schema) is not None
+                     or _table_of(path, schema) is not None)
+            if not known:
                 raise ConfigError(f"覆盖项里的未知配置项 {path}")
         for path, value in self._values.items():
             if path in (SYSTEM_FILE, OVERRIDES):
@@ -364,7 +404,13 @@ class Config:
             if system_file is not None and path.startswith("system."):
                 raise ConfigError(f"{path}：system 引用了系统文件 {system_file}，"
                                   "改系统参数要写成覆盖项（config.override）")
+            if path in schema.renamed:  # 改过写法的旧写法：原样交给 C++，由它翻译并提示
+                continue
             table = _table_of(path, schema) if path not in schema else None
+            if table is not None and schema.field(table).type == "params":
+                _check_param_name(path[len(table) + 1:])  # 参数的一项：名字合规，值是标量
+                _coerce_param(value, path)
+                continue
             if table is not None:  # 表里的一项：名字合规，值是插件节点
                 _check_entry_name(table, path[len(table) + 1:])
                 _coerce_kind("slot", value, path)
@@ -392,7 +438,7 @@ class Config:
     def _render_order(self, schema: Schema | None) -> list[Field]:
         def pseudo(path: str, value: Any) -> Field:
             kind = "slot" if isinstance(value, Mapping) else "string"
-            return Field(path, kind, "", "", False)
+            return Field(path, kind, "", "")
 
         if schema is None:
             return [pseudo(path, value) for path, value in sorted(self._values.items())]
@@ -405,6 +451,12 @@ class Config:
                     order.append(pseudo(SYSTEM_FILE, ""))
                 continue
             order.append(field)
+        # 改过写法的旧写法：写在原来那一节的末尾
+        for old in (path for path in schema.renamed if path in self._values):
+            section = old.rpartition(".")[0] + "."
+            index = max((i for i, field in enumerate(order) if field.path.startswith(section)),
+                        default=len(order) - 1)
+            order.insert(index + 1, pseudo(old, self._values[old]))
         if OVERRIDES in self._values:
             order.append(pseudo(OVERRIDES, ""))
         return order
@@ -424,6 +476,7 @@ class Config:
             raise ConfigError("读任务 YAML 需要 schema：插件节点从哪一层开始只有 schema 知道")
         slot_paths = {field.path for field in schema if field.type == "slot"}
         table_paths = {field.path for field in schema if field.type == "slots"}
+        params_paths = {field.path for field in schema if field.type == "params"}
         config = cls()
 
         def walk(node: Mapping[str, Any], prefix: str) -> None:
@@ -442,6 +495,13 @@ class Config:
                             isinstance(node, Mapping) for node in value.values()):
                         raise ConfigError(f"{path} 是带名字的插件节点表，每项要写成映射")
                     config[path] = {name: _plugin_values(node) for name, node in value.items()}
+                elif path in params_paths:
+                    if not isinstance(value, Mapping) or any(
+                            isinstance(item, Mapping) for item in value.values()):
+                        raise ConfigError(f"{path} 是参数的值，要写成 参数名: 标量")
+                    config[path] = {name: _scalar(item) for name, item in value.items()}
+                elif path in schema.renamed and not isinstance(value, Mapping):
+                    config[path] = _scalar(value)  # 旧写法原样留着，C++ 加载时翻译
                 elif isinstance(value, Mapping) and path not in schema:
                     walk(value, path)
                 else:
@@ -578,7 +638,7 @@ def _parse_block_yaml(text: str) -> dict[str, Any]:
         key, sep, value = stripped.partition(":")
         if not sep:
             raise ConfigError(f"第 {number} 行：不是 键: 值")
-        key = key.strip()
+        key = _unquote_scalar(key.strip())  # 参数名带 .，导出时加了引号
         value = value.strip()
         while stack[-1][0] >= indent:
             stack.pop()

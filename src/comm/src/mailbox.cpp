@@ -234,17 +234,21 @@ MailboxStats Mailbox::stats() const {
 /// 模块里的一切回调都从这里进入，这里是异常的最后一道边界。
 void Mailbox::run(Item& item) noexcept {
     const auto start = std::chrono::steady_clock::now();
+    if (scope_ != nullptr) scope_->enterCallback();
+    bool completed = false;
     try {
         if (item.target) {
             item.target->deliverOne();
         } else if (item.task) {
             item.task();
         }
+        completed = true;
     } catch (const std::exception& e) {
         fail(e.what());
     } catch (...) {
         fail("模块回调抛出未知异常");
     }
+    if (scope_ != nullptr) scope_->leaveCallback(completed);
     const auto ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
     callbacks_.fetch_add(1, std::memory_order_relaxed);

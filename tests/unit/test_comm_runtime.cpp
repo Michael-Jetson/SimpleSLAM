@@ -61,18 +61,13 @@ public:
 
 class Configurable final : public Module {
 public:
+    static constexpr Param<std::int64_t> kIterations{
+        .name = "cfg.iterations", .fallback = 20, .doc = "迭代次数", .runtime = true};
     std::vector<std::int64_t> observed;
 
-    void onInit() override {
-        iterations_ = param<std::int64_t>("~iterations", 20);
-        subscribe("/tick", 0, &Configurable::onTick);
-    }
-    void onTick(const Tick&) {
-        // 一次回调之内读到的快照必须稳定
-        observed.push_back(paramSnapshot()->get<std::int64_t>(resolve("~iterations")).value_or(-1));
-    }
-
-    std::int64_t iterations_ = 0;
+    void onInit() override { subscribe("/tick", 0, &Configurable::onTick); }
+    // 一次回调之内读到的快照必须稳定
+    void onTick(const Tick&) { observed.push_back(param(kIterations)); }
 };
 
 /// 在自己的回调里调用 shutdown()。入口应当识别出这是运行时线程，降级为只停输入。
@@ -183,6 +178,15 @@ TEST_CASE("离线双跑的处理顺序逐条一致", "[comm][runtime]") {
 
 TEST_CASE("参数提交在帧边界生效", "[comm][runtime]") {
     Runtime runtime(RuntimeOptions{true});
+    const auto& k = Configurable::kIterations;
+    runtime.params().define({ParamDefinition{.name = std::string(k.name),
+                                             .type = ParamType::kInt,
+                                             .fallback = k.fallback,
+                                             .doc = std::string(k.doc),
+                                             .min = k.min,
+                                             .max = k.max,
+                                             .runtime = k.runtime,
+                                             .writers = {}}});
     auto& module = runtime.addModule<Configurable>("/cfg");
     runtime.init();
 
@@ -192,7 +196,7 @@ TEST_CASE("参数提交在帧边界生效", "[comm][runtime]") {
     REQUIRE(module.observed.size() == 1);
     CHECK(module.observed[0] == 20);
 
-    const auto result = runtime.setParams({{"/cfg/iterations", std::int64_t{40}}});
+    const auto result = runtime.setParams({{"cfg.iterations", std::int64_t{40}}});
     REQUIRE(result.ok());
     CHECK(result.revision == 1);
 

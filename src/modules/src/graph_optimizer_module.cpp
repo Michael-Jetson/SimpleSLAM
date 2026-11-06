@@ -125,10 +125,8 @@ void GraphOptimizerModule::appendNode(fw::PoseGraphData& graph, const fw::Keyfra
         // 这里绝不拿"本帧配准信息矩阵"充数——那是另一个随机量。
         // 权重从本模块当前的参数快照读：运行期改了参数，下一条边就用新值。
         edge.measurement = relative;
-        edge.information = fw::diagonalInformation(
-            paramOr(resolve("~odometry_translation_weight"), edge_policy_.translation_weight),
-            paramOr(resolve("~odometry_rotation_weight"), edge_policy_.rotation_weight),
-            edge_policy_.convention);
+        edge.information = fw::diagonalInformation(param(kTranslationWeight),
+                                                   param(kRotationWeight), edge_policy_.convention);
         edge.information_source = fw::InformationSource::kHeuristic;
         edge.convention = edge_policy_.convention;
     }
@@ -235,12 +233,6 @@ const char* GraphOptimizerModule::statusKey(plugin::GraphOptimizerBase::Status s
         case Status::kDegenerate: return "graph.degenerate";
     }
     return "graph.unknown_status";
-}
-
-double GraphOptimizerModule::paramOr(const std::string& name, double fallback) const {
-    const auto& snapshot = paramSnapshot();
-    if (!snapshot) return fallback;
-    return snapshot->get<double>(name).value_or(fallback);
 }
 
 }  // namespace simpleslam::modules

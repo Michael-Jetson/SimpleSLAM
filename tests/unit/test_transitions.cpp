@@ -46,6 +46,25 @@ namespace eval = simpleslam::eval;
 
 namespace {
 
+/// 一个运行中可改、只有外部写的整数参数 x。
+void defineX(comm::Runtime& runtime, std::int64_t initial) {
+    runtime.params().define({comm::ParamDefinition{.name = "x",
+                                                   .type = comm::ParamType::kInt,
+                                                   .fallback = std::int64_t{0},
+                                                   .doc = "",
+                                                   .min = std::nullopt,
+                                                   .max = std::nullopt,
+                                                   .runtime = true,
+                                                   .writers = {}}},
+                            {{"x", initial}});
+}
+
+/// 直接把内置模块挂到运行时上时，参数要先定义：按内置模块的声明，取默认值。
+void defineModuleParams(comm::Runtime& runtime) {
+    auto resolved = comm::resolveParams(modules::builtinModuleParams(true), {});
+    runtime.params().define(std::move(resolved.definitions), std::move(resolved.values));
+}
+
 /// 按给定顺序吐出数据的来源。
 class ListSource final : public fw::ISensorSource {
 public:
@@ -412,16 +431,16 @@ TEST_CASE("阻塞调用等待期间服务端收件箱关闭：立即得到终态
 TEST_CASE("requestStop 生效起参数写入被拒；此前受理的提交在关闭排空时生效",
           "[transitions][params]") {
     comm::Runtime runtime(comm::RuntimeOptions{true});
-    runtime.params().preset("/x", std::int64_t{1});
+    defineX(runtime, 1);
     auto& watcher = runtime.addModule<ParamWatcher>("/m");
     runtime.init();
 
-    const auto accepted = runtime.setParams({{"/x", comm::ParamValue{std::int64_t{2}}}});
+    const auto accepted = runtime.setParams({{"x", comm::ParamValue{std::int64_t{2}}}});
     REQUIRE(accepted.ok());
     CHECK(watcher.revision.load() == 0);  // 只排进了收件箱
 
     runtime.requestStop();
-    const auto late = runtime.setParams({{"/x", comm::ParamValue{std::int64_t{3}}}});
+    const auto late = runtime.setParams({{"x", comm::ParamValue{std::int64_t{3}}}});
     CHECK(late.status == comm::ParamCommit::kRejectedStopped);
     CHECK(runtime.params().snapshot()->revision == accepted.revision);  // 存储不变
 
@@ -431,7 +450,7 @@ TEST_CASE("requestStop 生效起参数写入被拒；此前受理的提交在关
 
 TEST_CASE("在线运行中并发提交参数：快照按版本顺序换上，最后一代终会生效", "[transitions][params]") {
     comm::Runtime runtime(comm::RuntimeOptions{false});
-    runtime.params().preset("/x", std::int64_t{0});
+    defineX(runtime, 0);
     auto& watcher = runtime.addModule<ParamWatcher>("/m");
     runtime.init();
     runtime.start();
@@ -439,7 +458,7 @@ TEST_CASE("在线运行中并发提交参数：快照按版本顺序换上，最
     std::uint64_t last = 0;
     bool all_ok = true;
     for (int i = 1; i <= 200; ++i) {
-        const auto result = runtime.setParams({{"/x", comm::ParamValue{std::int64_t{i}}}});
+        const auto result = runtime.setParams({{"x", comm::ParamValue{std::int64_t{i}}}});
         all_ok = all_ok && result.ok();
         last = result.revision;
     }
@@ -581,6 +600,7 @@ TEST_CASE("后端追平按输入版本判：新回环没进最后一次成功求
     modules::SlamResources resources;
     comm::Runtime runtime(comm::RuntimeOptions{true});
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
+    defineModuleParams(runtime);
     auto& graph = runtime.addModule<modules::GraphOptimizerModule>(
         "/graph", std::make_unique<FlakyOptimizer>(2), resources);
     runtime.init();
@@ -930,6 +950,7 @@ TEST_CASE("末条关键帧通知丢了、之后再没有输入：终结时后端
     modules::SlamResources resources;
     comm::Runtime runtime(comm::RuntimeOptions{true});
     auto keyframe_writer = resources.keyframes.acquireWriteToken();
+    defineModuleParams(runtime);
     auto& graph = runtime.addModule<modules::GraphOptimizerModule>(
         "/graph", std::make_unique<FlakyOptimizer>(0), resources);
     runtime.init();

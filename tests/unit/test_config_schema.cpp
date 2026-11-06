@@ -160,9 +160,8 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(load("evaluation:\n  evaluators:\n    ate: {alignment: se3}\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  mode: realtime\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  name: \"\"\n"), ConfigError);
-    CHECK_THROWS_AS(
-        load("system:\n  modules:\n    graph_optimizer:\n      odometry_rotation_weight: 0\n"),
-        ConfigError);
+    CHECK_THROWS_AS(load("system:\n  params:\n    bad-name: 1\n"), ConfigError);  // 参数名的写法
+    CHECK_THROWS_AS(load("system:\n  params:\n    gain: [1, 2]\n"), ConfigError);  // 只收标量
     CHECK_THROWS_AS(load("data:\n  sequences: [\"00\", \"00\"]\n"), ConfigError);
     // 序列名是子任务记录的目录名：越出任务记录目录、要转义的都不收
     for (const char* name : {"a/b", "..", ".", "a b", "\"q\"", ""}) {
@@ -279,25 +278,23 @@ TEST_CASE("schema 从同一份字段清单导出", "[config]") {
     const auto fields = schema();
     CHECK(fields.size() > 25);
 
-    bool saw_tunable = false;
+    bool saw_params = false;
     bool saw_slot = false;
     bool saw_list = false;
     for (const auto& field : fields) {
         CHECK_FALSE(field.path.empty());
         CHECK_FALSE(field.doc.empty());  // 每个字段都要有说明，否则 Python 侧只能猜
-        if (field.path == "system.modules.graph_optimizer.odometry_translation_weight") {
-            CHECK(field.type == "double");
-            CHECK(field.tunable);  // 模块每次加边时从当时的参数快照里读它
-            saw_tunable = true;
+        if (field.path == "system.params") {
+            CHECK(field.type == "params");  // 参数的值：名字由选中的组件声明
+            CHECK(field.default_value == "{}");
+            saw_params = true;
         }
         if (field.path == "system.runtime.spin_budget") {
             CHECK(field.type == "int");
             CHECK(field.default_value == "4096");
-            CHECK_FALSE(field.tunable);  // 步进预算改了要重启，不是"改了没生效"
         }
         if (field.path == "system.modules.odometry.plugin") {
             CHECK(field.type == "slot");
-            CHECK_FALSE(field.tunable);  // 插件参数第一版不可调
             saw_slot = true;
         }
         if (field.path == "data.sequences") {
@@ -305,21 +302,35 @@ TEST_CASE("schema 从同一份字段清单导出", "[config]") {
             saw_list = true;
         }
     }
-    CHECK(saw_tunable);
+    CHECK(saw_params);
     CHECK(saw_slot);
     CHECK(saw_list);
 
+    static constexpr simpleslam::comm::Param<double> kGravity{
+        .name = "gravity", .fallback = 9.81, .doc = "重力", .min = 9.0, .max = 10.5};
     const PluginSchema plugin{.interface_name = "OdometryBase",
                               .type = "my_lo",
                               .fields = {PluginField{.name = "a",
                                                      .kind = "int",
                                                      .default_value = "1",
-                                                     .doc = "说明"}}};
+                                                     .doc = "说明"}},
+                              .params = {simpleslam::comm::reads(kGravity)}};
     const auto json =
-        schemaJson({{"system.modules.odometry.plugin", "OdometryBase"}}, {plugin});
+        schemaJson({{"system.modules.odometry.plugin", "OdometryBase"}}, {plugin},
+                   {ModuleParams{.module = "/slam/graph_optimizer", .params = {}}});
     CHECK(json.find("\"system.modules.odometry.plugin\": \"OdometryBase\"") != std::string::npos);
     CHECK(json.find("\"type\": \"my_lo\"") != std::string::npos);
-    CHECK(json.find("\"tunable\": true") != std::string::npos);
+    // 实现与模块用到的参数：名字、类型、默认值、范围、运行中改不改、写不写
+    CHECK(json.find("\"params\": [{\"name\": \"gravity\", \"type\": \"double\", \"default\": 9.81")
+          != std::string::npos);
+    CHECK(json.find("\"min\": 9, \"max\": 10.5, \"runtime\": false, \"writes\": false")
+          != std::string::npos);
+    CHECK(json.find("{\"module\": \"/slam/graph_optimizer\", \"params\": []}")
+          != std::string::npos);
+    // 改过写法的配置项：Python 据此认得旧写法，交给 C++ 翻译
+    CHECK(json.find("\"system.modules.graph_optimizer.odometry_translation_weight\": "
+                    "\"system.params.graph.odometry_translation_weight\"")
+          != std::string::npos);
     CHECK(json.find("default_spec") == std::string::npos);  // 没有子槽就没有默认节点
 
     // 子槽的默认节点整个导出：按 schema 还原的一方（Python）照抄它，不另行推算

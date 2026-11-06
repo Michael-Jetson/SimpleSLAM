@@ -88,6 +88,7 @@ std::size_t Runtime::step(std::size_t budget, bool fire_timers) {
     detail::RuntimeThreadMark mark;
     if (!modules_started_ && state() != RuntimeState::kBuilding) {
         modules_started_ = true;
+        core_->params().freeze();  // 开始运行：声明为运行中不改的参数从此拒绝写入
         for (const auto& m : modules_) m->start();
     }
     if (fire_timers) fireDueTimers(timer_queues_, core_->clock().now());
@@ -143,6 +144,7 @@ void Runtime::start() {
     if (stop_requested_) return;
     if (state() != RuntimeState::kReady) throw WiringError("start() 要在 init() 之后调用，且只能调用一次");
     state_.store(RuntimeState::kRunning, std::memory_order_release);
+    core_->params().freeze();  // 开始运行：声明为运行中不改的参数从此拒绝写入
     core_->hub()->clearReady();
     threads_.reserve(modules_.size());
     for (const auto& m : modules_) {

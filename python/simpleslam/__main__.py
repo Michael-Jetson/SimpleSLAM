@@ -58,8 +58,11 @@ def _load_config(path: str, schema: Schema, tool: str) -> Config:
 
 def _print_schema(schema: Schema) -> None:
     for field in schema:
-        flag = "可调" if field.tunable else "固定"
-        print(f"{field.path:52} {field.type:7} {flag}  默认={field.default:<12} {field.doc}")
+        print(f"{field.path:52} {field.type:7} 默认={field.default:<12} {field.doc}")
+    if schema.renamed:
+        print("\n改过写法的配置项（旧写法照样认，加载时提示）：")
+        for old, new in sorted(schema.renamed.items()):
+            print(f"  {old} → {new}")
     if schema.slots:
         print("\n插件节点可选的实现：")
         for path, interface in sorted(schema.slots.items()):

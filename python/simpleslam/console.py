@@ -22,7 +22,7 @@ from pathlib import Path
 from simpleslam.config import SYSTEM_FILE, Config, ConfigError, assignment
 from simpleslam.results import (ResultError, Row, csv_table, describe, rows, table,
                                 worst_exit_code)
-from simpleslam.schema import Schema
+from simpleslam.schema import ParamSpec, Schema
 from simpleslam.workspace import DEFAULT_ENTRY, EVAL_TOOL, Workspace
 
 
@@ -219,4 +219,31 @@ def impls(workspace: Workspace, options: Options) -> str:
             for field in plugin.fields if plugin else ():
                 default = field.default if field.default != "" else '""'
                 lines.append(f"    {field.name:28} {field.kind:14} 默认={default:<12} {field.doc}")
+            for spec in plugin.params if plugin else ():
+                lines.append("    参数 " + _param_line(spec))
+    modules = {module: specs for module, specs in schema.module_params.items() if specs}
+    if modules:
+        lines.append("\n内置模块的参数")
+        for module, specs in sorted(modules.items()):
+            lines.append(f"  {module}")
+            lines.extend("    " + _param_line(spec) for spec in specs)
     return "\n".join(lines) + "\n"
+
+
+def _param_line(spec: ParamSpec) -> str:
+    """一个参数的一行：名字（值写在 system.params 里）、类型、默认值、范围与运行中改不改、
+    说明。"""
+    default = spec.default
+    if isinstance(default, bool):
+        default = "true" if default else "false"
+    notes = []
+    if spec.min is not None and spec.min == sys.float_info.min:
+        notes.append("必须为正")
+    elif spec.min is not None:
+        notes.append(f"≥ {spec.min:g}")
+    if spec.max is not None:
+        notes.append(f"≤ {spec.max:g}")
+    notes.append("运行中可改" if spec.runtime else "运行中不改")
+    if spec.writes:
+        notes.append("它写")
+    return f"{spec.name:28} {spec.type:7} 默认={default!s:<8} {'，'.join(notes):<12} {spec.doc}"

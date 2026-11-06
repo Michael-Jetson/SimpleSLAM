@@ -14,6 +14,7 @@
 /// 节点是一个普通 vector（改它就是给解），边只读，id → 下标的索引已经建好。
 /// 真源怎么存与求解器面对什么形状分开，因此换存储不必改算法。
 
+#include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/framework/pose_graph.hpp>
 #include <SimpleSLAM/logging/logger.hpp>
 
@@ -25,7 +26,7 @@ namespace simpleslam::plugin {
 
 namespace fw = simpleslam::fw;
 
-class GraphOptimizerBase : public logging::Loggable {
+class GraphOptimizerBase : public logging::Loggable, public comm::ParamUser {
 public:
     static constexpr std::string_view kInterfaceName = "GraphOptimizerBase";
 

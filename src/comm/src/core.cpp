@@ -71,13 +71,29 @@ std::shared_ptr<ServiceEndpoint> RuntimeCore::findService(const std::string& res
     return it->second;
 }
 
-ParamCommitResult RuntimeCore::setParams(const std::vector<ParamChange>& changes) {
+ParamCommitResult RuntimeCore::setParams(const std::vector<ParamChange>& changes,
+                                         std::string_view writer) {
     std::lock_guard lock(param_mutex_);  // 提交与分发是一串：快照按版本顺序排进收件箱
     if (hub_->inputsStopped()) {
-        return {ParamCommit::kRejectedStopped, params_.snapshot()->revision, "运行时已停止输入", nullptr};
+        const auto current = params_.snapshot();
+        return {.status = ParamCommit::kRejectedStopped,
+                .revision = current->revision,
+                .detail = "运行时已停止输入",
+                .snapshot = nullptr,
+                .previous = current};
     }
-    auto result = params_.commit(changes);
-    if (result.ok() && param_broadcast_) param_broadcast_(result.snapshot);
+    auto result = params_.commit(changes, writer);
+    if (!result.ok() || !result.snapshot) return result;
+    // 运行中的修改写进日志：任务记录里的 task.yaml 只有初值，变化看 run.log
+    const logging::Logger log = log_router_->root("/runtime");
+    for (const auto& change : changes) {
+        const auto& before = result.previous->values;
+        const auto old = before.find(change.name);
+        log.info("参数 {}：{} → {}（第 {} 版，{}）", change.name,
+                 old == before.end() ? std::string("（无）") : paramText(old->second),
+                 paramText(result.snapshot->values.at(change.name)), result.revision, writer);
+    }
+    if (param_broadcast_) param_broadcast_(result.snapshot);
     return result;
 }
 

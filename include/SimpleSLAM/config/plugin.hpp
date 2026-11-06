@@ -17,9 +17,13 @@
 ///   不会拖到运行中。试构造期间的日志不记。
 /// - 槽构造实现时把日志来源交给它（`logging/construction.hpp`）：顶层实现挂在模块下面，
 ///   子槽挂在父插件下面，所以实现在构造函数里就能用 `log_`。
+/// - 实现用到的参数写在它的 `kParams` 里（`comm/param.hpp`）。登记时读出来，还原后的槽带着
+///   它连同子槽用到的全部参数（`Slot::params()`），装配时据此核对与定义参数。
 ///
-/// 只依赖标准库与日志库：算法库包含它，不会连带依赖通信层。
+/// 只依赖标准库、日志库与参数的声明（`comm/param.hpp`，只依赖标准库）：算法库包含它，
+/// 不会连带依赖通信层。
 
+#include <SimpleSLAM/comm/param.hpp>
 #include <SimpleSLAM/config/error.hpp>
 #include <SimpleSLAM/logging/construction.hpp>
 
@@ -77,6 +81,8 @@ struct PluginSchema {
     std::string interface_name;
     std::string type;
     std::vector<PluginField> fields;
+    /// 它自己用到的参数（不含子槽的）。
+    std::vector<comm::ParamUse> params{};
 };
 
 /// 接口要声明自己的名字，报错与 schema 都用它。
@@ -122,6 +128,8 @@ public:
     [[nodiscard]] const std::string& type() const noexcept { return spec_.type; }
     /// 还原后的完整参数，已补齐默认值。规范化导出用它。
     [[nodiscard]] const PluginSpec& resolved() const noexcept { return spec_; }
+    /// 选中的实现连同它的子槽用到的全部参数。
+    [[nodiscard]] const std::vector<comm::ParamUse>& params() const noexcept { return params_; }
 
     /// 构造一个实例。它的日志来源挂在父插件下面：父插件交来的槽记着父插件是谁，构造函数里
     /// 新建的挂在正在构造的那个对象下面；都不是就是没接上的，交给模块之后由模块接上。
@@ -144,10 +152,11 @@ private:
     friend class Catalog;
     friend class detail::StampVisitor;
 
-    static Slot create(PluginSpec spec, Maker maker) {
+    static Slot create(PluginSpec spec, Maker maker, std::vector<comm::ParamUse> params) {
         Slot s;
         s.spec_ = std::move(spec);
         s.maker_ = std::make_shared<const Maker>(std::move(maker));
+        s.params_ = std::move(params);
         return s;
     }
 
@@ -167,6 +176,7 @@ private:
 
     PluginSpec spec_;
     std::shared_ptr<const Maker> maker_;
+    std::vector<comm::ParamUse> params_;
     logging::detail::NodePtr parent_;
     std::string field_;
 };
@@ -376,6 +386,33 @@ PluginSpec exportSpec(Config config, std::string type) {
     return spec;
 }
 
+/// 收集子槽用到的参数。
+class ParamsVisitor {
+public:
+    explicit ParamsVisitor(std::vector<comm::ParamUse>& out) : out_(out) {}
+
+    template <class F>
+    void operator()(std::string_view /*name*/, F& field, std::string_view /*doc*/) {
+        if constexpr (IsSlot<F>::value) {
+            const auto& child = field.params();
+            out_.insert(out_.end(), child.begin(), child.end());
+        }
+    }
+
+private:
+    std::vector<comm::ParamUse>& out_;
+};
+
+/// 一个实现连同它配置里的子槽用到的全部参数。
+template <class T>
+std::vector<comm::ParamUse> paramsOf(typename T::Config config) {
+    std::vector<comm::ParamUse> out;
+    if constexpr (comm::DeclaresParams<T>) out.assign(T::kParams.begin(), T::kParams.end());
+    ParamsVisitor visitor(out);
+    config.visit(visitor);
+    return out;
+}
+
 /// 给 Config 里的子槽记上父插件：父插件什么时候用它们构造子插件，来源都挂在父插件下面。
 class StampVisitor {
 public:
@@ -529,7 +566,8 @@ template <class T>
     requires PluginImplementation<T, I>
 Slot<I> Slot<I>::of(typename T::Config config) {
     PluginSpec spec = detail::exportSpec(config, std::string(T::kTypeName));
-    return create(std::move(spec), detail::makerFor<I, T>(std::move(config)));
+    auto params = detail::paramsOf<T>(config);
+    return create(std::move(spec), detail::makerFor<I, T>(std::move(config)), std::move(params));
 }
 
 template <class F>
@@ -583,14 +621,21 @@ void Catalog<I>::add(const std::string& name) {
             throw ConfigError(path + "（" + name + "）：" + e.what());
         }
         PluginSpec resolved = detail::exportSpec(config, name);
-        return Slot<I>::create(std::move(resolved), detail::makerFor<I, T>(config));
+        auto params = detail::paramsOf<T>(config);
+        return Slot<I>::create(std::move(resolved), detail::makerFor<I, T>(config),
+                               std::move(params));
     };
     entry.schema = [name] {
-        PluginSchema schema{
-            .interface_name = std::string(I::kInterfaceName), .type = name, .fields = {}};
+        PluginSchema schema{.interface_name = std::string(I::kInterfaceName),
+                            .type = name,
+                            .fields = {},
+                            .params = {}};
         typename T::Config config{};
         detail::SchemaVisitor visitor(schema.fields);
         config.visit(visitor);
+        if constexpr (comm::DeclaresParams<T>) {
+            schema.params.assign(T::kParams.begin(), T::kParams.end());
+        }
         return schema;
     };
     entries_.emplace(name, std::move(entry));

@@ -262,6 +262,7 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     LineStream warn(runner, logging::Level::kWarn);
     try {
         info << "任务: " << c.task.name << "（" << options.task_file << "）\n";
+        for (const auto& note : task.notes) warn << "旧写法: " << note << '\n';
         // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
         const fs::path dir = run_dir::directory(c);
@@ -294,13 +295,13 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
             system.setPlaceRecognizer(
                 task.place_recognizer.make(router.root(modules::kPlaceRecognizerModule), "plugin"));
             system.setGraphOptimizer(
-                task.graph_optimizer.make(router.root(modules::kGraphOptimizerModule), "plugin"),
-                toEdgePolicy(c.system.modules.graph_optimizer));
+                task.graph_optimizer.make(router.root(modules::kGraphOptimizerModule), "plugin"));
         }
         if (!c.evaluation.online.evaluators.empty()) {
             addOnlineEvaluation(system, task, dataset, facts.descriptor, info);
         }
-        applyToParameters(c, system.runtime().params());
+        // 参数在还原任务时已核对、补齐：连同写者定义进参数存储
+        system.runtime().params().define(task.params, c.system.params);
         system.init();
 
         // ── 驱动与终结：离线逐步跑到读完；在线一个模块一个线程，按数据时间的节奏回放 ──
@@ -378,6 +379,7 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         const auto& c = task.config;
         if (c.data.sequences.empty()) return runSingle(task, options, out, err);
         out << "任务: " << c.task.name << "（" << options.task_file << "）\n";
+        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
     } catch (const std::exception& e) {
@@ -400,6 +402,7 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
             }
         }
         const ResolvedTask task = loadTask((dir / "task.yaml").string(), overrides, catalogs);
+        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         if (!task.config.data.sequences.empty()) {
             return evaluateSequences(task, dir, overrides, catalogs, out, err);
         }
@@ -425,7 +428,12 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
     if (args.empty()) return usage(err);
     const std::string& command = args.front();
     if (command == "schema") {
-        out << config::schemaJson(slotInterfaces(), catalogs.schemas());
+        std::vector<config::ModuleParams> modules;
+        for (const auto& component : modules::builtinModuleParams(true)) {
+            modules.push_back(config::ModuleParams{.module = component.module,
+                                                   .params = component.uses});
+        }
+        out << config::schemaJson(slotInterfaces(), catalogs.schemas(), modules);
         return 0;
     }
     if (command == "default") {
@@ -437,6 +445,7 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
     try {
         const auto task =
             loadTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()), catalogs);
+        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         if (command == "check") {
             out << "任务有效: " << args[1] << '\n';
         } else {

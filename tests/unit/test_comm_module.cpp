@@ -829,61 +829,95 @@ TEST_CASE("虚拟时钟下的定时器与取消", "[comm][module]") {
     CHECK(t.fired == 3);
 }
 
-class Tunable : public cm::Module {
+constexpr cm::Param<double> kGain{
+    .name = "t.gain", .fallback = 1.0, .doc = "增益", .min = 0.0, .runtime = true};
+constexpr cm::Param<double> kLevel{.name = "t.level", .fallback = 0.0, .runtime = true};
+constexpr cm::Param<double> kScale{.name = "t.scale", .fallback = 1.0, .runtime = true};
+
+/// 插件：在所属模块的回调里读写参数，读的是模块这次回调的快照，写先记下。
+class LevelPlugin : public cm::ParamUser {
+public:
+    [[nodiscard]] double level() const { return param(kLevel); }
+    void raise() const { setParam(kLevel, param(kLevel) + 1.0); }
+};
+
+class ParamModule : public cm::Module {
 public:
     double initial = 0;
     double seen_in_callback = 0;
+    double level_in_callback = -1;
+    double level_after_write = -1;
+    bool plugin_writes = false;
     std::vector<std::uint64_t> revisions;
+    LevelPlugin plugin;
+
     void onInit() override {
-        initial = param("~gain", 1.0);
-        subscribe("/a", 0, &Tunable::on);
+        initial = param(kGain);
+        subscribe("/a", 0, &ParamModule::on);
     }
-    void on(const Msg&) { seen_in_callback = param("~gain", -1.0); }
+    void on(const Msg&) {
+        seen_in_callback = param(kGain);
+        level_in_callback = plugin.level();
+        if (plugin_writes) {
+            plugin.raise();
+            level_after_write = plugin.level();  // 写先记下：这次回调里还是旧值
+        }
+    }
     void onParamsChanged(const cm::ParamSnapshot& s) override { revisions.push_back(s.revision); }
-    cm::ParamCommitResult write(double v) { return setParam("~gain", v); }
-    double paramSnapshotValue() const {
-        double v = 0;
-        getParam("~gain", v);
-        return v;
-    }
+    cm::ParamCommitResult write(double v) { return setParam(kScale, v); }
+    [[nodiscard]] double scale() const { return param(kScale); }
 };
 
-TEST_CASE("参数服务器：配置优先、帧边界换代、事务校验、模块写入、变更回调", "[comm][module]") {
+cm::ParamDefinition defined(const cm::Param<double>& p, std::vector<std::string> writers) {
+    return cm::ParamDefinition{.name = std::string(p.name),
+                               .type = cm::ParamType::kReal,
+                               .fallback = p.fallback,
+                               .doc = std::string(p.doc),
+                               .min = p.min,
+                               .max = p.max,
+                               .runtime = p.runtime,
+                               .writers = std::move(writers)};
+}
+
+TEST_CASE("参数服务器：装配时定义、帧边界换代、核对、模块与插件写入、变更回调", "[comm][module]") {
     cm::Runtime rt(offline());
-    rt.params().preset("/t/gain", 2.0);  // 配置优先于代码默认值
-    auto& t = rt.addModule<Tunable>("/t");
+    // gain 没有组件写，只有外部能改；level 由插件写、scale 由模块写，写者都是 /t
+    rt.params().define({defined(kGain, {}), defined(kLevel, {"/t"}), defined(kScale, {"/t"})},
+                       {{"t.gain", 2.0}});
+    auto& t = rt.addModule<ParamModule>("/t");
     rt.init();
-    CHECK(t.initial == 2.0);
+    CHECK(t.initial == 2.0);  // 配置给的值
 
     auto a = rt.inputPublisher<Msg>("/a");
     a.publish(Msg{1});
-    auto committed = rt.setParams({{"/t/gain", 3.0}});
-    CHECK(committed.ok());
+    CHECK(rt.setParams({{"t.gain", 3.0}}).ok());
     a.publish(Msg{2});
     rt.spinOnce(1);  // 一批之内：先处理消息 1，再换参数，再处理消息 2
     CHECK(t.seen_in_callback == 3.0);
     CHECK((t.revisions == std::vector<std::uint64_t>{1}));
 
-    CHECK(rt.setParams({{"/nope", 1.0}}).status == cm::ParamCommit::kUnknownName);
-    CHECK(rt.setParams({{"/t/gain", true}}).status == cm::ParamCommit::kRejectedType);
-    rt.params().setValidator([](const cm::ParamSnapshot& s, std::string& why) {
-        if (s.get<double>("/t/gain").value_or(0) < 0) {
-            why = "必须非负";
-            return false;
-        }
-        return true;
-    });
-    CHECK(rt.setParams({{"/t/gain", -1.0}}).status == cm::ParamCommit::kRejectedValue);
-    // 校验回调不在存储锁内：回调里读参数不会自锁
-    rt.params().setValidator([&rt](const cm::ParamSnapshot& s, std::string&) {
-        return rt.params().snapshot()->revision <= s.revision && s.get<double>("/t/gain").value_or(0) >= 0;
-    });
-    CHECK(rt.setParams({{"/t/gain", 3.5}}).ok());
-    CHECK(t.write(4.0).ok());  // 模块也能写
+    CHECK(rt.setParams({{"nope", 1.0}}).status == cm::ParamCommit::kUnknownName);
+    CHECK(rt.setParams({{"t.gain", true}}).status == cm::ParamCommit::kRejectedType);
+    CHECK(rt.setParams({{"t.gain", -1.0}}).status == cm::ParamCommit::kRejectedValue);
+    // level 有组件写：外部不能改
+    CHECK(rt.setParams({{"t.level", 5.0}}).status == cm::ParamCommit::kRejectedWriter);
+
+    // 插件写：回调结束后由模块提交，下一次回调起看到新值
+    t.plugin_writes = true;
+    a.publish(Msg{3});
     rt.waitIdle();
-    CHECK(t.paramSnapshotValue() == 4.0);
+    CHECK(t.level_in_callback == 0.0);
+    CHECK(t.level_after_write == 0.0);
+    a.publish(Msg{4});
+    rt.waitIdle();
+    CHECK(t.level_in_callback == 1.0);
+    CHECK(rt.params().snapshot()->get<double>("t.level") == 2.0);
+
+    CHECK(t.write(4.0).ok());  // 模块自己写，马上提交
+    rt.waitIdle();
+    CHECK(t.scale() == 4.0);
     rt.requestStop();
-    CHECK(rt.setParams({{"/t/gain", 5.0}}).status == cm::ParamCommit::kRejectedStopped);
+    CHECK(rt.setParams({{"t.gain", 5.0}}).status == cm::ParamCommit::kRejectedStopped);
 }
 
 class Adder : public cm::Module {

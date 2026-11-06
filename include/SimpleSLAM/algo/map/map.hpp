@@ -18,6 +18,7 @@
 /// - **确定**：同样的地图与输入，结果逐位相同，与线程数无关。
 /// - **维护**：什么时候做由算法决定，怎么做由地图决定；维护不增加点数。
 
+#include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
 #include <SimpleSLAM/framework/sensor_data.hpp>
 #include <SimpleSLAM/logging/logger.hpp>
@@ -61,7 +62,7 @@ struct LinearizedSystem {
 };
 
 /// 只读查询。定位模式只把这个接口交给算法，"不能写先验地图"由构造保证。
-class MapQuery : public logging::Loggable {
+class MapQuery : public logging::Loggable, public comm::ParamUser {
 public:
     static constexpr std::string_view kInterfaceName = "MapQuery";
 

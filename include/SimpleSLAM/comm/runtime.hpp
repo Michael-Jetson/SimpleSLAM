@@ -60,15 +60,14 @@ struct RuntimeStats {
 
 /// 运行时自带的节点，给写不了模块的地方用：main()、工具、测试、外部桥接。
 /// 用法和模块内部一样；回调同样串行，在线时在它自己的线程上，离线时由步进驱动。
+/// 外部写参数走 `Runtime::setParams`，写者是"外部"。
 class Node final : public Module {
 public:
     using Module::advertise;
     using Module::advertiseService;
     using Module::createTimer;
-    using Module::getParam;
     using Module::param;
     using Module::serviceClient;
-    using Module::setParam;
     using Module::subscribe;
 };
 
@@ -142,8 +141,9 @@ public:
             *core_, resolveName(name, "/"), typeid(Request), typeid(Response), nullptr));
     }
 
+    /// 外部写入参数（操作员，以后的 ROS 适配）：只能写没有组件声明写的参数。
     ParamCommitResult setParams(const std::vector<ParamChange>& changes) {
-        return core_->setParams(changes);
+        return core_->setParams(changes, kExternalWriter);
     }
     [[nodiscard]] ParameterStore& params() noexcept { return core_->params(); }
 

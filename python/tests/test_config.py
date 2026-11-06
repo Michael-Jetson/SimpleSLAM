@@ -10,22 +10,27 @@ from simpleslam.schema import Field, PluginField, PluginSchema, Schema
 
 LIO = "system.modules.odometry.plugin"
 SOURCE = "data.source"
+GRAPH = "system.modules.graph_optimizer.plugin"
+PARAMS = "system.params"
+OLD_WEIGHT = "system.modules.graph_optimizer.weight"  # 改过写法：现在是参数 graph.weight
 
 
 def fake_schema(extra_fields=()) -> Schema:
     return Schema(
         [
-            Field("task.name", "string", "default", "任务名", False),
-            Field("task.repeats", "int", "1", "测试用的整数字段", False),
-            Field("system.runtime.spin_budget", "int", "4096", "步进预算", False),
-            Field(LIO, "slot", "", "里程计", False),
-            Field("system.modules.graph_optimizer.weight", "double", "100", "权重", True),
-            Field(SOURCE, "slot", "", "数据来源", False),
-            Field("data.sequences", "list", "[]", "多序列", False),
-            Field("outputs.dir", "string", "", "任务记录目录", False),
+            Field("task.name", "string", "default", "任务名"),
+            Field("task.repeats", "int", "1", "测试用的整数字段"),
+            Field("system.runtime.spin_budget", "int", "4096", "步进预算"),
+            Field("system.packetizer.post_support_s", "double", "0.02", "测试用的实数字段"),
+            Field(LIO, "slot", "", "里程计"),
+            Field(GRAPH, "slot", "pgo", "图优化"),
+            Field(PARAMS, "params", "{}", "参数的值"),
+            Field(SOURCE, "slot", "", "数据来源"),
+            Field("data.sequences", "list", "[]", "多序列"),
+            Field("outputs.dir", "string", "", "任务记录目录"),
             *extra_fields,
         ],
-        slots={LIO: "OdometryBase", SOURCE: "DatasetReader"},
+        slots={LIO: "OdometryBase", GRAPH: "GraphOptimizerBase", SOURCE: "DatasetReader"},
         plugins=[
             PluginSchema("OdometryBase", "lio", (
                 PluginField("keyframe_distance_m", "double", "1", "关键帧距离"),
@@ -43,6 +48,7 @@ def fake_schema(extra_fields=()) -> Schema:
                 PluginField("sequence", "string", "", "序列名"),
             )),
         ],
+        renamed={OLD_WEIGHT: "system.params.graph.weight"},
     )
 
 
@@ -54,16 +60,24 @@ class SchemaTest(unittest.TestCase):
     def test_plugin_fields_are_read_from_cpp_json(self):
         # C++ 导出的子槽默认节点（default_spec）不读：还原插件节点在 C++
         text = (
-            '{"fields": [{"path": "task.name", "type": "string", "default": "x", "doc": "", '
-            '"tunable": false}], "slots": {}, "plugins": [{"interface": "OdometryBase", '
+            '{"fields": [{"path": "task.name", "type": "string", "default": "x", "doc": ""}], '
+            '"slots": {}, "plugins": [{"interface": "OdometryBase", '
             '"type": "nested", "fields": [{"name": "map", "kind": "slot:Map", '
             '"default": "voxel", "doc": "地图", "default_spec": {"type": "voxel", "params": {}, '
-            '"children": {}}}]}]}'
+            '"children": {}}}], "params": [{"name": "gravity", "type": "double", '
+            '"default": 9.81, "doc": "重力", "min": 9, "max": 10.5, "runtime": false, '
+            '"writes": false}]}], "renamed": {"a.b": "system.params.b"}, '
+            '"modules": [{"module": "/slam/x", "params": []}]}'
         )
         schema = Schema.from_json(text)
-        field = schema.plugin("OdometryBase", "nested").fields[0]
+        plugin = schema.plugin("OdometryBase", "nested")
+        field = plugin.fields[0]
         self.assertEqual((field.name, field.kind, field.default), ("map", "slot:Map", "voxel"))
         self.assertEqual(schema.implementations("OdometryBase"), ["nested"])
+        self.assertEqual((plugin.params[0].name, plugin.params[0].default, plugin.params[0].max),
+                         ("gravity", 9.81, 10.5))
+        self.assertEqual(schema.renamed, {"a.b": "system.params.b"})
+        self.assertEqual(schema.module_params, {"/slam/x": ()})
 
 
 class RenderTest(unittest.TestCase):
@@ -122,11 +136,11 @@ class ValidateTest(unittest.TestCase):
         schema = fake_schema()
         for bad in ({"task.repeats": "3"}, {"task.repeats": 1.5}, {"task.repeats": True},
                     {"task.name": 3}, {"data.sequences": "00"}, {SOURCE: "kitti"},
-                    {"system.modules.graph_optimizer.weight": float("inf")}):
+                    {"system.packetizer.post_support_s": float("inf")}):
             with self.assertRaises(ConfigError, msg=repr(bad)):
                 Config(bad).validate(schema)
         # 整数喂给实数字段可以：那是拓宽，不是改变含义
-        Config({"system.modules.graph_optimizer.weight": 1}).validate(schema)
+        Config({"system.packetizer.post_support_s": 1}).validate(schema)
 
     def test_system_file_excludes_inline_system_values(self):
         config = minimal(system="../systems/x.yaml")
@@ -137,6 +151,39 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "未知配置项 task.nam"):
             Config().override("task.nam", "x").validate(fake_schema())
         Config().override(f"{LIO}.anything", 1).validate(fake_schema())  # 插件内部归目录查
+        Config().override(f"{PARAMS}.graph.weight", 1).validate(fake_schema())  # 参数归组件查
+        Config().override(OLD_WEIGHT, 1).validate(fake_schema())  # 旧写法交给 C++ 翻译
+
+
+class ParamsTest(unittest.TestCase):
+    def test_names_are_checked_values_are_scalars(self):
+        schema = fake_schema()
+        Config({PARAMS: {"graph.weight": 50.0, "deskew": True, "mode": "fast"}}).validate(schema)
+        for bad in ({PARAMS: {"graph..weight": 1}}, {PARAMS: {"a-b": 1}},
+                    {PARAMS: {"x": [1, 2]}}, {PARAMS: {"x": float("nan")}}, {PARAMS: 3},
+                    {f"{PARAMS}.x.": 1}, {f"{PARAMS}.x": {"type": "lio"}}):
+            with self.assertRaises(ConfigError, msg=repr(bad)):
+                Config(bad).validate(schema)
+
+    def test_by_name_and_whole_table_render_the_same(self):
+        # 参数名里的 . 是名字的一部分：按节写、按名字写、整张写，得到同一张表
+        schema = fake_schema()
+        by_section = Config(system={"params": {"graph.weight": 50, "deskew": False}})
+        whole = Config({PARAMS: {"deskew": False, "graph.weight": 50}})
+        expected = 'system:\n  params:\n    "deskew": false\n    "graph.weight": 50\n'
+        self.assertEqual(by_section.to_yaml(schema), expected)
+        self.assertEqual(whole.to_yaml(schema), expected)
+        reloaded = Config.from_yaml(expected, schema)
+        self.assertEqual(reloaded[PARAMS], {"deskew": False, "graph.weight": 50})
+
+    def test_renamed_path_passes_through_to_cpp(self):
+        # 旧写法原样写出、读回，C++ 加载时翻译成新写法并提示
+        schema = fake_schema()
+        config = Config({GRAPH: {"type": "pgo"}, OLD_WEIGHT: 7.5})
+        text = config.to_yaml(schema)
+        self.assertEqual(text, 'system:\n  modules:\n    graph_optimizer:\n      plugin:\n'
+                               '        type: "pgo"\n      weight: 7.5\n')
+        self.assertEqual(Config.from_yaml(text, schema), config)
 
 
 class ParseTest(unittest.TestCase):

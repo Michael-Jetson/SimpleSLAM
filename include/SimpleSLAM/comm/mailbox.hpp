@@ -99,6 +99,20 @@ struct MailboxStats {
     std::size_t depth = 0;
 };
 
+/// 收件箱的主人在每个回调前后要做的事：模块在这里设上参数作用域，回调结束后提交插件记下的写。
+class CallbackScope {
+public:
+    virtual ~CallbackScope() = default;
+    virtual void enterCallback() noexcept = 0;
+    /// `completed` 为 false 表示回调抛了异常。
+    virtual void leaveCallback(bool completed) noexcept = 0;
+
+protected:
+    CallbackScope() = default;
+    CallbackScope(const CallbackScope&) = default;
+    CallbackScope& operator=(const CallbackScope&) = default;
+};
+
 class Mailbox final : public std::enable_shared_from_this<Mailbox> {
 public:
     /// 离线一次步进最多处理的格数。超出则排回就绪队列尾部，避免一个模块饿死其他模块。
@@ -116,6 +130,8 @@ public:
     Mailbox& operator=(const Mailbox&) = delete;
 
     [[nodiscard]] const std::string& owner() const noexcept { return owner_; }
+    /// 每个回调前后都调它。装配时设一次，`scope` 的寿命不短于收件箱的回调。
+    void setCallbackScope(CallbackScope* scope) noexcept { scope_ = scope; }
     void setExceptionPolicy(ExceptionPolicy policy) noexcept {
         policy_.store(policy, std::memory_order_relaxed);
     }
@@ -170,6 +186,7 @@ private:
     ErrorReporter reporter_;
     std::atomic<ExceptionPolicy> policy_;
     TimerQueue timers_;
+    CallbackScope* scope_ = nullptr;
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

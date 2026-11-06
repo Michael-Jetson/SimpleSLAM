@@ -1,7 +1,8 @@
 """配置 schema：从 C++ 那份唯一的字段清单读出来，不在这里重写一遍。
 
-字段清单之外还有两样：插件字段要求的接口（``slots``），以及各目录里每个实现的
-字段清单（``plugins``）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用
+字段清单之外还有几样：插件字段要求的接口（``slots``），各目录里每个实现的字段清单与
+它用到的参数（``plugins``），内置模块用到的参数（``modules``），改过写法的配置项
+（``renamed``）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用
 用户自己的入口导出。
 
 没有缓存副本。缓存会漂移，而漂移了的 schema 比没有 schema 更糟——
@@ -14,7 +15,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 
 class SchemaError(RuntimeError):
@@ -24,10 +25,11 @@ class SchemaError(RuntimeError):
 @dataclass(frozen=True)
 class Field:
     path: str
-    type: str  # bool / int / double / string / list / slot / slots（带名字的插件节点表）
+    # bool / int / double / string / list / slot / slots（带名字的插件节点表）/
+    # params（参数的值：名字 → 标量，名字由选中的组件声明）
+    type: str
     default: str
     doc: str
-    tunable: bool
 
     def parse(self, text: str):
         """按本字段的类型解析一个字符串值。类型不符抛 ValueError。"""
@@ -70,10 +72,33 @@ class PluginField:
 
 
 @dataclass(frozen=True)
+class ParamSpec:
+    """一个参数的声明：名字、类型、默认值、说明、范围、运行中改不改、写不写。"""
+    name: str
+    type: str  # bool / int / double / string
+    default: Any
+    doc: str
+    min: float | None
+    max: float | None
+    runtime: bool
+    writes: bool
+
+
+@dataclass(frozen=True)
 class PluginSchema:
     interface: str
     type: str
     fields: tuple[PluginField, ...]
+    params: tuple[ParamSpec, ...] = ()
+
+
+def _param_specs(items: Iterable[Mapping[str, Any]]) -> tuple[ParamSpec, ...]:
+    return tuple(
+        ParamSpec(name=item["name"], type=item["type"], default=item["default"],
+                  doc=item.get("doc", ""), min=item.get("min"), max=item.get("max"),
+                  runtime=bool(item.get("runtime", False)), writes=bool(item.get("writes", False)))
+        for item in items
+    )
 
 
 class Schema:
@@ -84,11 +109,15 @@ class Schema:
         fields: Iterable[Field],
         slots: dict[str, str] | None = None,
         plugins: Iterable[PluginSchema] = (),
+        renamed: dict[str, str] | None = None,
+        modules: dict[str, tuple[ParamSpec, ...]] | None = None,
     ) -> None:
         self._fields = list(fields)
         self._by_path = {field.path: field for field in self._fields}
         self._slots = dict(slots or {})
         self._plugins = {(plugin.interface, plugin.type): plugin for plugin in plugins}
+        self._renamed = dict(renamed or {})
+        self._modules = dict(modules or {})
 
     # ── 构造 ──
 
@@ -105,7 +134,6 @@ class Schema:
                     type=item["type"],
                     default=item["default"],
                     doc=item.get("doc", ""),
-                    tunable=bool(item.get("tunable", False)),
                 )
                 for item in payload["fields"]
             ]
@@ -122,15 +150,19 @@ class Schema:
                         )
                         for field in item["fields"]
                     ),
+                    params=_param_specs(item.get("params", [])),
                 )
                 for item in payload.get("plugins", [])
             ]
             slots = dict(payload.get("slots", {}))
+            renamed = dict(payload.get("renamed", {}))
+            modules = {item["module"]: _param_specs(item.get("params", []))
+                       for item in payload.get("modules", [])}
         except (KeyError, TypeError) as exc:
             raise SchemaError(f"schema 结构不对: {exc}") from exc
         if not fields:
             raise SchemaError("schema 里一个字段也没有")
-        return cls(fields, slots, plugins)
+        return cls(fields, slots, plugins, renamed, modules)
 
     @classmethod
     def from_tool(cls, tool: str | None = None) -> "Schema":
@@ -171,6 +203,16 @@ class Schema:
     def interfaces(self) -> list[str]:
         """目录里出现过的全部接口。"""
         return sorted({i for (i, _) in self._plugins})
+
+    @property
+    def renamed(self) -> dict[str, str]:
+        """改过写法的配置项：旧写法 → 新写法。旧写法照样认，原样交给 C++，由它翻译并提示。"""
+        return dict(self._renamed)
+
+    @property
+    def module_params(self) -> dict[str, tuple[ParamSpec, ...]]:
+        """内置模块自己用到的参数，按模块名。"""
+        return dict(self._modules)
 
     @property
     def slots(self) -> dict[str, str]:

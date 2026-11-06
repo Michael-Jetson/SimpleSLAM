@@ -10,6 +10,8 @@
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/app/bindings.hpp>
+#include <SimpleSLAM/modules/graph_optimizer_module.hpp>
+#include <SimpleSLAM/plugins/graph_optimizer.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -246,39 +248,26 @@ system:
     CHECK(system.trajectory()->odometry().size() == 8);
 }
 
-TEST_CASE("配置的运行期可调部分进参数存储", "[system][config]") {
-    const auto config = config::loadTaskString(
-        "system:\n  modules:\n    graph_optimizer:\n      odometry_translation_weight: 1.7\n",
-        "<string>").config;
+TEST_CASE("没经入口装配时，系统按内置模块的声明以默认值定义参数", "[system][params]") {
     modules::SlamSystem system(offlineOptions());
-    app::applyToParameters(config, system.runtime().params());
     system.setSource(std::make_unique<SyntheticSource>(4));
     system.setOdometry<StraightLineOdometry>();
+    system.setGraphOptimizer<plugin::NoGraphOptimizer>(plugin::NoGraphOptimizer::Config{});
     system.init();
 
+    const auto& weight = modules::GraphOptimizerModule::kTranslationWeight;
     const auto snapshot = system.runtime().params().snapshot();
-    // 模块级参数是那个模块的私有名：模块用 ~odometry_translation_weight 读，不认识配置布局
-    CHECK(snapshot->get<double>("/slam/graph_optimizer/odometry_translation_weight") == 1.7);
-}
+    CHECK(snapshot->get<double>(weight.name) == weight.fallback);
+    CHECK(snapshot->get<double>(modules::GraphOptimizerModule::kRotationWeight.name) == 400.0);
 
-TEST_CASE("运行期改参数走的是同一套校验", "[config][params]") {
-    // 只保证类型一致是不够的：启动时会被 validateConfig 拒绝的值，
-    // 运行期不该能直接改进去
-    config::TaskConfig config;
-    comm::ParameterStore store;
-    app::applyToParameters(config, store);
-
-    const auto name =
-        app::configParamName("system.modules.graph_optimizer.odometry_translation_weight");
-    const auto bad = store.commit({comm::ParamChange{name, comm::ParamValue{-1.0}}});
-    CHECK_FALSE(bad.ok());
+    // 兜底权重没有组件写，只有外部能改；范围照样核对
+    auto& runtime = system.runtime();
+    const auto bad = runtime.setParams({{std::string(weight.name), -1.0}});
     CHECK(bad.status == comm::ParamCommit::kRejectedValue);
-    CHECK(store.snapshot()->revision == 0);  // 整批拒绝，版本不变
-
-    const auto good = store.commit({comm::ParamChange{name, comm::ParamValue{2.0}}});
+    CHECK(runtime.params().snapshot()->revision == 0);
+    const auto good = runtime.setParams({{std::string(weight.name), 2.0}});
     REQUIRE(good.ok());
-    REQUIRE(good.snapshot != nullptr);
-    CHECK(good.snapshot->revision == good.revision);  // 带回的是本次提交那一份
+    CHECK(good.snapshot->get<double>(weight.name) == 2.0);
 }
 
 TEST_CASE("来源读到一半就断了：运行结局要说出来", "[system][outcome]") {

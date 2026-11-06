@@ -151,7 +151,23 @@ GraphOptimizerModule& SlamSystem::setGraphOptimizer(
     return *graph_optimizer_;
 }
 
+std::vector<comm::ParamComponent> builtinModuleParams(bool with_backend) {
+    std::vector<comm::ParamComponent> components;
+    if (with_backend) {
+        const auto& uses = GraphOptimizerModule::kParams;
+        components.push_back(comm::ParamComponent{
+            .component = "模块 " + std::string(kGraphOptimizerModule),
+            .module = std::string(kGraphOptimizerModule),
+            .uses = std::vector<comm::ParamUse>(uses.begin(), uses.end())});
+    }
+    return components;
+}
+
 void SlamSystem::init() {
+    if (!runtime_.params().defined()) {
+        auto resolved = comm::resolveParams(builtinModuleParams(graph_optimizer_ != nullptr), {});
+        runtime_.params().define(std::move(resolved.definitions), std::move(resolved.values));
+    }
     if (!descriptor_.required_extrinsics.empty()) {
         const auto missing = fw::missingExtrinsics(*resources_.calibrationSnapshot(),
                                                    descriptor_.required_extrinsics,

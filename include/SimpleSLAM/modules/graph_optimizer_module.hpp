@@ -20,22 +20,40 @@
 #include <SimpleSLAM/framework/solution.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace simpleslam::modules {
 
-/// 里程计边的兜底权重：算法没有给出跨关键帧的相对约束时用它，并如实标为启发式。
+/// 里程计边的约定：算法没有给出跨关键帧的相对约束时，兜底的边用这个扰动约定。权重是参数
+/// （`GraphOptimizerModule::kTranslationWeight`、`kRotationWeight`）。
 struct OdometryEdgePolicy {
-    double translation_weight = 100.0;  ///< 1/m²
-    double rotation_weight = 400.0;     ///< 1/rad²
     fw::PerturbationConvention convention{};
 };
 
 class GraphOptimizerModule final : public comm::Module {
 public:
+    /// 里程计边的兜底权重：算法没给跨关键帧约束时用，如实标为启发式，不冒充协方差之逆。
+    /// 运行中可以改，下一条边就用新值。
+    static constexpr comm::Param<double> kTranslationWeight{
+        .name = "graph.odometry_translation_weight",
+        .fallback = 100.0,
+        .doc = "里程计边的兜底平移权重（1/m²，启发式）",
+        .min = comm::kPositive,
+        .runtime = true};
+    static constexpr comm::Param<double> kRotationWeight{
+        .name = "graph.odometry_rotation_weight",
+        .fallback = 400.0,
+        .doc = "里程计边的兜底旋转权重（1/rad²，启发式）",
+        .min = comm::kPositive,
+        .runtime = true};
+    static constexpr std::array kParams{comm::reads(kTranslationWeight),
+                                        comm::reads(kRotationWeight)};
+
     /// 取走位姿图的写令牌：位姿图从此只有本模块能写。
     GraphOptimizerModule(std::unique_ptr<plugin::GraphOptimizerBase> algorithm,
                          SlamResources& resources,
@@ -98,9 +116,6 @@ private:
     /// 约束进没进真源，与这里求解成败无关。
     void optimizeAndPublish();
     static const char* statusKey(plugin::GraphOptimizerBase::Status status) noexcept;
-    /// 从本模块当前的参数快照取值，没有就用构造时给的默认值。参数是本模块的私有名
-    /// （`~odometry_translation_weight`），模块不必知道配置的布局。
-    [[nodiscard]] double paramOr(const std::string& name, double fallback) const;
 
     std::unique_ptr<plugin::GraphOptimizerBase> algorithm_;
     SlamResources* resources_;

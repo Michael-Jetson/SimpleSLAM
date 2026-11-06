@@ -13,8 +13,11 @@
 ///           subscribe("status", 1, logStatus);             // 普通函数，消息类型从参数推导
 ///           subscribe<Msg>("raw", 10, [this](const Msg& m) { ... });  // lambda，消息类型显式给出
 ///           createTimer(100ms, &Talker::onTimer);
-///           rate_ = param("~rate", 10.0);
 ///       }
+///       void onTimer() { const double rate = param(kRate); ... }   // 读声明过的参数
+///       static constexpr comm::Param<double> kRate{.name = "talker.rate", .fallback = 10.0,
+///                                                  .doc = "发布频率（Hz）", .runtime = true};
+///       static constexpr std::array kParams{comm::reads(kRate)};
 ///       ...
 ///   };
 
@@ -25,6 +28,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -36,9 +41,9 @@ namespace simpleslam::comm {
 
 class Runtime;
 
-class Module {
+class Module : private CallbackScope {
 public:
-    virtual ~Module() = default;
+    ~Module() override = default;
     Module(const Module&) = delete;
     Module& operator=(const Module&) = delete;
 
@@ -173,34 +178,22 @@ protected:
 
     // ── 参数 ──
 
-    /// 不存在则以默认值声明，返回当前生效的值。配置已给定的值优先于默认值。
-    template <class T>
-    T param(std::string_view name, T default_value) {
-        const std::string resolved = resolve(name);
-        if (!params_ || !params_->has(resolved)) {
-            core_->params().declare(resolved, default_value);
-            // 运行期首次碰到的名字随下一代快照生效，不越过收件箱里排队的更新
-            if (initialized_) return default_value;
-            params_ = core_->params().snapshot();
+    /// 读一个参数：本模块当前快照里的值，一次回调之内不变。参数由用到它的组件声明
+    /// （`kParams`），装配时定义；没有定义抛 `std::logic_error`。
+    template <ParamScalar T>
+    [[nodiscard]] T param(const Param<T>& p) const {
+        if (params_) {
+            if (auto value = params_->get<T>(p.name)) return *value;
         }
-        if (auto v = params_->get<T>(resolved)) return *v;
-        return default_value;
+        throw std::logic_error("参数 " + std::string(p.name) + " 没有定义：" + name_
+                               + " 要在 kParams 里声明它");
     }
 
-    template <class T>
-    bool getParam(std::string_view name, T& out) const {
-        if (!params_) return false;
-        if (auto v = params_->get<T>(resolve(name))) {
-            out = *v;
-            return true;
-        }
-        return false;
-    }
-
-    /// 写入一个已声明的参数。自己也是在下一代快照才看到新值。
-    template <class T>
-    ParamCommitResult setParam(std::string_view name, T value) {
-        return core_->setParams({ParamChange{resolve(name), ParamValue{std::move(value)}}});
+    /// 写一个参数，马上作为一个事务提交，写者是本模块。自己也是从下一次回调起看到新值。
+    template <ParamScalar T>
+    ParamCommitResult setParam(const Param<T>& p, std::type_identity_t<T> value) {
+        return core_->setParams({ParamChange{std::string(p.name), ParamValue{std::move(value)}}},
+                                name_);
     }
 
     /// 本模块当前的参数快照。一次回调之内不会变。
@@ -255,10 +248,16 @@ private:
         return Subscriber(subscriptions_.back());
     }
 
+    /// 每个回调前设上参数作用域：本模块的插件读这个模块的快照，写记在这里，回调结束后提交。
+    void enterCallback() noexcept override;
+    void leaveCallback(bool completed) noexcept override;
+
     RuntimeCore* core_ = nullptr;
     std::string name_;
     MailboxPtr mailbox_;
     ParamSnapshotPtr params_;
+    std::optional<ParamScope> param_scope_;
+    std::vector<ParamChange> plugin_writes_;
     std::atomic<std::uint64_t> hook_failures_{0};
     bool finished_ = false;
     bool stopped_ = false;

@@ -12,6 +12,7 @@
 /// 回环检测与重定位是同一件事（检索 + 几何验证），只是查询来源与结果去向不同，
 /// 所以共用一套描述子库，不拆成两个插件各存一份。
 
+#include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/framework/events.hpp>
 #include <SimpleSLAM/framework/keyframe.hpp>
 #include <SimpleSLAM/framework/sensor_packet.hpp>
@@ -25,7 +26,7 @@ namespace simpleslam::plugin {
 
 namespace fw = simpleslam::fw;
 
-class PlaceRecognizerBase : public logging::Loggable {
+class PlaceRecognizerBase : public logging::Loggable, public comm::ParamUser {
 public:
     static constexpr std::string_view kInterfaceName = "PlaceRecognizerBase";
 

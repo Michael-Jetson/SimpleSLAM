@@ -32,6 +32,7 @@
 /// （`failureRecovery()`）：通用的 try-catch 只能保证异常不外传，替有状态的算法恢复不了
 /// 统计上的正确性，所以默认是重新初始化。
 
+#include <SimpleSLAM/comm/parameters.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
 #include <SimpleSLAM/framework/events.hpp>
 #include <SimpleSLAM/framework/frame_context.hpp>
@@ -162,7 +163,7 @@ struct FrameOutcome {
     OdometryResult result;
 };
 
-class OdometryBase : public logging::Loggable {
+class OdometryBase : public logging::Loggable, public comm::ParamUser {
 public:
     static constexpr std::string_view kInterfaceName = "OdometryBase";
 

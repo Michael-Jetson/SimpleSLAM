@@ -22,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -131,10 +132,45 @@ private:
     Config config_;
 };
 
+/// 用到参数的里程计：每帧读重力（共享、运行中不改），并把跑过的帧数写进一个运行中可改的参数。
+class ParamOdometry final : public plugin::OdometryBase {
+public:
+    static constexpr std::string_view kTypeName = "param_odometry";
+    static constexpr comm::Param<double> kGravity{.name = "gravity",
+                                                  .fallback = 9.81,
+                                                  .doc = "重力加速度（m/s²）",
+                                                  .min = 9.0,
+                                                  .max = 10.5};
+    static constexpr comm::Param<std::int64_t> kSteps{
+        .name = "odometry.steps", .fallback = 0, .doc = "跑过的帧数", .runtime = true};
+    static constexpr std::array kParams{comm::reads(kGravity), comm::writes(kSteps)};
+
+    struct Config {
+        template <class V>
+        void visit(V& /*v*/) {}
+    };
+    explicit ParamOdometry(const Config& /*config*/) {}
+
+    [[nodiscard]] plugin::SupportGapPolicy supportGapPolicy() const override {
+        return plugin::SupportGapPolicy::kDegrade;
+    }
+    [[nodiscard]] std::string name() const override { return "param_odometry"; }
+
+    static inline double seen_gravity = 0.0;
+
+protected:
+    plugin::TrackResult track(const fw::SensorPacket& /*packet*/) override {
+        seen_gravity = param(kGravity);
+        setParam(kSteps, param(kSteps) + 1);
+        return {};
+    }
+};
+
 config::Catalogs catalogs() {
     auto result = app::builtinCatalogs();
     result.of<plugin::DatasetReader>().add<SingleFileReader>();
     result.of<plugin::OdometryBase>().add<test::StillOdometry>();
+    result.of<plugin::OdometryBase>().add<ParamOdometry>();
     result.of<eval::EvaluatorBase>().add<FinalDrift>();
     result.of<eval::EvaluatorBase>().add<Misnamed>();
     result.of<eval::EvaluatorBase>().add<test::CountEvaluator>();
@@ -303,33 +339,111 @@ TEST_CASE("选错了在运行之前报错，带完整路径与可选的实现", 
                     config::ConfigError);
 }
 
-TEST_CASE("可调字段进参数存储，名字是模块的私有名；不可调的不进", "[app][params]") {
-    CHECK(app::configParamName("system.modules.graph_optimizer.odometry_translation_weight")
-          == "/slam/graph_optimizer/odometry_translation_weight");
-    CHECK(app::configParamName("outputs.kitti_trajectories")
-          == "/config/outputs/kitti_trajectories");
+TEST_CASE("参数：按声明核对、补齐默认值，覆盖项照常写，旧写法按新写法读并提示", "[app][params]") {
+    const std::string data = "data:\n  source: {type: kitti_odometry, path: /data/x}\n";
+    const std::string mapping =
+        "system:\n  pipeline: mapping\n  modules:\n    odometry:\n"
+        "      plugin: {type: param_odometry}\n";
+    const auto task = resolve(mapping + data);
+    // 选中的插件与模块声明的参数都补上了默认值
+    const auto& params = task.config.system.params;
+    CHECK(std::get<double>(params.at("gravity")) == 9.81);
+    CHECK(std::get<std::int64_t>(params.at("odometry.steps")) == 0);
+    CHECK(std::get<double>(params.at("graph.odometry_translation_weight")) == 100.0);
+    // 插件写的参数，写者是它所属的模块
+    const auto steps = std::find_if(task.params.begin(), task.params.end(),
+                                    [](const auto& d) { return d.name == "odometry.steps"; });
+    REQUIRE(steps != task.params.end());
+    CHECK(steps->writers == std::vector<std::string>{"/slam/odometry"});
+    // task.yaml 写出完整的 params，原样能重跑
+    const std::string dumped = config::dumpConfig(task.config);
+    CHECK(dumped.find("  params:\n    \"graph.odometry_rotation_weight\": 400\n")
+          != std::string::npos);
+    CHECK(config::dumpConfig(resolve(dumped).config) == dumped);
 
-    auto config = config::loadTaskString(
-                      "system:\n  modules:\n    graph_optimizer:\n"
-                      "      odometry_translation_weight: 2.5\n",
-                      "<string>")
-                      .config;
-    comm::ParameterStore store;
-    app::applyToParameters(config, store);
-    const std::string name =
-        app::configParamName("system.modules.graph_optimizer.odometry_translation_weight");
-    CHECK(store.snapshot()->get<double>(name) == 2.5);
+    // 值写在 params 里，覆盖项照常写
+    const auto written = resolve(mapping + "  params:\n    gravity: 9.79\n" + data);
+    CHECK(std::get<double>(written.config.system.params.at("gravity")) == 9.79);
+    const auto overridden = app::resolveTask(
+        config::loadTaskString(mapping + data, "<string>", ".", {"system.params.gravity=9.78"}),
+        catalogs());
+    CHECK(std::get<double>(overridden.config.system.params.at("gravity")) == 9.78);
 
-    // 模块随后按代码默认值声明：配置给的值优先
-    store.declare<double>(name, 1.0);
-    CHECK(store.snapshot()->get<double>(name) == 2.5);
-    // 不可调字段不进参数存储：改了也不会生效，不如根本不提供这个口子
-    CHECK_FALSE(store.snapshot()->has(app::configParamName("system.runtime.spin_budget")));
+    // 写错了在运行之前报：没人声明的名字列出声明过的，类型不符，超出范围
+    const auto message = [&](const std::string& system) {
+        try {
+            (void)resolve(system + data);
+        } catch (const config::ConfigError& e) {
+            return std::string(e.what());
+        }
+        return std::string();
+    };
+    const auto unknown = message(mapping + "  params:\n    gravty: 9.8\n");
+    CHECK(unknown.find("未知参数 gravty") != std::string::npos);
+    CHECK(unknown.find("gravity") != std::string::npos);
+    CHECK(message(mapping + "  params:\n    gravity: true\n").find("要 double")
+          != std::string::npos);
+    CHECK(message(mapping + "  params:\n    gravity: 11\n").find("不能大于") != std::string::npos);
+    // 只跑里程计的管线没有图优化模块：它的参数这次没人声明
+    const std::string odometry =
+        "system:\n  modules:\n    odometry:\n      plugin: {type: param_odometry}\n";
+    CHECK(message(odometry + "  params:\n    graph.odometry_translation_weight: 120\n")
+              .find("未知参数") != std::string::npos);
 
-    // 运行期改过的值读得回配置
-    REQUIRE(store.commit({{name, 3.5}}).ok());
-    app::readFromParameters(config, *store.snapshot());
-    CHECK(config.system.modules.graph_optimizer.odometry_translation_weight == 3.5);
+    // 旧写法：两个兜底权重原来是图优化模块的配置字段，按新写法读，并说明替换用的新写法
+    const auto old = config::loadTaskString(
+        mapping + "    graph_optimizer:\n      odometry_translation_weight: 120\n" + data,
+        "<string>");
+    REQUIRE(old.renames.notes.size() == 1);
+    CHECK(old.renames.notes[0].find("system.params.graph.odometry_translation_weight")
+          != std::string::npos);
+    const auto translated = app::resolveTask(old, catalogs());
+    CHECK(std::get<double>(translated.config.system.params.at("graph.odometry_translation_weight"))
+          == 120.0);
+    CHECK(translated.notes == old.renames.notes);
+    // 新旧两种写法都写了：不让旧值悄悄盖掉新值
+    CHECK(message(mapping + "    graph_optimizer:\n      odometry_translation_weight: 120\n"
+                  + "  params:\n    graph.odometry_translation_weight: 90\n")
+              .find("两种写法都写了")
+          != std::string::npos);
+    const auto via_override = config::loadTaskString(
+        mapping + data, "<string>", ".",
+        {"system.modules.graph_optimizer.odometry_rotation_weight=500"});
+    REQUIRE(via_override.renames.notes.size() == 1);
+    CHECK(std::get<std::int64_t>(via_override.config.system.params.at(
+              "graph.odometry_rotation_weight"))
+          == 500);
+
+    // 只跑里程计的管线里没有图优化模块：旧写法给的权重当初在这里不起作用、也不报错，v5 的
+    // 任务记录里都写着它们，照旧只说一句；新写法照常报未知参数（上面）
+    const std::string v5_system =
+        odometry + "    graph_optimizer:\n      odometry_translation_weight: 100\n";
+    const auto v5_record = app::resolveTask(
+        config::loadTaskString(v5_system + data, "<string>", ".",
+                               {"system.modules.graph_optimizer.odometry_rotation_weight=400"}),
+        catalogs());
+    CHECK_FALSE(v5_record.config.system.params.contains("graph.odometry_translation_weight"));
+    CHECK_FALSE(v5_record.config.system.params.contains("graph.odometry_rotation_weight"));
+    CHECK(v5_record.config.system.params.contains("gravity"));  // 选中的插件声明的照常补齐
+    REQUIRE(v5_record.notes.size() == 4);
+    CHECK(v5_record.notes[2].find("不起作用") != std::string::npos);
+}
+
+TEST_CASE("插件在回调里写参数：所属模块回调结束后提交，每次修改记进 run.log", "[app][params]") {
+    Fixture fixture;
+    writeText(fixture.dir.path() / "systems" / "still.yaml",
+              "pipeline: mapping\nmodules:\n  odometry:\n    plugin: {type: param_odometry}\n"
+              "params:\n  gravity: 9.79\n");
+    REQUIRE(fixture.run() == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    CHECK(ParamOdometry::seen_gravity == 9.79);  // 读的是配置给的值
+    const std::string log = readText(fixture.run_dir / "run.log");
+    // 写者、旧值与新值、版本
+    CHECK(log.find("参数 odometry.steps：0 → 1（第 1 版，/slam/odometry）") != std::string::npos);
+    CHECK(log.find("参数 odometry.steps：9 → 10（第 10 版，/slam/odometry）") != std::string::npos);
+    // task.yaml 只有初值，变化看 run.log
+    CHECK(readText(fixture.run_dir / "task.yaml").find("\"odometry.steps\": 0")
+          != std::string::npos);
 }
 
 TEST_CASE("配置命令：check、dump、schema 都由目录还原插件节点", "[app][task]") {

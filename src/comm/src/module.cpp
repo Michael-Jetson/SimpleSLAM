@@ -14,21 +14,49 @@ void Module::attach(RuntimeCore& core, std::string resolved_name) {
     core_ = &core;
     name_ = std::move(resolved_name);
     mailbox_ = std::make_shared<Mailbox>(name_, core.hub(), core.reporter(), core.defaultPolicy());
+    mailbox_->setCallbackScope(this);
     params_ = core.params().snapshot();
     log_ = core.logRouter().root(name_);
 }
 
+void Module::enterCallback() noexcept { param_scope_.emplace(&params_, &plugin_writes_); }
+
+void Module::leaveCallback(bool completed) noexcept {
+    param_scope_.reset();
+    if (plugin_writes_.empty()) return;
+    const std::vector<ParamChange> writes = std::exchange(plugin_writes_, {});
+    if (!completed) return;  // 回调出错：这次回调里记下的写不提交
+    try {
+        const auto result = core_->setParams(writes, name_);
+        if (!result.ok()) log_.warn("插件写的参数没有生效：{}", result.detail);
+    } catch (const std::exception& e) {
+        detail::reportSafely(core_->reporter(), name_, e.what());
+    } catch (...) {
+        detail::reportSafely(core_->reporter(), name_, "提交插件写的参数时抛出未知异常");
+    }
+}
+
 void Module::initialize() {
     params_ = core_->params().snapshot();
-    onInit();
+    enterCallback();
+    try {
+        onInit();
+    } catch (...) {
+        leaveCallback(false);
+        throw;
+    }
+    leaveCallback(true);
     initialized_ = true;
 }
 
 template <class F>
 void Module::runHook(F&& hook) noexcept {
     detail::RuntimeThreadMark mark;
+    enterCallback();
+    bool completed = false;
     try {
         hook();
+        completed = true;
     } catch (const std::exception& e) {
         hook_failures_.fetch_add(1, std::memory_order_relaxed);
         detail::reportSafely(core_->reporter(), name_, e.what());
@@ -37,6 +65,7 @@ void Module::runHook(F&& hook) noexcept {
         hook_failures_.fetch_add(1, std::memory_order_relaxed);
         detail::reportSafely(core_->reporter(), name_, "模块钩子抛出未知异常");
     }
+    leaveCallback(completed);
 }
 
 void Module::start() {

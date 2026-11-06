@@ -38,8 +38,10 @@ public:
     [[nodiscard]] const ErrorReporter& reporter() const noexcept { return reporter_; }
     [[nodiscard]] ExceptionPolicy defaultPolicy() const noexcept { return default_policy_; }
 
-    /// 提交参数事务，并把本次快照按版本顺序排进每个模块的收件箱。
-    ParamCommitResult setParams(const std::vector<ParamChange>& changes);
+    /// 提交参数事务，并把本次快照按版本顺序排进每个模块的收件箱。`writer` 是提交的模块名，
+    /// 外部写入是 `kExternalWriter`。每次提交成功，在日志里记一行：谁改的、旧值与新值、版本。
+    ParamCommitResult setParams(const std::vector<ParamChange>& changes,
+                                std::string_view writer = kExternalWriter);
     void setParamBroadcast(std::function<void(const ParamSnapshotPtr&)> broadcast);
 
     /// 按名字取话题，不存在则创建。类型不符是装配错误。

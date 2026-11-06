@@ -10,27 +10,26 @@
 /// 列了评测函数就评测，没列就只跑。任务 YAML 引用一份系统 YAML，系统 YAML 写管线、模块与插件；
 /// 加载后两者合成一棵 `TaskConfig`。
 ///
-/// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、schema 导出、
-/// 推送到运行期参数存储，全部从它派生。加一个字段只需要改一处。
+/// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、schema 导出全部从它派生。
+/// 加一个字段只需要改一处。
 ///
 /// 两个概念不要混：
-/// - **配置**是一次运行的完整输入，包含不可在运行期改的东西（算法选择、运行方式）；
-/// - **参数**是运行期可调的子集，走事务提交与版本（comm/parameters.hpp）。
-/// 每个字段自己声明属于哪一类（Tunable），因此"改了为什么没生效"有确定答案。
-///
-/// **kYes 只给真的在运行期被重新读取的字段**：模块每次用到时从当时的参数快照里取值。
-/// 插件节点里的参数第一版一律不可调。
+/// - **配置字段**在一次运行里不变：算法选择、运行方式、插件的参数；
+/// - **参数**由用到它的组件声明（`comm/param.hpp`），值写在 `system.params` 里，按名字在模块
+///   与插件之间共享，声明为运行中可改的可以在运行中改（`comm/parameters.hpp`）。
+/// 运行中能改的只有参数，这一点从字段的种类就看得出来。
 
 #include <SimpleSLAM/config/plugin.hpp>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace simpleslam::config {
 
-/// 字段是否允许在运行期改。不可调的字段要换会话才生效，这是声明不是惯例。
-enum class Tunable : std::uint8_t { kNo, kYes };
+/// 参数的值：名字到标量。名字由选中的组件声明，装配时核对（`docs/design/config.md`）。
+using ParamMap = std::map<std::string, PluginValue>;
 
 /// 任务本身。
 struct TaskSection {
@@ -75,9 +74,6 @@ struct PlaceRecognizerModuleSection {
 
 struct GraphOptimizerModuleSection {
     PluginSpec plugin{.type = "none", .params = {}, .children = {}};
-    /// 算法没给跨关键帧约束时的兜底权重。如实标注为启发式，不冒充协方差之逆。
-    double odometry_translation_weight = 100.0;
-    double odometry_rotation_weight = 400.0;
 };
 
 struct ModulesSection {
@@ -93,6 +89,8 @@ struct SystemConfig {
     RuntimeSection runtime;
     PacketizerSection packetizer;
     ModulesSection modules;
+    /// 参数的值：名字 → 标量。还原后补齐了每个声明过的参数。
+    ParamMap params;
 };
 
 struct DataSection {
@@ -148,76 +146,65 @@ struct TaskConfig {
     OutputsSection outputs;
 };
 
-/// 唯一的字段清单。visit 的签名：visit(路径, 值引用, 说明, 可调性)。
+/// 唯一的字段清单。visit 的签名：visit(路径, 值引用, 说明)。
 ///
-/// 值的类型有七种：bool、int64、double、string、字符串列表、插件节点（PluginSpec）、
-/// 插件节点的映射（PluginMap）。
+/// 值的类型有八种：bool、int64、double、string、字符串列表、插件节点（PluginSpec）、
+/// 插件节点的映射（PluginMap）、参数的值（ParamMap）。
 /// Config 既可以是 TaskConfig 也可以是 const TaskConfig——值引用随之带上 const。
 template <class Config, class Visitor>
 void visitConfig(Config& c, Visitor&& visit) {
-    visit("task.name", c.task.name, "任务名，是任务记录的目录名，也进结果", Tunable::kNo);
-    visit("task.mode", c.task.mode, "运行方式：offline 离线 / online 在线", Tunable::kNo);
+    visit("task.name", c.task.name, "任务名，是任务记录的目录名，也进结果");
+    visit("task.mode", c.task.mode, "运行方式：offline 离线 / online 在线");
 
     auto& s = c.system;
-    visit("system.pipeline", s.pipeline, "管线：odometry / mapping / localization", Tunable::kNo);
-    visit("system.runtime.spin_budget", s.runtime.spin_budget, "每轮步进的任务预算",
-          Tunable::kNo);
+    visit("system.pipeline", s.pipeline, "管线：odometry / mapping / localization");
+    visit("system.runtime.spin_budget", s.runtime.spin_budget, "每轮步进的任务预算");
     visit("system.runtime.online_max_in_flight", s.runtime.online_max_in_flight,
-          "在线时入口允许在途的包数（0 表示不限）", Tunable::kNo);
+          "在线时入口允许在途的包数（0 表示不限）");
 
     visit("system.packetizer.source_policy", s.packetizer.source_policy,
-          "打包策略取自数据源推荐还是本节配置：source / config", Tunable::kNo);
+          "打包策略取自数据源推荐还是本节配置：source / config");
     visit("system.packetizer.trigger_on_lidar", s.packetizer.trigger_on_lidar,
-          "由激光触发（否则由相机触发）", Tunable::kNo);
-    visit("system.packetizer.imu_required", s.packetizer.imu_required, "发包是否必须有 IMU 支撑",
-          Tunable::kNo);
+          "由激光触发（否则由相机触发）");
+    visit("system.packetizer.imu_required", s.packetizer.imu_required, "发包是否必须有 IMU 支撑");
     visit("system.packetizer.post_support_s", s.packetizer.post_support_s,
-          "参考时刻之后额外要等的时间偏置余量（秒）；零表示只等右括点", Tunable::kNo);
+          "参考时刻之后额外要等的时间偏置余量（秒）；零表示只等右括点");
     visit("system.packetizer.pre_support_s", s.packetizer.pre_support_s,
-          "参考时刻之前保留的历史（秒）", Tunable::kNo);
+          "参考时刻之前保留的历史（秒）");
     visit("system.packetizer.max_imu_gap_s", s.packetizer.max_imu_gap_s,
-          "相邻 IMU 样本的最大间隔（秒），超过即标缺口；零表示不查", Tunable::kNo);
+          "相邻 IMU 样本的最大间隔（秒），超过即标缺口；零表示不查");
     visit("system.packetizer.max_imu_backlog", s.packetizer.max_imu_backlog,
-          "IMU 积压上限，超限报缺口", Tunable::kNo);
+          "IMU 积压上限，超限报缺口");
     visit("system.packetizer.attachment_tolerance_s", s.packetizer.attachment_tolerance_s,
-          "附件的时间容差（秒）", Tunable::kNo);
+          "附件的时间容差（秒）");
 
-    visit("system.modules.odometry.plugin", s.modules.odometry.plugin, "里程计方案",
-          Tunable::kNo);
+    visit("system.modules.odometry.plugin", s.modules.odometry.plugin, "里程计方案");
     visit("system.modules.place_recognizer.plugin", s.modules.place_recognizer.plugin,
-          "位置识别（建图管线用；none 表示不找回环）", Tunable::kNo);
+          "位置识别（建图管线用；none 表示不找回环）");
     visit("system.modules.graph_optimizer.plugin", s.modules.graph_optimizer.plugin,
-          "图优化（建图管线用）", Tunable::kNo);
-    visit("system.modules.graph_optimizer.odometry_translation_weight",
-          s.modules.graph_optimizer.odometry_translation_weight,
-          "里程计边的兜底平移权重（1/m²，启发式）", Tunable::kYes);
-    visit("system.modules.graph_optimizer.odometry_rotation_weight",
-          s.modules.graph_optimizer.odometry_rotation_weight,
-          "里程计边的兜底旋转权重（1/rad²，启发式）", Tunable::kYes);
+          "图优化（建图管线用）");
+    visit("system.params", s.params, "参数的值：名字 → 标量；名字由选中的组件声明");
 
-    visit("data.source", c.data.source, "数据集读取器：类型与参数", Tunable::kNo);
-    visit("data.calibration", c.data.calibration, "外部标定文件（留空则用数据集自带的标定）",
-          Tunable::kNo);
-    visit("data.sequences", c.data.sequences, "多序列：每个序列一个子进程", Tunable::kNo);
+    visit("data.source", c.data.source, "数据集读取器：类型与参数");
+    visit("data.calibration", c.data.calibration, "外部标定文件（留空则用数据集自带的标定）");
+    visit("data.sequences", c.data.sequences, "多序列：每个序列一个子进程");
 
     visit("evaluation.evaluators", c.evaluation.evaluators,
-          "这次跑哪些评测函数：名字 → 插件节点；没有就不评测", Tunable::kNo);
-    visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）",
-          Tunable::kNo);
+          "这次跑哪些评测函数：名字 → 插件节点；没有就不评测");
+    visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）");
     visit("evaluation.online.evaluators", c.evaluation.online.evaluators,
-          "在线评哪几个：evaluation.evaluators 里的名字；空表示不做在线评测", Tunable::kNo);
+          "在线评哪几个：evaluation.evaluators 里的名字；空表示不做在线评测");
     visit("evaluation.online.interval_s", c.evaluation.online.interval_s,
-          "在线评测每隔多少秒（数据时间）评一次", Tunable::kNo);
+          "在线评测每隔多少秒（数据时间）评一次");
 
-    visit("outputs.dir", c.outputs.dir, "任务记录目录（留空为 runs/<task.name>）",
-          Tunable::kNo);
+    visit("outputs.dir", c.outputs.dir, "任务记录目录（留空为 runs/<task.name>）");
     visit("outputs.kitti_trajectories", c.outputs.kitti_trajectories,
-          "另写一份 KITTI 格式的轨迹（TUM 格式的总会写）", Tunable::kNo);
+          "另写一份 KITTI 格式的轨迹（TUM 格式的总会写）");
     visit("outputs.log.console", c.outputs.log.console,
-          "终端显示的最低等级：debug / info / warn / error", Tunable::kNo);
-    visit("outputs.log.file", c.outputs.log.file, "run.log 记录的最低等级", Tunable::kNo);
+          "终端显示的最低等级：debug / info / warn / error");
+    visit("outputs.log.file", c.outputs.log.file, "run.log 记录的最低等级");
     visit("outputs.log.levels", c.outputs.log.levels,
-          "按来源设等级：<来源的键>=<等级>，如 odometry.plugin.map=debug", Tunable::kNo);
+          "按来源设等级：<来源的键>=<等级>，如 odometry.plugin.map=debug");
 }
 
 }  // namespace simpleslam::config
