@@ -48,6 +48,10 @@ namespace simpleslam::fw {
 /// 来源产出的一条数据。
 using SensorDatum = std::variant<Ptr<LidarScan>, Ptr<CameraFrame>, Ptr<ImuSample>, Ptr<GnssFix>>;
 
+/// 一条数据的数据时刻：扫描取参考时刻，图像取采集时刻，IMU 与 GNSS 取采样时刻；空指针没有时刻。
+/// 在线按数据时间节奏回放时据此放行，与打包器、离线时钟用的是同一个时刻。
+[[nodiscard]] std::optional<Timestamp> dataTime(const SensorDatum& datum);
+
 /// 来源走到尽头时的终态。
 ///
 /// "next() 返回空"只说明没有下一条了，说不清是**正常读完**还是**读到一半没了**

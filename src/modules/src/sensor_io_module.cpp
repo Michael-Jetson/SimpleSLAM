@@ -37,7 +37,7 @@ SensorIoModule::PumpResult SensorIoModule::pump(std::size_t max_packets, std::si
                 result.yielded = true;  // 预算用完：剩下的下一步接着排空
                 return result;
             }
-            finished_ = true;
+            markFinished();
             result.finished = true;
             return result;
         }
@@ -48,21 +48,47 @@ SensorIoModule::PumpResult SensorIoModule::pump(std::size_t max_packets, std::si
             result.yielded = true;
             return result;
         }
-        auto datum = source_->next();
-        ++result.samples;
-        if (!datum) {
-            // 来源读完：不再调用 next()，剩下的触发帧按"已有多少 IMU 就声明多少"
-            // 逐帧发出，缺支撑如实标缺口
-            source_exhausted_ = true;
-            outcome_ = source_->outcome();
-            continue;
+        if (!pending_) {
+            auto datum = source_->next();
+            ++result.samples;
+            if (!datum) {
+                // 来源读完：不再调用 next()，剩下的触发帧按"已有多少 IMU 就声明多少"
+                // 逐帧发出，缺支撑如实标缺口
+                source_exhausted_ = true;
+                outcome_ = source_->outcome();
+                continue;
+            }
+            pending_ = std::move(datum);
         }
-        packetizer_.ingest(*datum);
+        if (pacing_ == Pacing::kDataTime && !due(*pending_)) {
+            result.yielded = true;  // 还没到时候：留着，定时器下一次再看
+            return result;
+        }
+        packetizer_.ingest(*pending_);
+        pending_.reset();
     }
 }
 
-void SensorIoModule::startPumping(comm::Duration period, std::size_t packets_per_tick) {
+bool SensorIoModule::due(const fw::SensorDatum& datum) {
+    const auto time = fw::dataTime(datum);
+    if (!time) return true;
+    const comm::Time now = clock().now();
+    if (!origin_) origin_ = ReplayOrigin{.wall = now, .data = *time};
+    // 时刻倒退的数据（来源乱序）立刻放行：顺序由来源负责，节奏只管不提前
+    return now - origin_->wall >= *time - origin_->data;
+}
+
+void SensorIoModule::markFinished() {
+    if (finished_) return;
+    finished_ = true;
+    if (on_finished_) on_finished_();
+}
+
+void SensorIoModule::startPumping(comm::Duration period, std::size_t packets_per_tick,
+                                  Pacing pacing, std::function<void()> on_finished) {
     if (stopped()) return;
+    pacing_ = pacing;
+    on_finished_ = std::move(on_finished);
     pump_timer_ = createTimer(period, [this, packets_per_tick] { pump(packets_per_tick); });
 }
 

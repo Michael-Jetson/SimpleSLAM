@@ -9,10 +9,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace simpleslam;
@@ -493,4 +495,55 @@ TEST_CASE("pump 按预算返回，不空转读来源", "[modules][sensor_io]") {
     const auto first = io.pump(3);
     CHECK(first.published == 3);
     CHECK(raw->reads() == 3);  // 够了就停，不多读
+}
+
+// ── 在线：按数据时间的节奏放行 ───────────────────────────────────────────────
+
+/// 记下每一帧被跟踪时的墙钟时刻。只在里程计线程上写，运行终结之后才读。
+class TimingOdometry final : public plugin::OdometryBase {
+public:
+    [[nodiscard]] std::string name() const override { return "TimingOdometry"; }
+    [[nodiscard]] plugin::SupportGapPolicy supportGapPolicy() const override {
+        return plugin::SupportGapPolicy::kDegrade;
+    }
+
+    std::vector<std::pair<fw::Timestamp, std::chrono::steady_clock::time_point>> seen;
+
+protected:
+    plugin::TrackResult track(const fw::SensorPacket& packet) override {
+        seen.emplace_back(packet.reference_time, std::chrono::steady_clock::now());
+        return {};
+    }
+};
+
+TEST_CASE("在线按数据时间的节奏放行：不提前，读完就停", "[modules][system][online]") {
+    modules::SlamSystemOptions options;
+    options.offline = false;
+    modules::SlamSystem system(options);
+    system.setSource(std::make_unique<SyntheticSource>(20));  // 数据从 0 到 200 ms
+    auto& odometry = system.setOdometry<TimingOdometry>();
+    system.init();
+
+    const auto start = std::chrono::steady_clock::now();
+    const std::size_t packets = system.runOnline();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    system.shutdown();
+
+    CHECK(packets == 20);
+    CHECK(system.result().outcome.complete());
+    const auto* algorithm = dynamic_cast<const TimingOdometry*>(&odometry.algorithm());
+    REQUIRE(algorithm != nullptr);
+    REQUIRE(algorithm->seen.size() == 20);
+    // 回放原点不早于 start，数据时刻为 t 的帧不早于 原点 + t 放行：这是下界，不需要容差
+    for (const auto& [time, wall] : algorithm->seen) CHECK(wall - start >= time);
+    CHECK(elapsed >= std::chrono::milliseconds(200));
+    CHECK(elapsed < std::chrono::seconds(10));  // 读完就停，不等超时
+}
+
+TEST_CASE("runOnline 要在线模式", "[modules][system][online]") {
+    modules::SlamSystem system;  // 默认离线
+    system.setSource(std::make_unique<SyntheticSource>(2));
+    system.setOdometry<TimingOdometry>();
+    system.init();
+    CHECK_THROWS_AS(system.runOnline(), std::logic_error);
 }

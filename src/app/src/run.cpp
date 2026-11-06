@@ -46,9 +46,10 @@ namespace {
 namespace fs = std::filesystem;
 
 /// 档案里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
-constexpr const char* kArchiveFiles[] = {"task.yaml", "identity.yaml", "outcome.yaml",
-                                         "report.yaml", "recording.ssrec",
-                                         "recording.ssrec.diagnostics.jsonl", "trajectory"};
+constexpr const char* kArchiveFiles[] = {"task.yaml",       "identity.yaml",
+                                         "outcome.yaml",    "report.yaml",
+                                         "recording.ssrec", "recording.ssrec.diagnostics.jsonl",
+                                         "queues.txt",      "trajectory"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -70,9 +71,6 @@ void checkCombination(const config::TaskConfig& c) {
     if (c.system.pipeline == "localization") {
         throw std::runtime_error("定位管线要等地图的保存与加载，还不支持（system.pipeline = "
                                  "localization）");
-    }
-    if (c.task.mode == "online") {
-        throw std::runtime_error("在线运行还在施工（task.mode = online），先用离线");
     }
 }
 
@@ -415,9 +413,17 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         applyToParameters(c, system.runtime().params());
         system.init();
 
-        // ── 驱动与终结 ──
-        facts.packets = system.runOffline();
+        // ── 驱动与终结：离线逐步跑到读完；在线一个模块一个线程，按数据时间的节奏回放 ──
+        const bool online = c.task.mode == "online";
+        out << "运行方式: " << (online ? "在线，按数据时间的节奏回放" : "离线") << std::endl;
+        facts.packets = online ? system.runOnline() : system.runOffline();
         system.shutdown();
+        if (online) {
+            // 调 online_max_in_flight 要看队列峰值：统计表打出来，也进档案
+            const std::string queues = system.runtime().statsTable();
+            archive::writeText(dir / "queues.txt", queues);
+            out << queues;
+        }
         const auto& result = system.result();
         const auto& outcome = result.outcome;
         facts.frames = odometry.processedFrames();

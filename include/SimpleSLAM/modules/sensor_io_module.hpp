@@ -9,6 +9,10 @@
 /// 离线由系统逐包调 pump() 步进，在线由定时器驱动同一个 pump()，模块代码只有一套。
 /// EOF 是显式状态，不靠超时判断。下游的处理进度告诉打包器还有多少包在途，处理不过来时由打包器丢触发帧。
 ///
+/// 在线回放数据集时按数据时间的节奏放行（Pacing::kDataTime）：第一条数据对到开始回放的时刻，
+/// 之后数据时刻为 t 的样本，到 开始 + (t − t0) 才交给打包器。还没到时候的那一条留在模块里，
+/// 定时器下一次再看，模块线程不睡眠，停止输入随时生效。
+///
 /// ## 两条纪律
 ///
 /// 1. **pump 有预算**。一条 IMU 可能同时让好几帧凑齐括点，EOF 时也可能还有好几帧在等——预算用完
@@ -23,13 +27,21 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace simpleslam::modules {
 
 class SensorIoModule final : public comm::Module {
 public:
+    /// 在线时按什么节奏读来源。
+    enum class Pacing : std::uint8_t {
+        kAsFastAsPossible,  ///< 能读多快读多快：来源自己就按真实时间产出数据，或要测吞吐
+        kDataTime,          ///< 按数据时间的节奏读：回放数据集与录制
+    };
+
     /// 一个包大致要读多少条来源数据（10 Hz 扫描 + 100 Hz IMU ≈ 11）。
     /// 只用来给 pump 的读取预算一个默认量级，不是契约。
     static constexpr std::size_t kSamplesPerPacket = 64;
@@ -65,7 +77,11 @@ public:
     [[nodiscard]] fw::Packetizer& packetizer() noexcept { return packetizer_; }
 
     /// 在线模式：按固定周期自驱动。离线模式不要调用它。
-    void startPumping(comm::Duration period, std::size_t packets_per_tick = 1);
+    ///
+    /// `on_finished` 在来源读完、触发帧排空之后调用一次，在本模块的线程上。
+    void startPumping(comm::Duration period, std::size_t packets_per_tick = 1,
+                      Pacing pacing = Pacing::kAsFastAsPossible,
+                      std::function<void()> on_finished = {});
 
 protected:
     void onInit() override;
@@ -73,12 +89,26 @@ protected:
 private:
     /// 下游处理到哪了：打包器据此判断过载。
     void onConsumed(const fw::PacketConsumed& event);
+    /// 按数据时间节奏回放时，这条数据到时候了没有。第一次问时定下回放的原点。
+    [[nodiscard]] bool due(const fw::SensorDatum& datum);
+    void markFinished();
+
+    /// 回放的原点：开始回放的时刻与第一条数据的数据时刻。
+    struct ReplayOrigin {
+        comm::Time wall;
+        fw::Timestamp data;
+    };
 
     std::unique_ptr<fw::ISensorSource> source_;
     fw::Packetizer packetizer_;
     SlamResources* resources_;
     comm::Publisher<fw::SensorPacket> packet_pub_;
     comm::TimerHandle pump_timer_;
+    Pacing pacing_ = Pacing::kAsFastAsPossible;
+    std::function<void()> on_finished_;
+    /// 读出来、还没到时候交给打包器的那一条。
+    std::optional<fw::SensorDatum> pending_;
+    std::optional<ReplayOrigin> origin_;
     bool finished_ = false;
     bool source_exhausted_ = false;
     fw::SourceOutcome outcome_ = fw::SourceOutcome::kRunning;

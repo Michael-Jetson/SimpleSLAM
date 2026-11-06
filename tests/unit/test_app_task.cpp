@@ -20,6 +20,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -333,8 +334,6 @@ TEST_CASE("只出结果的任务不评测；还不支持的组合在运行之前
         Fixture fixture;
         CHECK(fixture.run({"system.pipeline=localization"}) == 1);
         CHECK(fixture.err.str().find("定位管线") != std::string::npos);
-        CHECK(fixture.run({"task.mode=online"}) == 1);
-        CHECK(fixture.err.str().find("在线运行") != std::string::npos);
         // 都在运行之前拒绝：没有留下半个档案
         CHECK_FALSE(fs::exists(fixture.archive));
     }
@@ -411,4 +410,23 @@ TEST_CASE("多序列：读取器不支持、与 data.source.sequence 同时写�
     std::vector<char*> argv;
     for (auto& word : words) argv.push_back(word.data());
     CHECK(app::run(static_cast<int>(argv.size()), argv.data(), catalogs()) == 2);
+}
+
+TEST_CASE("在线：按数据时间的节奏回放，跑完写档案与队列统计", "[app][task][online]") {
+    Fixture fixture;  // 10 帧，数据跨 0.9 秒
+    const auto start = std::chrono::steady_clock::now();
+    REQUIRE(fixture.run({"task.mode=online"}) == 0);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    INFO(fixture.out.str() << fixture.err.str());
+
+    CHECK(elapsed >= std::chrono::milliseconds(900));  // 不提前放行
+    CHECK(fixture.out.str().find("在线，按数据时间的节奏回放") != std::string::npos);
+    CHECK(readText(fixture.archive / "queues.txt").find("/slam/sensor_packet -> /slam/odometry")
+          != std::string::npos);
+    CHECK(readText(fixture.archive / "outcome.yaml").find("complete: true") != std::string::npos);
+    CHECK(fs::exists(fixture.archive / "report.yaml"));
+
+    // 离线不写队列统计：没有并发，统计没有意义
+    REQUIRE(fixture.run({"task.mode=offline"}, /*overwrite=*/true) == 0);
+    CHECK_FALSE(fs::exists(fixture.archive / "queues.txt"));
 }

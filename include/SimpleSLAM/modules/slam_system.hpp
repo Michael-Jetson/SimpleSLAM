@@ -16,6 +16,7 @@
 #include <SimpleSLAM/modules/sensor_io_module.hpp>
 #include <SimpleSLAM/modules/trajectory_module.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -207,6 +208,16 @@ public:
     /// max_packets 限制的是发出的包数（按尝试计）：一条 IMU 同时让好几帧凑齐括点时，
     /// 也只发预算允许的那几个。运行终结之后什么也不做。
     std::size_t runOffline(std::size_t max_packets = 0);
+
+    /// 在线跑完整个数据源：一个模块一个线程，来源按数据时间的节奏放行——第一条数据对到
+    /// 开始的时刻，之后数据时刻为 t 的样本到 开始 + (t − t0) 才读。来源读完、触发帧排空之后
+    /// 停止输入，已接纳的工作走完才返回。返回发出的包数。
+    ///
+    /// 要在线模式（`SlamSystemOptions::offline = false`）。`pump_period` 是放行的检查周期，
+    /// 也是节奏的分辨率；`packets_per_tick` 是落后时一次补发的上限。之后照常 shutdown()。
+    /// 结果不保证逐位复现：线程调度、过载丢帧都随运行而变。
+    std::size_t runOnline(comm::Duration pump_period = std::chrono::milliseconds(1),
+                          std::size_t packets_per_tick = 8);
 
     /// 这次运行的结局。评测报告要在它之后写：报告前没有它，就说不清结论建立在
     /// 完整还是残缺的运行之上。

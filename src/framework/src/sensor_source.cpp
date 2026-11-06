@@ -4,9 +4,29 @@
 #include <SimpleSLAM/framework/sensor_source.hpp>
 
 #include <algorithm>
+#include <optional>
+#include <variant>
 #include <utility>
 
 namespace simpleslam::fw {
+
+std::optional<Timestamp> dataTime(const SensorDatum& datum) {
+    struct Visitor {
+        std::optional<Timestamp> operator()(const Ptr<LidarScan>& scan) const {
+            return scan ? std::optional(scan->reference_time) : std::nullopt;
+        }
+        std::optional<Timestamp> operator()(const Ptr<CameraFrame>& frame) const {
+            return frame ? std::optional(frame->capture_time) : std::nullopt;
+        }
+        std::optional<Timestamp> operator()(const Ptr<ImuSample>& sample) const {
+            return sample ? std::optional(sample->time) : std::nullopt;
+        }
+        std::optional<Timestamp> operator()(const Ptr<GnssFix>& fix) const {
+            return fix ? std::optional(fix->time) : std::nullopt;
+        }
+    };
+    return std::visit(Visitor{}, datum);
+}
 
 // 附件队列的三个模板只在本文件里对图像与 GNSS 实例化。
 

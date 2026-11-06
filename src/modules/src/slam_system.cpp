@@ -157,6 +157,18 @@ std::size_t SlamSystem::runOffline(std::size_t max_packets) {
     return processed;
 }
 
+std::size_t SlamSystem::runOnline(comm::Duration pump_period, std::size_t packets_per_tick) {
+    if (options_.offline) {
+        throw std::logic_error("runOnline 要在线模式：SlamSystemOptions::offline = false");
+    }
+    if (sensor_io_ == nullptr || finalized_) return 0;
+    // 读完即停止输入：来源是回放，读完就是运行结束；停止之后 spin() 等已接纳的工作走完
+    sensor_io_->startPumping(pump_period, packets_per_tick, SensorIoModule::Pacing::kDataTime,
+                             [this] { runtime_.requestStop(); });
+    runtime_.spin();  // 起模块线程，阻塞到停止输入、已接纳的工作走完
+    return sensor_io_->publishedPackets();
+}
+
 void SlamSystem::advanceClockToData() {
     auto* clock = runtime_.virtualClock();
     if (clock == nullptr || sensor_io_ == nullptr || finalized_) return;
