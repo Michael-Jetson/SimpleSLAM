@@ -6,7 +6,8 @@
 /// @file catalogs.hpp
 /// 内置实现的目录，以及任务里每个插件字段要求的接口。
 ///
-/// 内置的有：算法库的滤波与地图、三种数据集读取器、位置识别与图优化的 `none`。
+/// 内置的有：算法库的滤波与地图，两种数据集读取器（`kitti_odometry`、`kitti_raw`），位置识别与
+/// 图优化的 `none`，评测函数 `ate`、`rpe`、`kitti`、`timing`。
 /// 里程计方案没有内置实现：算法本体由用户写，在自己的入口里追加到目录。
 
 #include <SimpleSLAM/config/plugin.hpp>
