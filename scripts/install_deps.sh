@@ -1,12 +1,12 @@
 #!/bin/bash
-# SimpleSLAM v1.0 依赖安装脚本（Ubuntu 22.04/24.04 原生构建）
+# SimpleSLAM 的依赖安装脚本（Ubuntu 22.04/24.04 原生构建）。与仓库根目录的 Dockerfile 一致。
 set -e
 
 echo "=== 安装系统包 ==="
 sudo apt-get update
 sudo apt-get install -y \
     build-essential cmake git \
-    libeigen3-dev libspdlog-dev libyaml-cpp-dev libfmt-dev
+    libeigen3-dev libyaml-cpp-dev python3
 
 echo "=== 安装 Catch2 3.x ==="
 if ! cmake --find-package -DNAME=Catch2 -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST 2>/dev/null; then
@@ -22,7 +22,7 @@ fi
 
 echo "=== 安装 manif ==="
 if ! cmake --find-package -DNAME=manif -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST 2>/dev/null; then
-    git clone --branch master --depth 1 https://github.com/artivis/manif.git /tmp/manif
+    git clone --branch 0.0.5 --depth 1 https://github.com/artivis/manif.git /tmp/manif
     cmake -S /tmp/manif -B /tmp/manif/build -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
     cmake --build /tmp/manif/build -j$(nproc)
     sudo cmake --install /tmp/manif/build
@@ -30,30 +30,6 @@ if ! cmake --find-package -DNAME=manif -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=E
     echo "manif 安装完成"
 else
     echo "manif 已安装，跳过"
-fi
-
-echo "=== 安装 nanoflann ==="
-if ! cmake --find-package -DNAME=nanoflann -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST 2>/dev/null; then
-    git clone --branch v1.6.1 --depth 1 https://github.com/jlblancoc/nanoflann.git /tmp/nanoflann
-    cmake -S /tmp/nanoflann -B /tmp/nanoflann/build -DNANOFLANN_BUILD_EXAMPLES=OFF -DNANOFLANN_BUILD_TESTS=OFF
-    cmake --build /tmp/nanoflann/build -j$(nproc)
-    sudo cmake --install /tmp/nanoflann/build
-    rm -rf /tmp/nanoflann
-    echo "nanoflann 安装完成"
-else
-    echo "nanoflann 已安装，跳过"
-fi
-
-echo "=== 安装 tsl::robin_map ==="
-if ! cmake --find-package -DNAME=tsl-robin-map -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST 2>/dev/null; then
-    git clone --branch v1.3.0 --depth 1 https://github.com/Tessil/robin-map.git /tmp/robin-map
-    cmake -S /tmp/robin-map -B /tmp/robin-map/build
-    cmake --build /tmp/robin-map/build -j$(nproc)
-    sudo cmake --install /tmp/robin-map/build
-    rm -rf /tmp/robin-map
-    echo "tsl::robin_map 安装完成"
-else
-    echo "tsl::robin_map 已安装，跳过"
 fi
 
 echo "=== 全部依赖安装完成 ==="

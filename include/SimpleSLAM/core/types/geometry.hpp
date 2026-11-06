@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 SimpleSLAM contributors
+
 #pragma once
 
 /// @file geometry.hpp
 /// 几何类型别名——全框架统一使用 manif 李群表示
 ///
-/// 公约（详见 convention.hpp）：
+/// 公约：
 ///   - 位姿语义：T_world_body（从 body 到 world 的变换）
 ///   - 四元数：Hamilton 约定（w,x,y,z），注意 Eigen coeffs() 返回 [x,y,z,w]
 ///   - 状态向量用 double，点坐标用 float

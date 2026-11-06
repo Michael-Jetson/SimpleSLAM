@@ -3,7 +3,7 @@
 # 两种用法：
 #   1) 作为主项目的子目录（add_subdirectory）；
 #   2) 独立配置：cmake -S src/comm -B <build>，只需要 Catch2，
-#      不需要 manif / Eigen / spdlog，用于快速迭代通信层本身（日志库一并编进来）。
+#      不需要 manif 与 Eigen，用于快速迭代通信层本身（日志库一并编进来）。
 cmake_minimum_required(VERSION 3.20)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)

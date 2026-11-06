@@ -3,7 +3,7 @@
 入口是登记了算法实现的 C++ 可执行文件，示例是 ``simpleslam_lio_skeleton``，用户写的算法用
 自己的入口（``--entry`` 或环境变量 ``SIMPLESLAM_ENTRY``）。这里只做三件事：
 
-* 第一次用时配置构建目录：只构建新栈、不构建测试，默认 Release；
+* 第一次用时配置构建目录：不构建测试，默认 Release；
 * 之后每次只增量构建要用的那个目标；
 * 按 CMake 的 File API 找到目标的可执行文件，不猜输出路径。
 
@@ -70,8 +70,7 @@ class Workspace:
         query.parent.mkdir(parents=True, exist_ok=True)
         query.touch()
         args = ["cmake", "-S", str(self.root), "-B", str(self.build_dir),
-                f"-DCMAKE_BUILD_TYPE={self.build_type}", "-DSIMPLESLAM_NEW_STACK_ONLY=ON",
-                "-DBUILD_TESTING=OFF"]
+                f"-DCMAKE_BUILD_TYPE={self.build_type}", "-DBUILD_TESTING=OFF"]
         manif = self.root / "docker" / "deps" / "manif"
         if (manif / "include").is_dir():
             args.append(f"-DSIMPLESLAM_MANIF_INCLUDE_DIR={manif / 'include'}")

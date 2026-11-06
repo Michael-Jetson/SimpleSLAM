@@ -10,7 +10,7 @@ IncludeBlocks: Regroup
 IncludeCategories:
   - Regex: '^<SimpleSLAM/'
     Priority: 1
-  - Regex: '^<(Eigen|manif|spdlog|yaml-cpp|fmt|catch2)/'
+  - Regex: '^<(Eigen|manif|yaml-cpp|catch2)/'
     Priority: 2
   - Regex: '^<'
     Priority: 3

@@ -9,8 +9,6 @@
 /// chrono 的纳秒类型解决表示与单位，解决不了"两个设备是否同一时钟"。
 /// 因此每个样本带 ClockDomainId，域到参考时间的映射带版本与不确定度；
 /// 硬件同步时映射是恒等式且成本为零，但"已同步"从此是可检查的字段。
-///
-/// 命名空间 fw 是过渡：迁移完成后与旧的 simpleslam 类型合并（见 docs/design/legacy.md）。
 
 #include <SimpleSLAM/framework/ids.hpp>
 

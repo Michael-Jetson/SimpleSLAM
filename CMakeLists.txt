@@ -19,12 +19,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(CompilerOptions)
 
-# ── 构建范围 ──
-# 新栈 = 通信运行时 + 框架契约 + 模块层（只需要 Eigen / manif / Catch2）。
-# 旧垂直（core/sensor_io/odometry/backend/runner）另需 nanoflann 与 robin-map，
-# 在依赖不全的环境里可以只构建新栈：cmake -DSIMPLESLAM_NEW_STACK_ONLY=ON
-option(SIMPLESLAM_NEW_STACK_ONLY "只构建通信/框架/模块新栈" OFF)
-
 # ── 查找依赖 ──
 find_package(Eigen3 3.4 REQUIRED)
 
@@ -41,8 +35,7 @@ else()
     message(STATUS "manif: 未找到 CMake 配置，按头文件路径使用 (${SIMPLESLAM_MANIF_INCLUDE_DIR})")
 endif()
 
-# yaml-cpp：新栈的配置与任务记录都用它。旧栈里它是硬依赖，
-# 新栈里是软依赖——没有它就不构建评测、配置与执行器，其余照常。
+# yaml-cpp：配置与任务记录用它。是软依赖：没有它就不构建评测、配置与执行器，其余照常。
 find_package(yaml-cpp QUIET)
 if(TARGET yaml-cpp::yaml-cpp)
     set(SIMPLESLAM_YAMLCPP_TARGET yaml-cpp::yaml-cpp)
@@ -57,33 +50,6 @@ if(SIMPLESLAM_BUILD_TOOLING AND NOT DEFINED SIMPLESLAM_YAMLCPP_TARGET)
     set(SIMPLESLAM_BUILD_TOOLING OFF)
 endif()
 
-if(NOT SIMPLESLAM_NEW_STACK_ONLY)
-find_package(spdlog REQUIRED)
-find_package(fmt REQUIRED)
-find_package(nanoflann REQUIRED)
-find_package(tsl-robin-map REQUIRED)
-# eventpp 和 SPSCQueue 预留给 v1.5 online 高性能模式
-# v1.0 的 Topic<T> 用标准库实现全部三种 QoS，接口完全兼容
-
-if(NOT DEFINED SIMPLESLAM_YAMLCPP_TARGET)
-    message(FATAL_ERROR "旧栈需要 yaml-cpp，但没有找到它的 CMake target")
-endif()
-
-# spdlog 目标名兼容
-if(TARGET spdlog::spdlog)
-    set(SIMPLESLAM_SPDLOG_TARGET spdlog::spdlog)
-elseif(TARGET spdlog::spdlog_header_only)
-    set(SIMPLESLAM_SPDLOG_TARGET spdlog::spdlog_header_only)
-else()
-    message(FATAL_ERROR "找不到 spdlog 的 CMake target")
-endif()
-
-endif()  # NOT SIMPLESLAM_NEW_STACK_ONLY
-
-# ── 可选依赖 ──
-option(SIMPLESLAM_USE_GTSAM "启用 GTSAM 集成" OFF)
-
-
 # ── 源码（各模块库，实现在 src/，公共头文件在 include/）──
 add_subdirectory(src)
 
@@ -91,11 +57,6 @@ add_subdirectory(src)
 if(SIMPLESLAM_BUILD_TOOLING)
     add_subdirectory(tools)
     add_subdirectory(examples)
-endif()
-
-# ── 应用入口（L1 配置驱动可执行）──
-if(NOT SIMPLESLAM_NEW_STACK_ONLY)
-    add_subdirectory(apps)
 endif()
 
 # ── 测试（默认开启）──

@@ -11,7 +11,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
-#include <SimpleSLAM/core/types/common.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
 
 #include <numbers>
@@ -85,23 +84,4 @@ TEST_CASE("Mat6d 类型别名", "[geometry]") {
     REQUIRE(mat.cols() == 6);
     REQUIRE_THAT(mat(0, 0), WithinAbs(1.0, 1e-15));
     REQUIRE_THAT(mat(0, 5), WithinAbs(0.0, 1e-15));
-}
-
-TEST_CASE("PointXYZI 构造与内存布局", "[common]") {
-    PointXYZI p;
-    REQUIRE(p.x == 0.0f);
-    REQUIRE(p.intensity == 0.0f);
-
-    PointXYZI q{1.0f, 2.0f, 3.0f, 0.5f};
-    REQUIRE(q.z == 3.0f);
-
-    // 内存布局保证（与 GPU/PCL 互操作需要）
-    static_assert(sizeof(PointXYZI) == 16);
-    static_assert(std::is_trivially_copyable_v<PointXYZI>);
-}
-
-TEST_CASE("Timestamp 类型", "[common]") {
-    Timestamp t = 1714100000.123456;
-    REQUIRE(t > 0.0);
-    REQUIRE_THAT(t, WithinAbs(1714100000.123456, 1e-6));
 }

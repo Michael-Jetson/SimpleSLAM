@@ -23,8 +23,8 @@ CMakeCache.txt
 *.dylib
 compile_commands.json
 
-# Pre-downloaded dependency sources — the Dockerfile fetches its own pinned
-# copies, so the (large) vendored git checkouts are not needed in the context.
+# Pre-downloaded dependency sources: the Dockerfile fetches its own pinned copy of manif,
+# or takes docker/deps/manif as a separate build context (--build-context manif=…).
 docker/deps/
 
 # Docker infrastructure itself (no need to copy it into the image)
