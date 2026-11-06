@@ -101,7 +101,7 @@ evaluation: {alignment: se3}
 2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
 3. LIO：复用同一个地图接口。
 
-手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；`./run.py demo` 不下载数据集也能跑通整条链路（见"快速开始"）。
+手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始，写日志调成员 `log_`（`log_.info(…)`、`log_.warn(…)`），来源与帧序号自动带上；`./run.py demo` 不下载数据集也能跑通整条链路（见"快速开始"）。
 
 ## 快速开始
 
@@ -121,7 +121,7 @@ evaluation: {alignment: se3}
 - 默认在本机构建 Release，构建目录是 `build/release`；环境变量 `SIMPLESLAM_BUILD_ROOT` 可以把它放到别处，`--debug` 换成 Debug，`--docker` 在开发镜像里做同样的事。
 - 入口默认是示例 `simpleslam_lio_skeleton`；你的算法用登记了它的入口：`--entry <CMake 目标名或可执行文件>`，或环境变量 `SIMPLESLAM_ENTRY`。
 - 数据集路径用覆盖项给，或者把自己的任务文件放进 `configs/local/`（不入库）。
-- 每次运行的结果是一个档案目录（默认 `runs/<任务名>`），`result.json` 是给程序读的摘要。
+- 每次运行的结果是一个档案目录（默认 `runs/<任务名>`），`result.json` 是给程序读的摘要，`run.log` 是这次运行的全量日志。
 
 ### 环境要求
 
@@ -161,7 +161,8 @@ cd build && ctest --output-on-failure
 ```
 include/SimpleSLAM/   # 公共头文件
   旧栈： core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
-  新栈： comm/（通信运行时）、framework/（框架契约与资源）
+  新栈： logging/（日志：成员 log_、来源与等级、后台落盘）
+         comm/（通信运行时）、framework/（框架契约与资源）
          algo/（可替换的步骤：扫描滤波、配准地图）
          plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
          modules/（模块层：把插件接到总线与资源上）
