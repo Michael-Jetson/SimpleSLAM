@@ -11,12 +11,13 @@
 /// 输出不多于输入；可选列（强度、逐点时间、线号）跟着保留下来的点一起走。
 
 #include <SimpleSLAM/framework/sensor_data.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <string_view>
 
 namespace simpleslam::algo {
 
-class ScanFilter {
+class ScanFilter : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "ScanFilter";
 

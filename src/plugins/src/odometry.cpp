@@ -3,6 +3,7 @@
 
 #include <SimpleSLAM/plugins/odometry.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -47,7 +48,12 @@ FrameOutcome OdometryBase::process(const SensorPacket& packet, const fw::FrameCo
         }
     }
 
+    // 算法本体的耗时是逐帧的度量（墙钟）；抛出的那一帧不记
+    const auto started = std::chrono::steady_clock::now();
     TrackResult tracked = track(packet);
+    const std::chrono::duration<double, std::milli> elapsed =
+        std::chrono::steady_clock::now() - started;
+    log_.metric("track.duration", elapsed.count(), "ms");
     if (!tracked.state_usable) {
         // 算法自己说状态不能再用：这一帧的位姿不可信，不发布，交给恢复协议
         outcome.disposition = FrameDisposition::kStateUnusable;

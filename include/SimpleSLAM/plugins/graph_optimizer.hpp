@@ -15,6 +15,7 @@
 /// 真源怎么存与求解器面对什么形状分开，因此换存储不必改算法。
 
 #include <SimpleSLAM/framework/pose_graph.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <cstdint>
 #include <string>
@@ -24,7 +25,7 @@ namespace simpleslam::plugin {
 
 namespace fw = simpleslam::fw;
 
-class GraphOptimizerBase {
+class GraphOptimizerBase : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "GraphOptimizerBase";
 

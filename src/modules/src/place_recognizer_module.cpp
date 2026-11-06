@@ -6,6 +6,7 @@
 namespace simpleslam::modules {
 
 void PlaceRecognizerModule::onInit() {
+    logging::adopt(*algorithm_, log_, "plugin", algorithm_->name());
     loop_pub_ = advertise(topics::kLoopConstraint);
     reloc_pub_ = advertise(topics::kRelocationResult);
     subscribe(topics::kKeyframe, 0, &PlaceRecognizerModule::onKeyframe);
@@ -25,6 +26,10 @@ void PlaceRecognizerModule::catchUpKeyframes() {
         algorithm_->insert(*frame);
         ++indexed_;
         consumed_sequence_ = frame->sequence;
+        log_.setFrame({.sequence = consumed_sequence_,
+                       .data_time_ns = 0,
+                       .session = resources_->session.value,
+                       .parameter_revision = 0});
 
         for (auto& constraint : algorithm_->detectLoops(*frame)) {
             constraint.id = fw::ConstraintId{++loops_};
@@ -47,18 +52,7 @@ void PlaceRecognizerModule::onRelocationRequest(const fw::RelocationRequest& req
     auto result = algorithm_->relocalize(*frame->packet, request);
     result.session = resources_->session;
     reloc_pub_.publish(result);
-    report(result.success ? "place_recognizer.reloc_ok" : "place_recognizer.reloc_failed");
-}
-
-void PlaceRecognizerModule::report(const char* key) {
-    if (diagnostics_ == nullptr) return;
-    fw::DiagnosticRecord record;
-    record.header.module = name();
-    record.header.session = resources_->session;
-    record.header.frame_sequence = consumed_sequence_;
-    record.level = fw::DiagnosticClass::kControl;
-    record.payload = fw::EventRecord{key, ""};
-    diagnostics_->submit(record);
+    log_.event(result.success ? "place_recognizer.reloc_ok" : "place_recognizer.reloc_failed");
 }
 
 }  // namespace simpleslam::modules

@@ -58,7 +58,7 @@ Runtime::Runtime(RuntimeOptions options) {
         sink->report(where, what);
     };
     core_ = std::make_shared<RuntimeCore>(std::move(clock), std::move(reporter), options.backlog_warn,
-                                          options.on_exception);
+                                          options.on_exception, options.log_router);
     core_->hub()->setStopHook([this] { requestStop(); });
     core_->hub()->setScheduleSeed(options.schedule_seed);
     core_->setParamBroadcast([this](const ParamSnapshotPtr& snapshot) {

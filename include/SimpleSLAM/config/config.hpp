@@ -128,12 +128,22 @@ struct EvaluationSection {
     std::string baselines;
 };
 
+/// 日志的等级。只决定记下哪些、显示哪些，不影响结果，不进任务哈希。
+struct LogOutputs {
+    std::string console = "info";  ///< 终端显示的最低等级
+    std::string file = "debug";    ///< 档案里 run.log 记录的最低等级
+    /// 按来源单独设，终端与 run.log 都照它：每条写成 `<来源的键>=<等级>`，键与配置路径
+    /// 同一种写法，按段前缀匹配，最长的生效。如 `odometry.plugin.map=debug`。
+    std::vector<std::string> levels;
+};
+
 struct OutputsSection {
     /// 任务档案目录。空表示 runs/<task.name>。
     std::string dir;
     /// 是否录制原始数据流（录到档案里）。
     bool record = false;
     bool record_diagnostics = true;
+    LogOutputs log;
 };
 
 /// 一个任务：系统、数据、运行方式与目的、评测、产出。
@@ -222,6 +232,11 @@ void visitConfig(Config& c, Visitor&& visit) {
     visit("outputs.record", c.outputs.record, "是否录制原始数据流", Tunable::kNo);
     visit("outputs.record_diagnostics", c.outputs.record_diagnostics, "是否同时录制诊断流",
           Tunable::kNo);
+    visit("outputs.log.console", c.outputs.log.console,
+          "终端显示的最低等级：debug / info / warn / error", Tunable::kNo);
+    visit("outputs.log.file", c.outputs.log.file, "run.log 记录的最低等级", Tunable::kNo);
+    visit("outputs.log.levels", c.outputs.log.levels,
+          "按来源设等级：<来源的键>=<等级>，如 odometry.plugin.map=debug", Tunable::kNo);
 }
 
 }  // namespace simpleslam::config

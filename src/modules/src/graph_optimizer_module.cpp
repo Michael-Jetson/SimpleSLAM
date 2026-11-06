@@ -12,12 +12,10 @@ namespace simpleslam::modules {
 
 GraphOptimizerModule::GraphOptimizerModule(std::unique_ptr<plugin::GraphOptimizerBase> algorithm,
                                            SlamResources& resources,
-                                           fw::DiagnosticSink* diagnostics,
                                            OdometryEdgePolicy edge_policy)
     : algorithm_(std::move(algorithm)),
       resources_(&resources),
       graph_writer_(resources.graph.acquireWriteToken()),
-      diagnostics_(diagnostics),
       edge_policy_(edge_policy) {}
 
 std::size_t GraphOptimizerModule::unsolvedRequiredConstraints() const {
@@ -30,6 +28,7 @@ std::size_t GraphOptimizerModule::unsolvedRequiredConstraints() const {
 }
 
 void GraphOptimizerModule::onInit() {
+    logging::adopt(*algorithm_, log_, "plugin", algorithm_->name());
     correction_pub_ = advertise(topics::kCorrection, comm::PublishOptions{.latch = true});
     // 标定版本不在这里定：它来自第一个节点建立时实际用的那一份
     graph_writer_.modify([&](fw::PoseGraphData& graph) {
@@ -73,6 +72,10 @@ bool GraphOptimizerModule::catchUpKeyframes() {
     });
     last_frame_ = std::move(last_frame);
     consumed_sequence_ = consumed;
+    log_.setFrame({.sequence = consumed_sequence_,
+                   .data_time_ns = 0,
+                   .session = resources_->session.value,
+                   .parameter_revision = 0});
     return true;
 }
 
@@ -148,11 +151,11 @@ void GraphOptimizerModule::onLoop(const fw::LoopConstraint& constraint) {
     catchUpKeyframes();
     if (!commitConstraint(constraint)) {
         ++rejected_;
-        submit("graph.constraint_rejected");
+        log_.event("graph.constraint_rejected");
         return;
     }
     ++committed_;
-    submit("graph.constraint_committed");
+    log_.event("graph.constraint_committed");
     optimizeAndPublish();
 }
 
@@ -184,7 +187,7 @@ bool GraphOptimizerModule::commitConstraint(const fw::LoopConstraint& constraint
 void GraphOptimizerModule::optimizeAndPublish() {
     if (resources_->graph.snapshot()->calibration_mixed) {
         ++skipped_mixed_;
-        submit("graph.calibration_mixed");
+        log_.event("graph.calibration_mixed");
         return;
     }
     const auto before = resources_->graph.version();
@@ -205,13 +208,13 @@ void GraphOptimizerModule::optimizeAndPublish() {
     } catch (const std::exception&) {
         // 草稿失败不提交：真源停在上一版，约束的提交结论不受影响
         ++failed_solutions_;
-        submit("graph.optimizer_exception");
+        log_.event("graph.optimizer_exception");
         return;
     }
 
     if (!report.usable()) {
         ++failed_solutions_;
-        submit(statusKey(report.status));
+        log_.event(statusKey(report.status));
         return;
     }
     last_solved_edges_ = solved_edges;  // 这次成功的解包含了这之前的全部边
@@ -220,7 +223,7 @@ void GraphOptimizerModule::optimizeAndPublish() {
     event.time = last_frame_ ? last_frame_->time : fw::Timestamp{0};
     event.solution = std::move(solution);
     correction_pub_.publish(event);
-    submit(statusKey(report.status));
+    log_.event(statusKey(report.status));
 }
 
 const char* GraphOptimizerModule::statusKey(plugin::GraphOptimizerBase::Status status) noexcept {
@@ -238,17 +241,6 @@ double GraphOptimizerModule::paramOr(const std::string& name, double fallback) c
     const auto& snapshot = paramSnapshot();
     if (!snapshot) return fallback;
     return snapshot->get<double>(name).value_or(fallback);
-}
-
-void GraphOptimizerModule::submit(const char* key) {
-    if (diagnostics_ == nullptr) return;
-    fw::DiagnosticRecord record;
-    record.header.module = name();
-    record.header.session = resources_->session;
-    record.header.frame_sequence = consumed_sequence_;
-    record.level = fw::DiagnosticClass::kControl;
-    record.payload = fw::EventRecord{key, ""};
-    diagnostics_->submit(record);
 }
 
 }  // namespace simpleslam::modules

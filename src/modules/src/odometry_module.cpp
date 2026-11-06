@@ -11,14 +11,15 @@
 namespace simpleslam::modules {
 
 OdometryModule::OdometryModule(std::unique_ptr<plugin::OdometryBase> algorithm,
-                               SlamResources& resources, fw::DiagnosticSink* diagnostics)
+                               SlamResources& resources)
     : algorithm_(std::move(algorithm)),
       resources_(&resources),
       keyframe_writer_(resources.keyframes.acquireWriteToken()),
-      state_writer_(resources.state.acquireWriteToken()),
-      diagnostics_(diagnostics) {}
+      state_writer_(resources.state.acquireWriteToken()) {}
 
 void OdometryModule::onInit() {
+    // 不经槽、手工构造的算法在这里接到本模块的日志下面；经槽构造的已经接好了
+    logging::adopt(*algorithm_, log_, "plugin", algorithm_->name());
     algorithm_->reset(resources_->session);
     odometry_pub_ = advertise(topics::kOdometry);
     keyframe_pub_ = advertise(topics::kKeyframe);
@@ -41,20 +42,24 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
     // 这一包的终态与诊断都绑定到它的身份，不绑定到"已经跟踪了几帧"
     current_ = PacketIdentity{packet->sequence, packet->reference_time,
                               context.parameter_revision};
+    log_.setFrame({.sequence = packet->sequence,
+                   .data_time_ns = packet->reference_time.count(),
+                   .session = resources_->session.value,
+                   .parameter_revision = context.parameter_revision});
 
     ++received_;
     // 算法的状态停在哪一刻，与这一包的传播起点对一下：接不上就是一段没进这一包的输入
     if (last_state_time_ && *last_state_time_ < packet->propagation.begin) {
         context.missing_propagation = fw::TimeRange{*last_state_time_, packet->propagation.begin};
         ++propagation_gaps_;
-        report(fw::DiagnosticClass::kControl, "odometry.propagation_gap", "");
+        log_.event("odometry.propagation_gap", "");
     }
     plugin::FrameOutcome outcome;
     try {
         outcome = algorithm_->process(*packet, context);
     } catch (const plugin::OdometryContractError& e) {
         ++contract_errors_;
-        report(fw::DiagnosticClass::kControl, "odometry.contract_error", e.what());
+        log_.event("odometry.contract_error", e.what());
         if (e.stage() == plugin::ContractStage::kOutput) reinitialize();
         // 每个终态都要报进度：否则入口以为下游一直在忙
         acknowledge(*packet);
@@ -73,7 +78,7 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
             // 算法自己说状态不能再用：不论声明的恢复协议是什么，都只能重新初始化
             ++failed_;
             ++state_losses_;
-            report(fw::DiagnosticClass::kControl, "odometry.state_unusable", "");
+            log_.event("odometry.state_unusable", "");
             reinitialize();
             acknowledge(*packet);
             return;
@@ -84,8 +89,7 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
             } else {
                 ++rejected_for_gap_;
             }
-            report(fw::DiagnosticClass::kControl, "odometry.support_gap",
-                   plugin::toString(outcome.disposition));
+            log_.event("odometry.support_gap", plugin::toString(outcome.disposition));
             acknowledge(*packet);
             return;
     }
@@ -121,10 +125,10 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
         lost.time = result.time;
         lost.last_good_T_odom_body = result.T_odom_body;
         lost_pub_.publish(lost);
-        report(fw::DiagnosticClass::kControl, "odometry.tracking_lost", "");
+        log_.event("odometry.tracking_lost", "");
     }
 
-    report(fw::DiagnosticClass::kMetric, "odometry.inliers", static_cast<double>(result.inliers));
+    log_.metric("odometry.inliers", static_cast<double>(result.inliers));
 
     acknowledge(*packet);
 }
@@ -135,7 +139,7 @@ void OdometryModule::acknowledge(const fw::SensorPacket& packet) {
 
 void OdometryModule::failFrame(const fw::SensorPacket& packet, const char* what) {
     ++failed_;
-    report(fw::DiagnosticClass::kControl, "odometry.frame_failed", what);
+    log_.event("odometry.frame_failed", what);
     if (algorithm_->failureRecovery() == plugin::FailureRecovery::kReinitialize) {
         reinitialize();
     }
@@ -151,13 +155,13 @@ void OdometryModule::reinitialize() {
     try {
         algorithm_->reinitialize();
     } catch (const std::exception& e) {
-        report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", e.what());
+        log_.event("odometry.reinitialize_failed", e.what());
         return;  // 基类保留不可用状态；本包仍须报告进度
     } catch (...) {
-        report(fw::DiagnosticClass::kControl, "odometry.reinitialize_failed", "复位抛出未知异常");
+        log_.event("odometry.reinitialize_failed", "复位抛出未知异常");
         return;
     }
-    report(fw::DiagnosticClass::kControl, "odometry.reinitialized", "");
+    log_.event("odometry.reinitialized", "");
 }
 
 fw::KeyframePtr OdometryModule::commitKeyframe(const fw::OdometryResult& result,
@@ -192,7 +196,7 @@ fw::KeyframePtr OdometryModule::commitKeyframe(const fw::OdometryResult& result,
 
 void OdometryModule::onCorrection(const fw::CorrectionEvent& event) {
     if (!event.valid()) {
-        report(fw::DiagnosticClass::kControl, "odometry.correction_empty", "");
+        log_.event("odometry.correction_empty", "");
         return;
     }
     // 身份与数据同源：都来自事件携带的那份不可变快照
@@ -201,7 +205,7 @@ void OdometryModule::onCorrection(const fw::CorrectionEvent& event) {
 
     // 身份失效（换会话、标定不兼容）的结果直接拒；版本稍旧但兼容的仍然接受
     if (!identity.compatibleWith(resources_->session, resources_->calibrationRevision())) {
-        report(fw::DiagnosticClass::kControl, "odometry.correction_rejected", "身份失效");
+        log_.event("odometry.correction_rejected", "身份失效");
         return;
     }
     if (identity.solution_revision <= handled_solution_) return;
@@ -230,40 +234,15 @@ void OdometryModule::onCorrection(const fw::CorrectionEvent& event) {
     });
     applied_solution_ = identity.solution_revision;
     handled_solution_ = identity.solution_revision;
-    report(fw::DiagnosticClass::kControl, "odometry.correction_applied", "");
+    log_.event("odometry.correction_applied", "");
 }
 
 void OdometryModule::correctionFailed(const fw::SolutionIdentity& identity, const char* what) {
     ++failed_corrections_;
     // 这份解不会再被尝试：它面对的是失败之前的里程计系
     handled_solution_ = std::max(handled_solution_, identity.solution_revision);
-    report(fw::DiagnosticClass::kControl, "odometry.correction_failed", what);
+    log_.event("odometry.correction_failed", what);
     reinitialize();
-}
-
-void OdometryModule::report(fw::DiagnosticClass level, const char* key, const char* detail) {
-    if (diagnostics_ == nullptr) return;
-    auto record = recordHeader(level);
-    record.payload = fw::EventRecord{key, detail};
-    diagnostics_->submit(record);
-}
-
-void OdometryModule::report(fw::DiagnosticClass level, const char* key, double value) {
-    if (diagnostics_ == nullptr) return;
-    auto record = recordHeader(level);
-    record.payload = fw::MetricRecord{key, value, ""};
-    diagnostics_->submit(record);
-}
-
-fw::DiagnosticRecord OdometryModule::recordHeader(fw::DiagnosticClass level) const {
-    fw::DiagnosticRecord record;
-    record.header.module = name();
-    record.header.frame_sequence = current_.sequence;
-    record.header.data_time = current_.time;
-    record.header.parameter_revision = current_.parameter_revision;
-    record.header.session = resources_->session;
-    record.level = level;
-    return record;
 }
 
 }  // namespace simpleslam::modules

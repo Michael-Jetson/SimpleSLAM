@@ -15,6 +15,7 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace simpleslam;
@@ -234,6 +235,35 @@ TEST_CASE("端到端：数据源到位姿图，校正回流到里程计", "[modu
     CHECK(state->T_world_odom.translation().norm() > 1e-9);
     auto& algorithm = dynamic_cast<ConstantVelocityOdometry&>(odometry.algorithm());
     CHECK(algorithm.sawCorrection());
+}
+
+TEST_CASE("日志：模块与插件的事件、度量进诊断，带模块名、来源与帧", "[modules][system][log]") {
+    modules::SlamSystem system(offlineOptions());
+    system.setSource(std::make_unique<SyntheticSource>(6));
+    system.setOdometry<ConstantVelocityOdometry>();
+    system.init();
+    system.runOffline();
+
+    std::size_t durations = 0;
+    std::size_t inliers = 0;
+    std::uint64_t last_frame = 0;
+    for (const auto& record : system.diagnostics().records()) {
+        const auto* metric = std::get_if<fw::MetricRecord>(&record.payload);
+        if (metric == nullptr) continue;
+        CHECK(record.header.module == "/slam/odometry");
+        if (metric->key == "track.duration") {  // 骨架自动记的算法耗时，来源是插件
+            ++durations;
+            CHECK(record.header.source == "odometry.plugin");
+            CHECK(metric->unit == "ms");
+            CHECK(record.header.frame_sequence > last_frame);  // 帧序号是模块设上的
+            last_frame = record.header.frame_sequence;
+        } else if (metric->key == "odometry.inliers") {  // 模块自己的度量，来源是模块
+            ++inliers;
+            CHECK(record.header.source == "odometry");
+        }
+    }
+    CHECK(durations == 6);
+    CHECK(inliers == 6);
 }
 
 TEST_CASE("离线双跑逐位一致", "[modules][system]") {

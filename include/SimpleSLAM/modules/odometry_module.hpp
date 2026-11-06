@@ -26,7 +26,6 @@
 /// 准备失败时校正不生效，并按同一协议恢复——不会有帧顶着新校正的身份输出，而地图还是旧的。
 
 #include <SimpleSLAM/comm/module.hpp>
-#include <SimpleSLAM/framework/diagnostics.hpp>
 #include <SimpleSLAM/plugins/odometry.hpp>
 #include <SimpleSLAM/framework/solution.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
@@ -40,8 +39,7 @@ namespace simpleslam::modules {
 class OdometryModule final : public comm::Module {
 public:
     /// 取走关键帧库与当前状态的写令牌：这两份资源从此只有本模块能写。
-    OdometryModule(std::unique_ptr<plugin::OdometryBase> algorithm, SlamResources& resources,
-                   fw::DiagnosticSink* diagnostics = nullptr);
+    OdometryModule(std::unique_ptr<plugin::OdometryBase> algorithm, SlamResources& resources);
 
     [[nodiscard]] plugin::OdometryBase& algorithm() noexcept { return *algorithm_; }
     /// 跟踪了的帧数（含按缺支撑降级的）。
@@ -95,12 +93,6 @@ private:
     void onCorrection(const fw::CorrectionEvent& event);
     void correctionFailed(const fw::SolutionIdentity& identity, const char* what);
 
-    void report(fw::DiagnosticClass level, const char* key, const char* detail);
-    void report(fw::DiagnosticClass level, const char* key, double value);
-    /// 记录绑定到当前这一包；校正生效、重新初始化这类不针对某一包的记录，绑定的是
-    /// 最近处理的那一包，表示发生在它之后的帧边界。
-    [[nodiscard]] fw::DiagnosticRecord recordHeader(fw::DiagnosticClass level) const;
-
     /// 正在处理（或最近处理）的那一包。
     struct PacketIdentity {
         std::uint64_t sequence = 0;
@@ -112,7 +104,6 @@ private:
     SlamResources* resources_;
     fw::WriteToken<fw::KeyframeStoreData> keyframe_writer_;
     fw::WriteToken<fw::CurrentStateData> state_writer_;
-    fw::DiagnosticSink* diagnostics_;
 
     comm::Publisher<fw::OdometryResult> odometry_pub_;
     comm::Publisher<fw::KeyframeEvent> keyframe_pub_;

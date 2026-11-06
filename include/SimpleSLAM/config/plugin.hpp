@@ -14,11 +14,14 @@
 ///   `visitConfig`：`v("名字", 字段, "说明")`。还原时据此严格校验：未知参数、
 ///   类型不符一律报错，没写的字段取成员默认值；字段是 `Slot<J>` 时递归还原。
 /// - 还原时试构造一次实现，所以实现构造函数里的取值检查也在装配时报错，
-///   不会拖到运行中。
+///   不会拖到运行中。试构造期间的日志不记。
+/// - 槽构造实现时把日志来源交给它（`logging/construction.hpp`）：顶层实现挂在模块下面，
+///   子槽挂在父插件下面，所以实现在构造函数里就能用 `log_`。
 ///
-/// 只依赖标准库：算法库包含它，不会连带依赖通信层。
+/// 只依赖标准库与日志库：算法库包含它，不会连带依赖通信层。
 
 #include <SimpleSLAM/config/error.hpp>
+#include <SimpleSLAM/logging/construction.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -93,6 +96,10 @@ class Catalogs;
 template <class I>
 class Catalog;
 
+namespace detail {
+class StampVisitor;
+}  // namespace detail
+
 /// 一个槽：选定的实现、它还原后的完整参数，以及构造它的办法。
 ///
 /// 值类型，可以拷贝；`make()` 每次构造一个新实例，实例的寿命归调用者。
@@ -113,28 +120,52 @@ public:
     /// 还原后的完整参数，已补齐默认值。规范化导出与配置哈希用它。
     [[nodiscard]] const PluginSpec& resolved() const noexcept { return spec_; }
 
+    /// 构造一个实例。它的日志来源挂在父插件下面：父插件交来的槽记着父插件是谁，构造函数里
+    /// 新建的挂在正在构造的那个对象下面；都不是就是没接上的，交给模块之后由模块接上。
     [[nodiscard]] std::unique_ptr<I> make() const {
-        if (!maker_) {
-            throw ConfigError("槽是空的：还没有选实现（" + std::string(I::kInterfaceName) + "）");
-        }
-        return (*maker_)();
+        return build(parent_ != nullptr ? parent_ : logging::detail::ConstructionScope::current(),
+                     field_);
+    }
+
+    /// 构造一个顶层实例，日志来源挂在 `parent`（模块或执行器）下面；`field` 是它在按来源设
+    /// 等级的键里的那一段，与配置里的字段名相同（如 `plugin`）。
+    [[nodiscard]] std::unique_ptr<I> make(const logging::Logger& parent,
+                                          std::string_view field) const {
+        return build(logging::detail::nodeOf(parent), field);
     }
 
 private:
-    using Maker = std::function<std::unique_ptr<I>()>;
+    using Maker = std::function<std::unique_ptr<I>(const logging::detail::NodePtr&)>;
 
     template <class>
     friend class Catalog;
+    friend class detail::StampVisitor;
 
-    static Slot make(PluginSpec spec, Maker maker) {
+    static Slot create(PluginSpec spec, Maker maker) {
         Slot s;
         s.spec_ = std::move(spec);
         s.maker_ = std::make_shared<const Maker>(std::move(maker));
         return s;
     }
 
+    [[nodiscard]] std::unique_ptr<I> build(const logging::detail::NodePtr& parent,
+                                           std::string_view field) const {
+        if (!maker_) {
+            throw ConfigError("槽是空的：还没有选实现（" + std::string(I::kInterfaceName) + "）");
+        }
+        return (*maker_)(logging::detail::componentNode(parent, field, spec_.type));
+    }
+
+    /// 父插件构造之前，它配置里的子槽记下父插件是谁、自己叫什么。
+    void stamp(logging::detail::NodePtr parent, std::string_view field) {
+        parent_ = std::move(parent);
+        field_ = std::string(field);
+    }
+
     PluginSpec spec_;
     std::shared_ptr<const Maker> maker_;
+    logging::detail::NodePtr parent_;
+    std::string field_;
 };
 
 namespace detail {
@@ -342,6 +373,33 @@ PluginSpec exportSpec(Config config, std::string type) {
     return spec;
 }
 
+/// 给 Config 里的子槽记上父插件：父插件什么时候用它们构造子插件，来源都挂在父插件下面。
+class StampVisitor {
+public:
+    explicit StampVisitor(logging::detail::NodePtr parent) : parent_(std::move(parent)) {}
+
+    template <class F>
+    void operator()(std::string_view name, F& field, std::string_view /*doc*/) {
+        if constexpr (IsSlot<F>::value) field.stamp(parent_, name);
+    }
+
+private:
+    logging::detail::NodePtr parent_;
+};
+
+/// 构造实现的办法：子槽先记下父插件，再在构造期上下文里构造，基类从里面取自己的来源。
+template <class I, class T>
+auto makerFor(typename T::Config config) {
+    return [config = std::move(config)](
+               const logging::detail::NodePtr& node) -> std::unique_ptr<I> {
+        typename T::Config stamped = config;
+        StampVisitor stamp(node);
+        stamped.visit(stamp);
+        const logging::detail::ConstructionScope scope(node);
+        return std::make_unique<T>(stamped);
+    };
+}
+
 }  // namespace detail
 
 /// 目录的类型无关部分：报错提示与 schema 导出要跨接口遍历。
@@ -468,7 +526,7 @@ template <class T>
     requires PluginImplementation<T, I>
 Slot<I> Slot<I>::of(typename T::Config config) {
     PluginSpec spec = detail::exportSpec(config, std::string(T::kTypeName));
-    return make(std::move(spec), [config] { return std::make_unique<T>(config); });
+    return create(std::move(spec), detail::makerFor<I, T>(std::move(config)));
 }
 
 template <class F>
@@ -513,6 +571,7 @@ void Catalog<I>::add(const std::string& name) {
         config.visit(visitor);
         visitor.finish();
         try {
+            const logging::detail::MutedConstruction muted;  // 试构造只为提前报错，日志不记
             T probe(config);  // 构造函数里的取值检查在这里就报，而不是运行中
             (void)probe;
         } catch (const ConfigError&) {
@@ -521,7 +580,7 @@ void Catalog<I>::add(const std::string& name) {
             throw ConfigError(path + "（" + name + "）：" + e.what());
         }
         PluginSpec resolved = detail::exportSpec(config, name);
-        return Slot<I>::make(std::move(resolved), [config] { return std::make_unique<T>(config); });
+        return Slot<I>::create(std::move(resolved), detail::makerFor<I, T>(config));
     };
     entry.schema = [name] {
         PluginSchema schema{

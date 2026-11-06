@@ -7,7 +7,8 @@
 /// 手写 LIO 的骨架。把 `track()` 里的内容换掉就是你的算法。
 ///
 /// 这个文件里没有一行是"框架要求你写的样板"——订阅、真源、校正回流、诊断、
-/// 评测、录制都在外面。你要做的只有三件事：
+/// 评测、录制都在外面。要写日志就调成员 `log_`：`log_.info(…)`、`log_.warn(…)`。
+/// 你要做的只有三件事：
 ///
 ///   1. 用包里的 IMU 区间做预积分 / 状态传播；
 ///   2. 用传播出来的帧内轨迹把点云去畸变（`fw::deskew` 已经把外参进出各一次的
@@ -89,6 +90,9 @@ protected:
             angular_velocity += Vec3d(sample.gyro[0], sample.gyro[1], sample.gyro[2]);
         }
         if (!imu.empty()) angular_velocity /= static_cast<double>(imu.size());
+        // 写日志用成员 log_：来源（/slam/odometry › my_lio）、帧序号与时刻是自动的。
+        // debug 默认只进档案里的 run.log，终端上不显示
+        log_.debug("{} 个 IMU 样本，帧间隔 {:.3f} s", imu.size(), dt);
 
         // TODO(你): 这里换成真正的 IMU 预积分 / ESIKF 预测。
         SE3d::Tangent twist;

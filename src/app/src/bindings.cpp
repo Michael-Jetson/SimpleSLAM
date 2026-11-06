@@ -11,6 +11,7 @@
 #include <format>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace simpleslam::app {
@@ -49,6 +50,17 @@ modules::SlamSystemOptions toSystemOptions(const config::TaskConfig& config) {
     options.spin_budget = static_cast<std::size_t>(config.system.runtime.spin_budget);
     options.online_max_in_flight =
         static_cast<std::size_t>(config.system.runtime.online_max_in_flight);
+    // 等级在配置校验时已经核对过：这里只换算
+    const auto level = [](std::string_view text) {
+        return logging::parseLevel(text).value_or(logging::Level::kInfo);
+    };
+    options.log.console = level(config.outputs.log.console);
+    options.log.file = level(config.outputs.log.file);
+    for (const auto& rule : config.outputs.log.levels) {
+        const auto equals = rule.find('=');
+        options.log.rules.push_back(
+            {.key = rule.substr(0, equals), .level = level(rule.substr(equals + 1))});
+    }
     return options;
 }
 

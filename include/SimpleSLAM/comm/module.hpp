@@ -25,7 +25,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <source_location>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -210,13 +209,9 @@ protected:
 
     // ── 日志 ──
 
-    void logDebug(std::string_view text) { core_->log(LogLevel::kDebug, name_, text); }
-    void logInfo(std::string_view text) { core_->log(LogLevel::kInfo, name_, text); }
-    void logWarn(std::string_view text) { core_->log(LogLevel::kWarn, name_, text); }
-    void logError(std::string_view text) { core_->log(LogLevel::kError, name_, text); }
-    /// 同一个调用点每隔 period 最多输出一次。时间跟运行时的时钟走，离线时是数据时间。
-    void logEvery(Duration period, LogLevel level, std::string_view text,
-                  std::source_location where = std::source_location::current());
+    /// 本模块的日志对象：`log_.info(…)`、`log_.warn(…)`、`log_.every(1s).warn(…)`。
+    /// 接进运行时就带上模块名；本模块的插件挂在它下面，处理每条输入之前设上当前帧。
+    logging::Logger log_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
 
     // ── 异常 ──
 
@@ -272,7 +267,6 @@ private:
     bool started_ = false;
     ThreadOptions thread_options_;
     std::map<std::string, std::string> remaps_;
-    std::map<std::uint64_t, Time> log_marks_;
 
     std::vector<std::shared_ptr<Subscription>> subscriptions_;
     std::vector<TimerHandle> timers_;

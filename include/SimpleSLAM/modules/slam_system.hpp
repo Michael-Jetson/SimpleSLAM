@@ -10,6 +10,9 @@
 /// 资源的写者归属、话题接线、校正回流、诊断汇聚都在这里一次性接好。
 
 #include <SimpleSLAM/comm/runtime.hpp>
+#include <SimpleSLAM/framework/diagnostics.hpp>
+#include <SimpleSLAM/logging/construction.hpp>
+#include <SimpleSLAM/logging/router.hpp>
 #include <SimpleSLAM/modules/graph_optimizer_module.hpp>
 #include <SimpleSLAM/modules/odometry_module.hpp>
 #include <SimpleSLAM/modules/place_recognizer_module.hpp>
@@ -129,7 +132,16 @@ struct SlamSystemOptions {
     std::size_t online_max_in_flight = 200;
     /// 是否收集轨迹。评测、导出、回归都要它，代价是每帧一个位姿。
     bool collect_trajectory = true;
+    /// 日志写到哪里、各来源的等级。日志组件是系统自带的，后台线程随系统建、随系统收尾。
+    logging::LogOptions log{};
 };
+
+/// 系统里各模块的名字，也是它们日志来源的根。
+inline constexpr std::string_view kSensorIoModule = "/slam/sensor_io";
+inline constexpr std::string_view kOdometryModule = "/slam/odometry";
+inline constexpr std::string_view kPlaceRecognizerModule = "/slam/place_recognizer";
+inline constexpr std::string_view kGraphOptimizerModule = "/slam/graph_optimizer";
+inline constexpr std::string_view kTrajectoryModule = "/slam/trajectory";
 
 /// 装配、离线步进、结果查询与终结由控制线程串行调用；在线模块通过 requestStop()
 /// 请求停止，控制线程待 spin() 返回后完成 shutdown()/cancel()。
@@ -149,12 +161,15 @@ public:
     }
     [[nodiscard]] comm::Runtime& runtime() noexcept { return runtime_; }
     [[nodiscard]] fw::MemoryDiagnosticSink& diagnostics() noexcept { return diagnostics_; }
+    /// 系统自带的日志组件：一个后台线程落盘，算法线程不等 I/O。模块的日志对象是它的根；
+    /// 入口经它接上 run.log，也用 `root(kOdometryModule)` 把经槽构造的插件挂到模块下面。
+    [[nodiscard]] logging::Router& logRouter() noexcept { return *log_router_; }
 
     /// 接上数据来源。来源声明过能力时，这里就核对它与打包策略是否相容——
     /// 例如策略要求 IMU 而来源没有惯性流，装配期就失败，而不是跑起来之后每包都缺支撑。
     SensorIoModule& setSource(std::unique_ptr<fw::ISensorSource> source,
                               fw::PacketizerPolicy policy = {},
-                              const std::string& name = "/slam/sensor_io");
+                              const std::string& name = std::string(kSensorIoModule));
 
     /// 数据来源声明的能力。进评测报告与实验产物。
     [[nodiscard]] const fw::SourceDescriptor& sourceDescriptor() const noexcept {
@@ -169,20 +184,23 @@ public:
     GraphOptimizerModule& setGraphOptimizer(std::unique_ptr<plugin::GraphOptimizerBase> algorithm,
                                             OdometryEdgePolicy edge_policy = {});
 
-    /// 按类型构造算法，Args 转发给它的构造函数。手工装配（不经 YAML）时用。
+    /// 按类型构造算法，Args 转发给它的构造函数。手工装配（不经 YAML）时用；算法的日志
+    /// 来源同样挂在模块下面，构造函数里新建的子插件挂在它下面。
     template <class Algorithm, class... Args>
     OdometryModule& setOdometry(Args&&... args) {
-        return setOdometry(std::make_unique<Algorithm>(std::forward<Args>(args)...));
+        return setOdometry(build<Algorithm>(kOdometryModule, std::forward<Args>(args)...));
     }
 
     template <class Algorithm, class... Args>
     PlaceRecognizerModule& setPlaceRecognizer(Args&&... args) {
-        return setPlaceRecognizer(std::make_unique<Algorithm>(std::forward<Args>(args)...));
+        return setPlaceRecognizer(
+            build<Algorithm>(kPlaceRecognizerModule, std::forward<Args>(args)...));
     }
 
     template <class Algorithm, class... Args>
     GraphOptimizerModule& setGraphOptimizer(Args&&... args) {
-        return setGraphOptimizer(std::make_unique<Algorithm>(std::forward<Args>(args)...));
+        return setGraphOptimizer(
+            build<Algorithm>(kGraphOptimizerModule, std::forward<Args>(args)...));
     }
 
     /// 装配完成。来源要求的外参此刻必须已知——"来源有哪些标定"与"最终装配齐没齐"
@@ -267,11 +285,31 @@ public:
 private:
     void finalize(comm::ShutdownMode mode, std::string reason);
 
+    template <class Algorithm, class... Args>
+    std::unique_ptr<Algorithm> build(std::string_view module, Args&&... args) {
+        std::string_view type = "plugin";
+        if constexpr (requires { Algorithm::kTypeName; }) type = Algorithm::kTypeName;
+        const logging::detail::ConstructionScope scope(logging::detail::componentNode(
+            logging::detail::nodeOf(log_router_->root(module)), "plugin", type));
+        return std::make_unique<Algorithm>(std::forward<Args>(args)...);
+    }
+
     /// 按账汇总各模块的终态证据与产物进度。模块在 Runtime 析构之前一直存活，
     /// 关闭之后读它们同样安全。
     [[nodiscard]] RunOutcome collectOutcome() const;
 
+    /// 系统析构的最后一步收起日志组件：模块与插件都已析构，它们的日志都已写完。
+    struct RouterCloser {
+        explicit RouterCloser(std::shared_ptr<logging::Router> owned) : router(std::move(owned)) {}
+        ~RouterCloser() { router->close(); }
+        RouterCloser(const RouterCloser&) = delete;
+        RouterCloser& operator=(const RouterCloser&) = delete;
+        std::shared_ptr<logging::Router> router;
+    };
+
     Options options_;
+    std::shared_ptr<logging::Router> log_router_;
+    RouterCloser router_closer_;
     SlamResources resources_;
     fw::MemoryDiagnosticSink diagnostics_;
     comm::Runtime runtime_;

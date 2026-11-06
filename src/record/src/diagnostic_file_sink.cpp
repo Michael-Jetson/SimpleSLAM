@@ -103,7 +103,8 @@ void FileDiagnosticSink::submit(const fw::DiagnosticRecord& record) noexcept {
         }
         // 两个时刻都写：数据时刻用来与轨迹对齐，处理时刻用来看延迟
         file_ << R"({"level":")" << levelName(record.level) << R"(","module":")"
-              << escape(record.header.module) << R"(","data_time":)"
+              << escape(record.header.module) << R"(","source":")"
+              << escape(record.header.source) << R"(","data_time":)"
               << record.header.data_time.count() << R"(,"process_time":)"
               << record.header.process_time.count() << R"(,"seq":)"
               << record.header.frame_sequence << R"(,"session":)" << record.header.session.value

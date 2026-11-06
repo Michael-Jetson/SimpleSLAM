@@ -38,6 +38,7 @@
 #include <SimpleSLAM/framework/odometry_result.hpp>
 #include <SimpleSLAM/framework/pose_graph.hpp>
 #include <SimpleSLAM/framework/sensor_packet.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -161,7 +162,7 @@ struct FrameOutcome {
     OdometryResult result;
 };
 
-class OdometryBase {
+class OdometryBase : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "OdometryBase";
 

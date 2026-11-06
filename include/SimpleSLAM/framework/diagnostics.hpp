@@ -38,6 +38,9 @@ struct DiagnosticHeader {
     Timestamp data_time{0};     ///< 数据时刻（传感器时间）
     Timestamp process_time{0};  ///< 处理时刻（运行时间）
     std::string module;         ///< 产生记录的模块名
+    /// 产生记录的来源，按来源设等级的那种键：模块自己是 `odometry`，它的插件是
+    /// `odometry.plugin`、`odometry.plugin.map`。不经日志对象产生的记录留空。
+    std::string source;
     /// 记录所关于的那条输入的序号，按产生记录的模块自己的输入计：里程计是数据包的
     /// 发布序号，后端与位置识别是关键帧库序号。不针对某条输入的记录填最近处理的那一条。
     std::uint64_t frame_sequence = 0;

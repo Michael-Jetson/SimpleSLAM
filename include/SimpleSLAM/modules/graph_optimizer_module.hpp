@@ -17,7 +17,6 @@
 
 #include <SimpleSLAM/comm/module.hpp>
 #include <SimpleSLAM/plugins/graph_optimizer.hpp>
-#include <SimpleSLAM/framework/diagnostics.hpp>
 #include <SimpleSLAM/framework/solution.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
@@ -39,7 +38,7 @@ class GraphOptimizerModule final : public comm::Module {
 public:
     /// 取走位姿图的写令牌：位姿图从此只有本模块能写。
     GraphOptimizerModule(std::unique_ptr<plugin::GraphOptimizerBase> algorithm,
-                         SlamResources& resources, fw::DiagnosticSink* diagnostics = nullptr,
+                         SlamResources& resources,
                          OdometryEdgePolicy edge_policy = {});
 
     [[nodiscard]] plugin::GraphOptimizerBase& algorithm() noexcept { return *algorithm_; }
@@ -102,12 +101,10 @@ private:
     /// 从本模块当前的参数快照取值，没有就用构造时给的默认值。参数是本模块的私有名
     /// （`~odometry_translation_weight`），模块不必知道配置的布局。
     [[nodiscard]] double paramOr(const std::string& name, double fallback) const;
-    void submit(const char* key);
 
     std::unique_ptr<plugin::GraphOptimizerBase> algorithm_;
     SlamResources* resources_;
     fw::WriteToken<fw::PoseGraphData> graph_writer_;
-    fw::DiagnosticSink* diagnostics_;
     OdometryEdgePolicy edge_policy_;
     comm::Publisher<fw::CorrectionEvent> correction_pub_;
     fw::KeyframePtr last_frame_;

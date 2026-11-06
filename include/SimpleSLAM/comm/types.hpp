@@ -81,11 +81,6 @@ public:
 
 [[nodiscard]] inline bool inRuntimeThread() noexcept { return detail::runtimeDepthTls() > 0; }
 
-enum class LogLevel : std::uint8_t { kDebug, kInfo, kWarn, kError };
-
-/// 日志出口。没有设置时写 stderr。
-using LogSink = std::function<void(LogLevel, std::string_view module, std::int64_t stamp_ns, std::string_view text)>;
-
 /// 模块的线程属性。只影响在线运行，设置失败只上报，不影响运行。
 struct ThreadOptions {
     int nice = 0;           ///< 正数让出 CPU；负数需要权限

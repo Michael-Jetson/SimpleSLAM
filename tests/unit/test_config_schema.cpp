@@ -170,6 +170,24 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.spin_budget=0"}), ConfigError);
 }
 
+TEST_CASE("日志的等级：写法不对在运行之前报错，不进任务哈希", "[config][log]") {
+    CHECK_THROWS_AS(load("outputs:\n  log:\n    console: verbose\n"), ConfigError);
+    CHECK_THROWS_AS(load("outputs:\n  log:\n    file: INFO\n"), ConfigError);
+    for (const char* rule : {"odometry", "odometry=loud", "=debug", "odometry..map=debug",
+                             "odometry.map.=debug", "odo metry=debug"}) {
+        CHECK_THROWS_AS(load(std::string("outputs:\n  log:\n    levels: [\"") + rule + "\"]\n"),
+                        ConfigError);
+    }
+    CHECK_THROWS_AS(
+        load("outputs:\n  log:\n    levels: [\"odometry=debug\", \"odometry=warn\"]\n"),
+        ConfigError);
+    const auto config =
+        load("outputs:\n  log:\n    console: warn\n    levels: [\"odometry.plugin.map=debug\"]\n");
+    CHECK(config.outputs.log.console == "warn");
+    CHECK(config.outputs.log.levels == std::vector<std::string>{"odometry.plugin.map=debug"});
+    CHECK(configHash(config) == configHash(load("")));  // 日志不影响结果
+}
+
 TEST_CASE("覆盖项按 schema 的类型解析", "[config]") {
     TaskConfig config;
     applyOverrides(config, {"system.runtime.spin_budget=40", "task.mode=online",

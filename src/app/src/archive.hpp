@@ -67,6 +67,8 @@ struct RunCounts {
     std::size_t packets = 0;
     std::uint64_t frames = 0;
     std::uint64_t keyframes = 0;
+    /// 日志缓冲满了丢掉的 debug、info 条数。
+    std::uint64_t log_dropped = 0;
 };
 
 /// 写 `<dir>/outcome.yaml`：运行结局的三项、规模、原因与说明。

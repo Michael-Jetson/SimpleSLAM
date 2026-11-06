@@ -40,7 +40,8 @@ public:
 protected:
     plugin::TrackResult track(const fw::SensorPacket& /*packet*/) override {
         plugin::TrackResult result;
-        result.suggest_keyframe = frames_++ % config_.keyframe_every == 0;
+        result.suggest_keyframe = frames_ % config_.keyframe_every == 0;
+        log_.debug("原地不动，第 {} 帧", frames_++);
         return result;
     }
 

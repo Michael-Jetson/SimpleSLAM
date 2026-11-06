@@ -107,10 +107,10 @@ void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome,
     writeText(dir / "outcome.yaml",
               std::format("complete: {}\ninput_complete: {}\nprocessing_complete: {}\n"
                           "output_complete: {}\npackets: {}\nframes: {}\nkeyframes: {}\n"
-                          "reasons: {}\nnotes: {}\n",
+                          "log_dropped: {}\nreasons: {}\nnotes: {}\n",
                           flag(outcome.complete()), flag(outcome.inputComplete()),
                           flag(outcome.processingComplete()), flag(outcome.outputComplete()),
-                          counts.packets, counts.frames, counts.keyframes,
+                          counts.packets, counts.frames, counts.keyframes, counts.log_dropped,
                           quotedList(outcome.reasons()), quotedList(outcome.notes())));
 }
 

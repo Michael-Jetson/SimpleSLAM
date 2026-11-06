@@ -8,6 +8,11 @@ include(Catch)
 # ── 新栈测试（通信运行时 / 框架契约 / 模块层）────────────────────────────────
 # 这些目标只依赖 Eigen + manif + Catch2，因此在依赖不全的环境里
 # 用 -DSIMPLESLAM_NEW_STACK_ONLY=ON 也能全部构建并运行。
+# 日志：来源树、日志组件与后台线程；槽怎么把来源交给实现（config/plugin.hpp 是头文件）
+add_executable(test_logging unit/test_logging.cpp)
+target_link_libraries(test_logging PRIVATE simpleslam_logging Catch2::Catch2WithMain)
+catch_discover_tests(test_logging)
+
 foreach(t comm_names comm_topic comm_params comm_service comm_runtime comm_lifecycle comm_module)
     add_executable(test_${t} unit/test_${t}.cpp)
     target_link_libraries(test_${t} PRIVATE simpleslam_comm Catch2::Catch2WithMain)

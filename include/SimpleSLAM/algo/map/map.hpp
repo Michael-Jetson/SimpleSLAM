@@ -20,6 +20,7 @@
 
 #include <SimpleSLAM/core/types/geometry.hpp>
 #include <SimpleSLAM/framework/sensor_data.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <Eigen/Core>
 
@@ -60,7 +61,7 @@ struct LinearizedSystem {
 };
 
 /// 只读查询。定位模式只把这个接口交给算法，"不能写先验地图"由构造保证。
-class MapQuery {
+class MapQuery : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "MapQuery";
 

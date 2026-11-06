@@ -74,14 +74,46 @@ std::vector<std::string> RunOutcome::notes() const {
     return out;
 }
 
+namespace {
+
+/// 日志对象记下的事件与度量，按诊断的格式交给汇聚点：事件是控制类，度量是指标类。
+fw::DiagnosticRecord toDiagnostic(const logging::Event& event) {
+    fw::DiagnosticRecord record;
+    record.header.module = event.module;
+    record.header.source = event.source;
+    record.header.process_time = fw::Timestamp{event.time_ns};
+    if (event.frame) {
+        record.header.frame_sequence = event.frame->sequence;
+        record.header.data_time = fw::Timestamp{event.frame->data_time_ns};
+        record.header.session = fw::SessionId{event.frame->session};
+        record.header.parameter_revision = event.frame->parameter_revision;
+    }
+    if (event.kind == logging::Event::Kind::kMetric) {
+        record.level = fw::DiagnosticClass::kMetric;
+        record.payload = fw::MetricRecord{event.key, event.value, event.unit};
+    } else {
+        record.level = fw::DiagnosticClass::kControl;
+        record.payload = fw::EventRecord{event.key, event.detail};
+    }
+    return record;
+}
+
+}  // namespace
+
 SlamSystem::SlamSystem(Options options)
-    : options_(options), runtime_(comm::RuntimeOptions{.offline = options.offline}) {
+    : options_(options),
+      log_router_(logging::Router::create(options.log)),
+      router_closer_(log_router_),
+      runtime_(comm::RuntimeOptions{.offline = options.offline, .log_router = log_router_}) {
+    log_router_->setEventSink(
+        [this](const logging::Event& event) { diagnostics_.submit(toDiagnostic(event)); });
     runtime_.setErrorReporter([this](std::string_view where, std::string_view what) {
         fw::DiagnosticRecord record;
         record.header.module = std::string(where);
         record.level = fw::DiagnosticClass::kObservation;
         record.payload = fw::EventRecord{"comm.error", std::string(what)};
         diagnostics_.submit(record);
+        log_router_->root(where).error("{}", what);
     });
 }
 
@@ -99,22 +131,22 @@ SensorIoModule& SlamSystem::setSource(std::unique_ptr<fw::ISensorSource> source,
 }
 
 OdometryModule& SlamSystem::setOdometry(std::unique_ptr<plugin::OdometryBase> algorithm) {
-    odometry_ = &runtime_.addModule<OdometryModule>("/slam/odometry", std::move(algorithm),
-                                                    resources_, &diagnostics_);
+    odometry_ = &runtime_.addModule<OdometryModule>(std::string(kOdometryModule),
+                                                    std::move(algorithm), resources_);
     return *odometry_;
 }
 
 PlaceRecognizerModule& SlamSystem::setPlaceRecognizer(
     std::unique_ptr<plugin::PlaceRecognizerBase> algorithm) {
     place_recognizer_ = &runtime_.addModule<PlaceRecognizerModule>(
-        "/slam/place_recognizer", std::move(algorithm), resources_, &diagnostics_);
+        std::string(kPlaceRecognizerModule), std::move(algorithm), resources_);
     return *place_recognizer_;
 }
 
 GraphOptimizerModule& SlamSystem::setGraphOptimizer(
     std::unique_ptr<plugin::GraphOptimizerBase> algorithm, OdometryEdgePolicy edge_policy) {
     graph_optimizer_ = &runtime_.addModule<GraphOptimizerModule>(
-        "/slam/graph_optimizer", std::move(algorithm), resources_, &diagnostics_, edge_policy);
+        std::string(kGraphOptimizerModule), std::move(algorithm), resources_, edge_policy);
     return *graph_optimizer_;
 }
 
@@ -135,7 +167,8 @@ void SlamSystem::init() {
         sensor_io_->packetizer().setMaxInFlight(options_.online_max_in_flight);
     }
     if (options_.collect_trajectory && trajectory_ == nullptr) {
-        trajectory_ = &runtime_.addModule<TrajectoryModule>("/slam/trajectory", resources_);
+        trajectory_ = &runtime_.addModule<TrajectoryModule>(std::string(kTrajectoryModule),
+                                                            resources_);
     }
     runtime_.init();
 }

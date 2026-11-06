@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -608,6 +609,38 @@ void validateConfig(const TaskConfig& config) {
     requireDuration("evaluation.max_interpolation_gap_s", evaluation.max_interpolation_gap_s);
     requireNonNegative("evaluation.rpe_delta_m", evaluation.rpe_delta_m);
     requireDuration("evaluation.rpe_delta_s", evaluation.rpe_delta_s);
+
+    const auto& log = config.outputs.log;
+    requireOneOf("outputs.log.console", log.console, {"debug", "info", "warn", "error"});
+    requireOneOf("outputs.log.file", log.file, {"debug", "info", "warn", "error"});
+    // 键与配置路径同一种写法：段由字母、数字与 _ 组成，用 . 隔开
+    const auto valid_key = [](std::string_view key) {
+        if (key.empty() || key.front() == '.' || key.back() == '.') return false;
+        bool previous_dot = false;
+        for (const char c : key) {
+            const bool dot = c == '.';
+            if (dot && previous_dot) return false;
+            if (!dot && !(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_')) {
+                return false;
+            }
+            previous_dot = dot;
+        }
+        return true;
+    };
+    std::set<std::string> keys;
+    for (const auto& rule : log.levels) {
+        const auto equals = rule.find('=');
+        const std::string key = rule.substr(0, equals);
+        if (equals == std::string::npos || !valid_key(key)) {
+            throw ConfigError("outputs.log.levels 的每条要写成 <来源的键>=<等级>，如 "
+                              "odometry.plugin.map=debug，得到 " + rule);
+        }
+        requireOneOf("outputs.log.levels 里 " + key + " 的等级", rule.substr(equals + 1),
+                     {"debug", "info", "warn", "error"});
+        if (!keys.insert(key).second) {
+            throw ConfigError("outputs.log.levels 里 " + key + " 写了两次");
+        }
+    }
 }
 
 LoadedTask loadTaskString(const std::string& text, const std::string& origin,

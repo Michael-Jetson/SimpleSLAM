@@ -268,8 +268,8 @@ TEST_CASE("从任务文件跑到任务档案：结果、出处、结局、报告
     INFO(fixture.out.str() << fixture.err.str());
 
     for (const char* name : {"task.yaml", "identity.yaml", "outcome.yaml", "report.yaml",
-                             "result.json", "trajectory/odometry.tum", "trajectory/online.tum",
-                             "trajectory/keyframes.tum"}) {
+                             "result.json", "run.log", "trajectory/odometry.tum",
+                             "trajectory/online.tum", "trajectory/keyframes.tum"}) {
         CHECK(fs::exists(fixture.archive / name));
     }
     CHECK(readText(fixture.archive / "outcome.yaml").find("complete: true") != std::string::npos);
@@ -419,6 +419,30 @@ TEST_CASE("多序列：读取器不支持、与 data.source.sequence 同时写�
     std::vector<char*> argv;
     for (auto& word : words) argv.push_back(word.data());
     CHECK(app::run(static_cast<int>(argv.size()), argv.data(), catalogs()) == 2);
+}
+
+TEST_CASE("日志：档案里一份全量的 run.log，终端照旧，按来源设的等级管得住插件",
+          "[app][task][log]") {
+    Fixture fixture;
+    REQUIRE(fixture.run() == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    const std::string log = readText(fixture.archive / "run.log");
+    // 执行器的输出都在里面；终端上只印正文
+    CHECK(log.find("I 0.000 - task  任务: ") != std::string::npos);
+    CHECK(fixture.out.str().starts_with("任务: "));
+    CHECK(log.find("task  档案: ") != std::string::npos);
+    // 插件的调试日志只进文件，带帧序号、完整来源与代码位置
+    CHECK(log.find("#1 /slam/odometry › still (still_odometry.hpp:") != std::string::npos);
+    CHECK(log.find("原地不动，第 0 帧") != std::string::npos);
+    CHECK(fixture.out.str().find("原地不动") == std::string::npos);
+    CHECK(readText(fixture.archive / "outcome.yaml").find("log_dropped: 0") != std::string::npos);
+
+    // 按来源调等级：里程计只记 warn 以上
+    REQUIRE(fixture.run({"outputs.log.levels=[odometry=warn]"}, /*overwrite=*/true) == 0);
+    CHECK(readText(fixture.archive / "run.log").find("原地不动") == std::string::npos);
+    // 写错了在运行之前报错
+    CHECK(fixture.run({"outputs.log.levels=[odometry]"}, /*overwrite=*/true) == 1);
+    CHECK(fixture.err.str().find("outputs.log.levels") != std::string::npos);
 }
 
 TEST_CASE("在线：按数据时间的节奏回放，跑完写档案与队列统计", "[app][task][online]") {

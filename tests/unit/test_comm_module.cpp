@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +32,20 @@ struct Msg {
 struct Other {
     int id = 0;
 };
+
+/// 同步的日志组件：记录交给 `tap`，终端上什么都不印。
+static std::shared_ptr<simpleslam::logging::Router> capturingRouter(
+    std::function<void(const simpleslam::logging::Record&)> tap,
+    std::vector<simpleslam::logging::LevelRule> rules = {}) {
+    static std::ostringstream quiet;
+    simpleslam::logging::LogOptions options;
+    options.asynchronous = false;
+    options.out = &quiet;
+    options.err = &quiet;
+    options.rules = std::move(rules);
+    options.tap = std::move(tap);
+    return simpleslam::logging::Router::create(std::move(options));
+}
 
 static cm::RuntimeOptions offline() {
     cm::RuntimeOptions o;
@@ -406,8 +422,8 @@ public:
     void on(const Msg& m) {
         pub_.publish(m);
         ++count;
-        logInfo("转发一条");
-        logEvery(1s, cm::LogLevel::kWarn, "每秒一次");
+        log_.info("转发一条");
+        log_.every(1s).warn("每秒一次");
     }
 
 private:
@@ -600,11 +616,12 @@ TEST_CASE("接线校验、重映射、onStart、线程属性、一次性定时�
     }
     // 一次性定时器、onStart、日志（离线）
     {
-        cm::Runtime rt(offline());
         std::vector<std::string> logs;
-        rt.setLogSink([&](cm::LogLevel, std::string_view module, std::int64_t, std::string_view text) {
-            logs.push_back(std::string(module) + ":" + std::string(text));
+        auto options = offline();
+        options.log_router = capturingRouter([&](const simpleslam::logging::Record& r) {
+            logs.push_back(r.source + ":" + r.text);
         });
+        cm::Runtime rt(options);
         auto& filter = rt.addModule<Filter>("/slam/filter");
         auto in = rt.inputPublisher<Msg>("/slam/in");
         rt.init();
@@ -623,17 +640,27 @@ TEST_CASE("接线校验、重映射、onStart、线程属性、一次性定时�
         }
         CHECK(info == 3);
         CHECK(every == 1);  // 虚拟时钟没走够 1 秒
-        rt.setLogLevel(cm::LogLevel::kError);
-        in.publish(Msg{9});
-        rt.waitIdle();
-        CHECK(logs.size() == 4);
         CHECK(rt.statsTable().find("/slam/filter") != std::string::npos);
         CHECK(rt.graph().find("digraph") != std::string::npos);
     }
+    // 日志按来源设等级：关掉的等级不记
+    {
+        std::vector<std::string> logs;
+        auto options = offline();
+        options.log_router = capturingRouter(
+            [&](const simpleslam::logging::Record& r) { logs.push_back(r.text); },
+            {{.key = "filter", .level = simpleslam::logging::Level::kError}});
+        cm::Runtime rt(options);
+        rt.addModule<Filter>("/slam/filter");
+        auto in = rt.inputPublisher<Msg>("/slam/in");
+        rt.init();
+        in.publish(Msg{9});
+        rt.waitIdle();
+        CHECK(logs.empty());
+    }
     // 线程属性（在线）
     {
-        cm::Runtime rt;
-        rt.setLogSink([](cm::LogLevel, std::string_view, std::int64_t, std::string_view) {});
+        cm::Runtime rt(cm::RuntimeOptions{.log_router = capturingRouter([](const auto&) {})});
         auto& filter = rt.addModule<Filter>("/slam/filter");
         filter.setThreadOptions({5, {0}});
         auto in = rt.inputPublisher<Msg>("/slam/in");

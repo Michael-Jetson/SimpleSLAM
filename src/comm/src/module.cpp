@@ -15,6 +15,7 @@ void Module::attach(RuntimeCore& core, std::string resolved_name) {
     name_ = std::move(resolved_name);
     mailbox_ = std::make_shared<Mailbox>(name_, core.hub(), core.reporter(), core.defaultPolicy());
     params_ = core.params().snapshot();
+    log_ = core.logRouter().root(name_);
 }
 
 void Module::initialize() {
@@ -52,15 +53,6 @@ std::string Module::resolveEndpoint(std::string_view name) const {
     std::string resolved = resolveName(name, name_);
     if (auto it = remaps_.find(resolved); it != remaps_.end()) return it->second;
     return resolved;
-}
-
-void Module::logEvery(Duration period, LogLevel level, std::string_view text, std::source_location where) {
-    const auto key = std::hash<std::string_view>{}(where.file_name()) ^ (static_cast<std::uint64_t>(where.line()) << 1);
-    const Time now = core_->clock().now();
-    auto [it, first] = log_marks_.try_emplace(key, now);
-    if (!first && now - it->second < period) return;
-    it->second = now;
-    core_->log(level, name_, text);
 }
 
 void Module::finish() {

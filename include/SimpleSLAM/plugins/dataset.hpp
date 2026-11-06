@@ -14,6 +14,7 @@
 #include <SimpleSLAM/framework/sensor_source.hpp>
 #include <SimpleSLAM/framework/time.hpp>
 #include <SimpleSLAM/framework/trajectory.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -49,7 +50,7 @@ struct DatasetRequest {
     fw::Duration post_support{0};
 };
 
-class DatasetReader {
+class DatasetReader : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "DatasetReader";
 

@@ -13,6 +13,7 @@
 #include <SimpleSLAM/comm/service.hpp>
 #include <SimpleSLAM/comm/topic.hpp>
 #include <SimpleSLAM/comm/types.hpp>
+#include <SimpleSLAM/logging/router.hpp>
 
 #include <atomic>
 #include <functional>
@@ -27,8 +28,9 @@ namespace simpleslam::comm {
 
 class RuntimeCore : public std::enable_shared_from_this<RuntimeCore> {
 public:
+    /// `log_router` 为空时自建一个同步的日志组件：写终端，不另开线程。
     RuntimeCore(std::unique_ptr<IClock> clock, ErrorReporter reporter, std::size_t backlog_warn,
-                ExceptionPolicy default_policy);
+                ExceptionPolicy default_policy, std::shared_ptr<logging::Router> log_router = {});
 
     [[nodiscard]] const std::shared_ptr<Hub>& hub() const noexcept { return hub_; }
     [[nodiscard]] IClock& clock() noexcept { return *clock_; }
@@ -59,24 +61,21 @@ public:
                                                  std::type_index response);
 
     [[nodiscard]] std::size_t publisherCount(const std::string& resolved) const;
-    void setLogSink(LogSink sink);
-    void setLogLevel(LogLevel level) noexcept { log_level_.store(level, std::memory_order_relaxed); }
-    void log(LogLevel level, std::string_view module, std::string_view text);
+    /// 日志组件：模块的日志对象是它的根，时刻取本运行时的时钟。
+    [[nodiscard]] logging::Router& logRouter() noexcept { return *log_router_; }
 
     /// 只发无订、只订无发的名字。
     [[nodiscard]] std::vector<std::string> danglingTopics() const;
 
 private:
     std::shared_ptr<Hub> hub_ = std::make_shared<Hub>();
-    std::unique_ptr<IClock> clock_;
+    std::shared_ptr<IClock> clock_;
     ParameterStore params_;
     ErrorReporter reporter_;
     std::size_t backlog_warn_;
     ExceptionPolicy default_policy_;
 
-    std::mutex log_mutex_;
-    LogSink log_sink_;
-    std::atomic<LogLevel> log_level_{LogLevel::kInfo};
+    std::shared_ptr<logging::Router> log_router_;
 
     std::mutex param_mutex_;
     std::function<void(const ParamSnapshotPtr&)> param_broadcast_;

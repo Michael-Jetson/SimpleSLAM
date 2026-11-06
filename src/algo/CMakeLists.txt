@@ -1,7 +1,7 @@
 # 算法库：可替换步骤的接口与内置实现（扫描滤波、配准地图）。
 #
-# 纯算法，只依赖框架的数据类型（点云、位姿），不依赖通信与模块。
-# 内置实现的目录登记（algo/builtins.hpp）只用到 config/plugin.hpp 这个纯头文件，
+# 纯算法，只依赖框架的数据类型（点云、位姿）与日志，不依赖通信与模块。
+# 内置实现的目录登记（algo/builtins.hpp）只用到 config/plugin.hpp 这个头文件（加上日志库），
 # 所以这里不链接配置库。
 add_library(simpleslam_algo STATIC
     src/scan_filter.cpp

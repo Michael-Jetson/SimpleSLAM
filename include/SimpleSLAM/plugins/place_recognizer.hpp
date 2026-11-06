@@ -15,6 +15,7 @@
 #include <SimpleSLAM/framework/events.hpp>
 #include <SimpleSLAM/framework/keyframe.hpp>
 #include <SimpleSLAM/framework/sensor_packet.hpp>
+#include <SimpleSLAM/logging/logger.hpp>
 
 #include <string>
 #include <string_view>
@@ -24,7 +25,7 @@ namespace simpleslam::plugin {
 
 namespace fw = simpleslam::fw;
 
-class PlaceRecognizerBase {
+class PlaceRecognizerBase : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "PlaceRecognizerBase";
 

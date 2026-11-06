@@ -11,7 +11,6 @@
 
 #include <SimpleSLAM/comm/module.hpp>
 #include <SimpleSLAM/plugins/place_recognizer.hpp>
-#include <SimpleSLAM/framework/diagnostics.hpp>
 #include <SimpleSLAM/modules/topics.hpp>
 
 #include <cstdint>
@@ -23,8 +22,8 @@ namespace simpleslam::modules {
 class PlaceRecognizerModule final : public comm::Module {
 public:
     PlaceRecognizerModule(std::unique_ptr<plugin::PlaceRecognizerBase> algorithm,
-                          SlamResources& resources, fw::DiagnosticSink* diagnostics = nullptr)
-        : algorithm_(std::move(algorithm)), resources_(&resources), diagnostics_(diagnostics) {}
+                          SlamResources& resources)
+        : algorithm_(std::move(algorithm)), resources_(&resources) {}
 
     [[nodiscard]] plugin::PlaceRecognizerBase& algorithm() noexcept { return *algorithm_; }
     [[nodiscard]] std::uint64_t indexedFrames() const noexcept { return indexed_; }
@@ -40,11 +39,9 @@ private:
     /// 按游标从关键帧库补读：建索引、找回环、发约束。
     void catchUpKeyframes();
     void onRelocationRequest(const fw::RelocationRequest& request);
-    void report(const char* key);
 
     std::unique_ptr<plugin::PlaceRecognizerBase> algorithm_;
     SlamResources* resources_;
-    fw::DiagnosticSink* diagnostics_;
     comm::Publisher<fw::LoopConstraint> loop_pub_;
     comm::Publisher<fw::RelocationResult> reloc_pub_;
     std::uint64_t consumed_sequence_ = 0;

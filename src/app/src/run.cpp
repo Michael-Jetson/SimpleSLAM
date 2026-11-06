@@ -2,6 +2,7 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 #include "archive.hpp"
+#include "line_stream.hpp"
 #include "sequences.hpp"
 
 #include <SimpleSLAM/app/bindings.hpp>
@@ -50,7 +51,7 @@ constexpr const char* kArchiveFiles[] = {"task.yaml",       "identity.yaml",
                                          "outcome.yaml",    "report.yaml",
                                          "recording.ssrec", "recording.ssrec.diagnostics.jsonl",
                                          "queues.txt",      "result.json",
-                                         "trajectory"};
+                                         "run.log",         "trajectory"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -77,7 +78,7 @@ void checkCombination(const config::TaskConfig& c) {
 
 /// 打开数据：外部标定取代自带的标定，外部真值取代自带的真值。
 /// 实验要有真值：在运行之前就核对，而不是跑完才发现无从评测。
-plugin::Dataset openData(const ResolvedTask& task) {
+plugin::Dataset openData(const ResolvedTask& task, const logging::Logger& runner) {
     const auto& c = task.config;
     const bool external_calibration = !c.data.calibration.empty();
     const plugin::DatasetRequest request{
@@ -85,7 +86,7 @@ plugin::Dataset openData(const ResolvedTask& task) {
         .post_support = c.system.packetizer.source_policy == "config"
                             ? secondsToDuration(c.system.packetizer.post_support_s)
                             : fw::Duration{0}};
-    plugin::Dataset dataset = task.data.make()->open(request);
+    plugin::Dataset dataset = task.data.make(runner, "data.source")->open(request);
     if (external_calibration) {
         dataset.calibration = config::loadCalibrationFile(c.data.calibration);
     }
@@ -395,29 +396,37 @@ int usage(std::ostream& err) {
     return 2;
 }
 
-}  // namespace
-
-int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::ostream& out,
-            std::ostream& err) {
+/// 单个序列的任务。日志组件是系统自带的，所以系统最先建：读数据阶段的日志也进档案。
+/// 档案目录建好之前 run.log 还没接上，那之前的记录先存着；任务在动档案目录之前出错时，
+/// 它们只出现在终端上。
+int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream& out,
+              std::ostream& err) {
+    const auto& c = task.config;
+    modules::SlamSystemOptions system_options = toSystemOptions(c);
+    system_options.log.out = &out;
+    system_options.log.err = &err;
+    system_options.log.defer_file = true;
+    modules::SlamSystem system(system_options);
+    const logging::Logger runner = system.logRouter().root("task", "", true);
+    LineStream info(runner, logging::Level::kInfo);
+    LineStream warn(runner, logging::Level::kWarn);
     try {
-        const ResolvedTask task = loadTask(options.task_file, options.overrides, catalogs);
-        const auto& c = task.config;
-        out << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
-            << "  系统哈希: " << config::systemHash(c) << '\n';
+        info << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
+             << "  系统哈希: " << config::systemHash(c) << '\n';
         // 不支持的组合、占用的档案目录、没有真值的实验，都在动档案目录之前报错
         checkCombination(c);
-        if (!c.data.sequences.empty()) return runSequences(task, options, out);
         const fs::path dir = archive::directory(c);
         archive::refuseOccupied(dir, options.overwrite);
-        plugin::Dataset dataset = openData(task);
+        plugin::Dataset dataset = openData(task, runner);
         archive::prepare(dir, kArchiveFiles);
         fs::create_directories(dir / "trajectory");
+        system.logRouter().openFile(dir / "run.log");
         config::writeConfigFile((dir / "task.yaml").string(), c);
 
         RunFacts facts;
         facts.descriptor = dataset.source->descriptor();
         facts.policy = resolvePolicy(c, dataset);
-        out << "数据: " << dataset.source->name() << "  帧数: "
+        info << "数据: " << dataset.source->name() << "  帧数: "
             << (dataset.frames ? std::to_string(*dataset.frames) : std::string("未知")) << '\n'
             << "标定: " << dataset.calibration.device << "  哈希: "
             << config::calibrationHash(dataset.calibration) << '\n'
@@ -438,29 +447,32 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
                 std::make_unique<record::RecordingSource>(std::move(dataset.source), recorder);
         }
 
-        // ── 装配：管线按工作方式分 ──
-        modules::SlamSystem system(toSystemOptions(c));
-        out << "标定版本: " << system.setCalibration(dataset.calibration) << '\n';
+        // ── 装配：管线按工作方式分。经槽构造的插件挂到各自模块的日志下面 ──
+        info << "标定版本: " << system.setCalibration(dataset.calibration) << '\n';
         system.setSource(std::move(dataset.source), facts.policy.policy);
-        auto& odometry = system.setOdometry(task.odometry.make());
+        auto& router = system.logRouter();
+        auto& odometry =
+            system.setOdometry(task.odometry.make(router.root(modules::kOdometryModule), "plugin"));
         if (c.system.pipeline == "mapping") {
-            system.setPlaceRecognizer(task.place_recognizer.make());
-            system.setGraphOptimizer(task.graph_optimizer.make(),
-                                     toEdgePolicy(c.system.modules.graph_optimizer));
+            system.setPlaceRecognizer(
+                task.place_recognizer.make(router.root(modules::kPlaceRecognizerModule), "plugin"));
+            system.setGraphOptimizer(
+                task.graph_optimizer.make(router.root(modules::kGraphOptimizerModule), "plugin"),
+                toEdgePolicy(c.system.modules.graph_optimizer));
         }
         applyToParameters(c, system.runtime().params());
         system.init();
 
         // ── 驱动与终结：离线逐步跑到读完；在线一个模块一个线程，按数据时间的节奏回放 ──
         const bool online = c.task.mode == "online";
-        out << "运行方式: " << (online ? "在线，按数据时间的节奏回放" : "离线") << std::endl;
+        info << "运行方式: " << (online ? "在线，按数据时间的节奏回放" : "离线") << std::endl;
         facts.packets = online ? system.runOnline() : system.runOffline();
         system.shutdown();
         if (online) {
             // 调 online_max_in_flight 要看队列峰值：统计表打出来，也进档案
             const std::string queues = system.runtime().statsTable();
             archive::writeText(dir / "queues.txt", queues);
-            out << queues;
+            info << queues;
         }
         const auto& result = system.result();
         const auto& outcome = result.outcome;
@@ -473,7 +485,7 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
 
         if (recorder) {
             recorder->close();
-            out << "录制: " << recording.string() << '\n';
+            info << "录制: " << recording.string() << '\n';
             if (c.outputs.record_diagnostics) {
                 const std::string path = recording.string() + ".diagnostics.jsonl";
                 record::FileDiagnosticSink sink(path);
@@ -483,19 +495,27 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
                     throw std::runtime_error(
                         std::format("诊断落盘有 {} 条没写进去: {}", sink.failed(), path));
                 }
-                out << "诊断: " << path << '\n';
+                info << "诊断: " << path << '\n';
             }
         }
-        out << "跑完: " << facts.packets << " 包, " << facts.frames << " 帧, " << facts.keyframes
+        info << "跑完: " << facts.packets << " 包, " << facts.frames << " 帧, " << facts.keyframes
             << " 关键帧\n";
-        for (const auto& reason : outcome.reasons()) err << "运行不完整: " << reason << '\n';
-        for (const auto& note : outcome.notes()) out << "说明: " << note << '\n';
+        for (const auto& reason : outcome.reasons()) warn << "运行不完整: " << reason << '\n';
+        for (const auto& note : outcome.notes()) info << "说明: " << note << '\n';
 
         // ── 任务档案 ──
-        const fs::path trajectory_file = writeTrajectories(dir, result, c, out);
+        const fs::path trajectory_file = writeTrajectories(dir, result, c, info);
         writeIdentity(dir, task, facts);
-        archive::writeOutcome(dir, outcome, {facts.packets, facts.frames, facts.keyframes});
-        out << "档案: " << dir.string() << '\n';
+        // 缓冲满了丢掉的 debug、info 也是结局的一部分：写下来，不静默
+        router.flush();
+        const std::uint64_t dropped = router.dropped();
+        if (dropped > 0) warn << "日志缓冲满了，丢掉 " << dropped << " 条 debug、info\n";
+        archive::writeOutcome(dir, outcome,
+                              {.packets = facts.packets,
+                               .frames = facts.frames,
+                               .keyframes = facts.keyframes,
+                               .log_dropped = dropped});
+        info << "档案: " << dir.string() << '\n';
 
         if (c.task.purpose == "run") {
             writeResult(dir, task, outcome.complete(),
@@ -504,7 +524,25 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
             return 0;
         }
         return evaluate(task, dir, trajectory_file, dataset, result.odometry, outcome, facts,
-                        calibration, out, err);
+                        calibration, info, warn);
+    } catch (const std::exception& e) {
+        warn << "错误: " << e.what() << '\n';
+        return 1;
+    }
+}
+
+}  // namespace
+
+int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::ostream& out,
+            std::ostream& err) {
+    try {
+        const ResolvedTask task = loadTask(options.task_file, options.overrides, catalogs);
+        const auto& c = task.config;
+        if (c.data.sequences.empty()) return runSingle(task, options, out, err);
+        out << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
+            << "  系统哈希: " << config::systemHash(c) << '\n';
+        checkCombination(c);
+        return runSequences(task, options, out);
     } catch (const std::exception& e) {
         err << "错误: " << e.what() << '\n';
         return 1;

@@ -3,7 +3,7 @@
 # 两种用法：
 #   1) 作为主项目的子目录（add_subdirectory）；
 #   2) 独立配置：cmake -S src/comm -B <build>，只需要 Catch2，
-#      不需要 manif / Eigen / spdlog，用于快速迭代通信层本身。
+#      不需要 manif / Eigen / spdlog，用于快速迭代通信层本身（日志库一并编进来）。
 cmake_minimum_required(VERSION 3.20)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -22,6 +22,11 @@ set(SIMPLESLAM_COMM_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 
 find_package(Threads REQUIRED)
 
+# 模块的日志对象来自日志库；独立配置时从这里把它加进来
+if(NOT TARGET simpleslam_logging)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../logging" "${CMAKE_CURRENT_BINARY_DIR}/logging")
+endif()
+
 add_library(simpleslam_comm STATIC
     src/clock.cpp
     src/core.cpp
@@ -34,7 +39,7 @@ add_library(simpleslam_comm STATIC
     src/topic.cpp)
 target_include_directories(simpleslam_comm PUBLIC "${SIMPLESLAM_COMM_INCLUDE_DIR}")
 target_compile_features(simpleslam_comm PUBLIC cxx_std_20)
-target_link_libraries(simpleslam_comm PUBLIC Threads::Threads)
+target_link_libraries(simpleslam_comm PUBLIC simpleslam_logging Threads::Threads)
 
 if(TARGET simpleslam_compiler_options)
     target_link_libraries(simpleslam_comm PRIVATE simpleslam_compiler_options)

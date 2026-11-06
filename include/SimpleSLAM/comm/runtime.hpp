@@ -44,6 +44,8 @@ struct RuntimeOptions {
     std::size_t backlog_warn = 256;
     /// 模块没有单独设置时用的异常策略。
     ExceptionPolicy on_exception = ExceptionPolicy::kIsolate;
+    /// 日志组件。空表示自建一个同步的：写终端，不另开线程（单独用通信层时就是这样）。
+    std::shared_ptr<logging::Router> log_router{};
 };
 
 struct ModuleStats {
@@ -166,8 +168,8 @@ public:
     /// 离线确定时钟原点时用：全部模块的定时器后移 offset。
     void shiftTimers(Duration offset);
     void setErrorReporter(ErrorReporter reporter) { sink_->set(std::move(reporter)); }
-    void setLogSink(LogSink sink) { core_->setLogSink(std::move(sink)); }
-    void setLogLevel(LogLevel level) noexcept { core_->setLogLevel(level); }
+    /// 日志组件：模块的日志对象从它来。
+    [[nodiscard]] logging::Router& logRouter() noexcept { return core_->logRouter(); }
 
 private:
     std::size_t step(std::size_t budget, bool fire_timers = true);

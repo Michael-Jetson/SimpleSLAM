@@ -8,12 +8,27 @@
 
 namespace simpleslam::comm {
 
+namespace {
+
+std::shared_ptr<logging::Router> synchronousRouter() {
+    logging::LogOptions options;
+    options.asynchronous = false;  // 通信层除了模块线程不另开线程
+    return logging::Router::create(std::move(options));
+}
+
+}  // namespace
+
 RuntimeCore::RuntimeCore(std::unique_ptr<IClock> clock, ErrorReporter reporter, std::size_t backlog_warn,
-                         ExceptionPolicy default_policy)
+                         ExceptionPolicy default_policy,
+                         std::shared_ptr<logging::Router> log_router)
     : clock_(std::move(clock)),
       reporter_(std::move(reporter)),
       backlog_warn_(backlog_warn),
-      default_policy_(default_policy) {}
+      default_policy_(default_policy),
+      log_router_(log_router != nullptr ? std::move(log_router) : synchronousRouter()) {
+    // 时钟交给日志组件一份：日志组件可能比运行时活得长
+    log_router_->setClock([clock = clock_] { return clock->now().count(); });
+}
 
 std::shared_ptr<Topic> RuntimeCore::topicOf(const std::string& resolved, std::type_index type) {
     if (!isValidResolvedName(resolved)) throw WiringError("话题名非法: " + resolved);
@@ -75,28 +90,6 @@ std::size_t RuntimeCore::publisherCount(const std::string& resolved) const {
     std::lock_guard lock(mutex_);
     auto it = topics_.find(resolved);
     return it == topics_.end() ? 0U : it->second->publisherCount();
-}
-
-void RuntimeCore::setLogSink(LogSink sink) {
-    std::lock_guard lock(log_mutex_);
-    log_sink_ = std::move(sink);
-}
-
-void RuntimeCore::log(LogLevel level, std::string_view module, std::string_view text) {
-    if (level < log_level_.load(std::memory_order_relaxed)) return;
-    const std::int64_t now = clock_->now().count();
-    LogSink sink;
-    {
-        std::lock_guard lock(log_mutex_);
-        sink = log_sink_;
-    }
-    if (sink) {
-        sink(level, module, now, text);
-        return;
-    }
-    static constexpr const char* kNames[] = {"DEBUG", "INFO", "WARN", "ERROR"};
-    std::fprintf(stderr, "[%s] [%.3f] [%.*s] %.*s\n", kNames[static_cast<int>(level)], static_cast<double>(now) * 1e-9,
-                 static_cast<int>(module.size()), module.data(), static_cast<int>(text.size()), text.data());
 }
 
 std::vector<std::string> RuntimeCore::danglingTopics() const {
