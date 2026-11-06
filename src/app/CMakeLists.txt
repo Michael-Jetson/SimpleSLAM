@@ -4,6 +4,7 @@ add_library(simpleslam_app STATIC
     src/run_dir.cpp
     src/evaluation.cpp
     src/external.cpp
+    src/online_evaluation.cpp
     src/bindings.cpp
     src/catalogs.cpp
     src/run.cpp

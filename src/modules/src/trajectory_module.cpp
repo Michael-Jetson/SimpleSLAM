@@ -5,7 +5,7 @@
 
 namespace simpleslam::modules {
 
-TrajectoryModule::TrajectoryModule(SlamResources& resources) : resources_(&resources) {
+TrajectoryRecorder::TrajectoryRecorder() {
     odometry_.setFrame(fw::TrajectoryFrame::kOdom);
     odometry_.setTracked("body");
     odometry_.setName("odometry");
@@ -14,20 +14,7 @@ TrajectoryModule::TrajectoryModule(SlamResources& resources) : resources_(&resou
     online_.setName("online");
 }
 
-fw::Trajectory TrajectoryModule::keyframes() const {
-    fw::Trajectory trajectory;
-    trajectory.setFrame(fw::TrajectoryFrame::kWorld);
-    trajectory.setTracked("body");
-    trajectory.setName("keyframes");
-    const auto graph = resources_->graph.snapshot();
-    graph->nodes.forEach(
-        [&](const fw::PoseGraphNode& node) { trajectory.push(node.time, node.T_world_body); });
-    return trajectory;
-}
-
-void TrajectoryModule::onInit() { subscribe(topics::kOdometry, 0, &TrajectoryModule::onOdometry); }
-
-void TrajectoryModule::onOdometry(const fw::OdometryResult& result) {
+void TrajectoryRecorder::add(const fw::OdometryResult& result) {
     ++received_;
     if (result.status == fw::TrackingStatus::kInitializing) return;
     // 时间必须严格递增；来源重启或时钟回跳时宁可跳过并记下来，不悄悄接受
@@ -41,6 +28,25 @@ void TrajectoryModule::onOdometry(const fw::OdometryResult& result) {
         ++corrected_;
         last_correction_ = result.applied_correction;
     }
+}
+
+fw::Trajectory keyframeTrajectory(const SlamResources& resources) {
+    fw::Trajectory trajectory;
+    trajectory.setFrame(fw::TrajectoryFrame::kWorld);
+    trajectory.setTracked("body");
+    trajectory.setName("keyframes");
+    const auto graph = resources.graph.snapshot();
+    graph->nodes.forEach(
+        [&](const fw::PoseGraphNode& node) { trajectory.push(node.time, node.T_world_body); });
+    return trajectory;
+}
+
+TrajectoryModule::TrajectoryModule(SlamResources& resources) : resources_(&resources) {}
+
+void TrajectoryModule::onInit() {
+    subscribe(topics::kOdometry, 0, [this](const fw::OdometryResult& result) {
+        recorder_.add(result);
+    });
 }
 
 }  // namespace simpleslam::modules

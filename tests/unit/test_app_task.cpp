@@ -2,9 +2,10 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 /// 任务执行器：插件节点由目录还原并补齐默认值、参数桥接到模块的私有名、配置命令、
-/// 在一份 KITTI 夹具上从任务文件跑到任务记录、录制与回放、单独评测、多序列、
-/// 运行之前拒绝还不支持的组合。
+/// 在一份 KITTI 夹具上从任务文件跑到任务记录、度量与事件、单独评测、在线评测、多序列与
+/// 按权重的汇总、运行之前拒绝还不支持的组合。
 
+#include "count_evaluator.hpp"
 #include "still_odometry.hpp"
 
 #include <SimpleSLAM/app/bindings.hpp>
@@ -136,6 +137,7 @@ config::Catalogs catalogs() {
     result.of<plugin::OdometryBase>().add<test::StillOdometry>();
     result.of<eval::EvaluatorBase>().add<FinalDrift>();
     result.of<eval::EvaluatorBase>().add<Misnamed>();
+    result.of<eval::EvaluatorBase>().add<test::CountEvaluator>();
     return result;
 }
 
@@ -725,4 +727,108 @@ TEST_CASE("在线：按数据时间的节奏回放，跑完写任务记录与队
     // 离线不写队列统计：没有并发，统计没有意义
     REQUIRE(fixture.run({"task.mode=offline"}, /*overwrite=*/true) == 0);
     CHECK_FALSE(fs::exists(fixture.run_dir / "queues.txt"));
+}
+
+namespace {
+
+/// metrics.csv 里来源与键都对得上的那些行。
+std::vector<std::string> metricRows(const fs::path& run_dir, const std::string& source,
+                                    const std::string& key) {
+    std::vector<std::string> rows;
+    std::istringstream text(readText(run_dir / "metrics.csv"));
+    for (std::string line; std::getline(text, line);) {
+        if (line.find("," + source + "," + key + ",") != std::string::npos) rows.push_back(line);
+    }
+    return rows;
+}
+
+}  // namespace
+
+TEST_CASE("度量与事件进任务记录：评测函数读它们，旧的任务记录没有就明确报错",
+          "[app][task][evaluate]") {
+    Fixture fixture;
+    REQUIRE(fixture.run() == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    CHECK(readText(fixture.run_dir / "metrics.csv")
+              .starts_with("frame,data_time_ns,source,key,value,unit\n"));
+    CHECK(fs::exists(fixture.run_dir / "events.jsonl"));
+    // 里程计插件的固定骨架每帧记一条耗时：帧序号是包序号，时刻是那一包的数据时刻
+    const auto durations = metricRows(fixture.run_dir, "odometry.plugin", "track.duration");
+    REQUIRE(durations.size() == 10);
+    CHECK(durations.front().starts_with("1,0,odometry.plugin,track.duration,"));
+    CHECK(durations.front().ends_with(",ms"));
+
+    // 写它的软件还不记逐帧度量的任务记录（复制一份、去掉 metrics.csv）：ate 照样能评，
+    // timing 明确报错
+    const fs::path old = fixture.dir.path() / "old_run";
+    fs::copy(fixture.run_dir, old, fs::copy_options::recursive);
+    fs::remove(old / "metrics.csv");
+    std::ostringstream out;
+    std::ostringstream err;
+    CHECK(app::evaluateTask(old.string(), {}, catalogs(), out, err) == 0);
+    CHECK(app::evaluateTask(old.string(), {"evaluation.evaluators.t.type=timing"}, catalogs(),
+                            out, err)
+          == 1);
+    CHECK(err.str().find("没有 metrics.csv") != std::string::npos);
+
+    // 单独评测换成 timing：只读度量，不要真值
+    out.str("");
+    err.str("");
+    REQUIRE(app::evaluateTask(fixture.run_dir.string(), {"evaluation.evaluators.t.type=timing"},
+                              catalogs(), out, err)
+            == 0);
+    INFO(out.str() << err.str());
+    const std::string result = readText(fixture.run_dir / "result.json");
+    CHECK(result.find("\"duration.p95\": {\"value\": ") != std::string::npos);
+    CHECK(result.find("\"inputs\": [\"metrics.csv\"]") != std::string::npos);
+    CHECK(fs::exists(fixture.run_dir / "evaluation" / "t.samples.csv"));
+    CHECK(out.str().find("T_mean") != std::string::npos);
+}
+
+TEST_CASE("在线评测：跑着按数据时间每隔一段评一次，记成度量、终端一行，不进结论",
+          "[app][task][online-evaluation]") {
+    Fixture fixture;
+    const std::vector<std::string> online = {"evaluation.online.evaluators=[\"ate\"]",
+                                             "evaluation.online.interval_s=0.3"};
+    REQUIRE(fixture.run(online) == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    CHECK(fixture.out.str().find("在线评测: ate，每 0.3 秒（数据时间）") != std::string::npos);
+    CHECK(fixture.out.str().find("在线评测 ate（ate）: ") != std::string::npos);
+    // 结果记成度量：来源是在线评测模块，键是 <评测函数的名字>.<标量名>
+    const auto rows = metricRows(fixture.run_dir, "evaluation", "ate.translation.rmse");
+    REQUIRE_FALSE(rows.empty());
+    CHECK(rows.front().ends_with(",m"));
+    // 结论只认跑完后对任务记录的评测
+    const std::string result = readText(fixture.run_dir / "result.json");
+    CHECK(result.find("\"ate\": {") != std::string::npos);
+    CHECK(result.find("evaluation.") == std::string::npos);
+
+    // 离线按数据时间触发：再跑一遍，在线评测的度量逐字节相同
+    REQUIRE(fixture.run(online, /*overwrite=*/true) == 0);
+    CHECK(metricRows(fixture.run_dir, "evaluation", "ate.translation.rmse") == rows);
+
+    // 在线评的必须是上面列出的评测函数；间隔必须为正。都在运行之前报错
+    CHECK(fixture.run({"evaluation.online.evaluators=[\"rpe\"]"}, true) == 1);
+    CHECK(fixture.err.str().find("不在 evaluation.evaluators 里") != std::string::npos);
+    CHECK(fixture.run({"evaluation.online.evaluators=[\"ate\"]",
+                       "evaluation.online.interval_s=0"},
+                      true)
+          == 1);
+    CHECK(fixture.err.str().find("evaluation.online.interval_s 必须为正") != std::string::npos);
+}
+
+TEST_CASE("多序列：给了权重的量按权重平均，平均的权重是权重之和", "[app][task][sequences]") {
+    Fixture fixture("evaluation:\n  evaluators:\n    count: {type: count}\n");
+    makeOdometryDataset(fixture.dir.path() / "kitti", 6, "01");  // 序列 00 有 10 帧
+    REQUIRE(fixture.runSequences({"data.source.sequence=\"\"", "data.sequences=[\"00\", \"01\"]"})
+            == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    const std::string result = readText(fixture.run_dir / "result.json");
+    const auto mean = result.find("\"mean\"");
+    REQUIRE(mean != std::string::npos);
+    // (10·10 + 6·6) / (10 + 6) = 8.5；按序列平均会是 8
+    CHECK(result.find("\"count.frames\": {\"value\": 8.5, \"unit\": \"\", \"label\": \"N\", "
+                      "\"weight\": 16}",
+                      mean)
+          != std::string::npos);
 }

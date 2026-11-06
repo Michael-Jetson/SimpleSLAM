@@ -42,7 +42,7 @@ else()
 endif()
 
 # yaml-cpp：新栈的配置与任务记录都用它。旧栈里它是硬依赖，
-# 新栈里是软依赖——没有它就不构建评测/回放/配置三层，其余照常。
+# 新栈里是软依赖——没有它就不构建评测、配置与执行器，其余照常。
 find_package(yaml-cpp QUIET)
 if(TARGET yaml-cpp::yaml-cpp)
     set(SIMPLESLAM_YAMLCPP_TARGET yaml-cpp::yaml-cpp)
@@ -50,10 +50,10 @@ elseif(TARGET yaml-cpp)
     set(SIMPLESLAM_YAMLCPP_TARGET yaml-cpp)
 endif()
 
-# 评测 / 回放 / 配置三层。写算法的人要的"跑完能看到精度、能重来一遍"在这里。
-option(SIMPLESLAM_BUILD_TOOLING "构建评测/回放/配置层（需要 yaml-cpp）" ON)
+# 评测、配置与执行器。写算法的人要的"跑完能看到精度、能重来一遍"在这里。
+option(SIMPLESLAM_BUILD_TOOLING "构建评测、配置与执行器（需要 yaml-cpp）" ON)
 if(SIMPLESLAM_BUILD_TOOLING AND NOT DEFINED SIMPLESLAM_YAMLCPP_TARGET)
-    message(STATUS "未找到 yaml-cpp：评测/回放/配置层不构建")
+    message(STATUS "未找到 yaml-cpp：评测、配置与执行器不构建")
     set(SIMPLESLAM_BUILD_TOOLING OFF)
 endif()
 
@@ -87,7 +87,7 @@ option(SIMPLESLAM_USE_GTSAM "启用 GTSAM 集成" OFF)
 # ── 源码（各模块库，实现在 src/，公共头文件在 include/）──
 add_subdirectory(src)
 
-# ── 命令行工具（配置 schema 导出、轨迹评测）与示例入口 ──
+# ── 命令行工具（轨迹评测）与示例入口 ──
 if(SIMPLESLAM_BUILD_TOOLING)
     add_subdirectory(tools)
     add_subdirectory(examples)

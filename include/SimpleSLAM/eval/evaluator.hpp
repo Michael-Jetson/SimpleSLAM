@@ -34,6 +34,9 @@ struct Scalar {
     double value = 0.0;
     std::string unit;   ///< 空表示没有单位
     std::string label;  ///< 进汇总表的短名，如 ATE_t；空表示不进
+    /// 多序列汇总时的权重：每个序列都给了，平均就按它加权（`kitti` 给段数，与官方把各序列的
+    /// 段合在一起平均一致）；空表示按序列平均。
+    std::optional<double> weight;
 };
 
 /// 表格的一列。
@@ -61,11 +64,13 @@ struct Evaluation {
     /// 说明：实际用的对齐方式、换算过的坐标系等，读结论的人要知道的前提。
     std::vector<std::string> notes;
 
-    void add(std::string name, double value, std::string unit, std::string label = {}) {
+    void add(std::string name, double value, std::string unit, std::string label = {},
+             std::optional<double> weight = std::nullopt) {
         scalars.push_back(Scalar{.name = std::move(name),
                                  .value = value,
                                  .unit = std::move(unit),
-                                 .label = std::move(label)});
+                                 .label = std::move(label),
+                                 .weight = weight});
     }
 };
 
@@ -82,7 +87,29 @@ struct ComparablePair {
     std::vector<std::string> notes;
 };
 
+/// 模块与插件用 `log_.metric` 记下的一个值。
+struct MetricSample {
+    /// 它所关于的那条输入：记下它的模块自己的输入序号与数据时刻。不针对某条输入时为空。
+    std::optional<std::uint64_t> frame;
+    std::optional<fw::Timestamp> data_time;
+    std::string source;  ///< 来源的键，如 `odometry.plugin`
+    double value = 0.0;
+    std::string unit;
+};
+
+/// 模块与插件用 `log_.event` 记下的一个事实。
+struct EventSample {
+    std::optional<std::uint64_t> frame;
+    std::optional<fw::Timestamp> data_time;
+    std::string module;  ///< 记下它的模块
+    std::string source;  ///< 来源的键；不经日志对象记下的为空
+    std::string detail;
+};
+
 /// 评测函数看到的输入。跑完之后由任务记录提供；在线评测时由运行中的系统提供快照。
+///
+/// `pair` 与 `targetWindow` 每种输入都有。度量、事件与单独一条估计是可选的能力：
+/// 默认实现抛 `std::runtime_error`，说明这份输入没有它。
 class EvaluationInputs {
 public:
     virtual ~EvaluationInputs() = default;
@@ -93,6 +120,15 @@ public:
 
     /// 来源声明的目标窗口：这次运行应当产出位姿的时间范围。没声明时为空。
     [[nodiscard]] virtual std::optional<fw::TimeRange> targetWindow() const = 0;
+
+    /// 一条估计本身，不要真值：只看轨迹自己的评测函数用。没有这条估计时抛。
+    [[nodiscard]] virtual fw::Trajectory estimate(std::string_view name) const;
+
+    /// 键为 `key` 的全部度量，按记下的先后排列；一条都没有时为空。
+    [[nodiscard]] virtual std::vector<MetricSample> metrics(std::string_view key) const;
+
+    /// 键为 `key` 的全部事件，按记下的先后排列；一条都没有时为空。
+    [[nodiscard]] virtual std::vector<EventSample> events(std::string_view key) const;
 };
 
 class EvaluatorBase : public logging::Loggable {

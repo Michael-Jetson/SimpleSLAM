@@ -4,8 +4,9 @@
 #pragma once
 
 /// @file evaluators.hpp
-/// 内置的评测函数：`ate`、`rpe`。口径见 `metrics.hpp`：对齐方式是结果的一部分，平移与旋转
-/// 分开统计，按距离取段时走过的路沿真值累积。入口的目录登记它们（`app/catalogs.hpp`）。
+/// 内置的评测函数：`ate`、`rpe`、`kitti`、`timing`。口径见 `metrics.hpp`：对齐方式是结果的
+/// 一部分，平移与旋转分开统计，按距离取段时走过的路沿真值累积。入口的目录登记它们
+/// （`app/catalogs.hpp`）。
 
 #include <SimpleSLAM/eval/evaluator.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
@@ -30,7 +31,8 @@ public:
         template <class V>
         void visit(V& v) {
             v("estimate", estimate, "评哪条估计：odometry / online / keyframes");
-            v("alignment", alignment, "对齐方式：none / first_pose / se3 / sim3");
+            v("alignment", alignment,
+              "对齐方式：none / first_pose / se3 / sim3 / posyaw（位置加航向，给 VIO）");
             v("association", association,
               "关联：nearest 最近邻 / interpolate 把真值插值到估计的时刻");
             v("tolerance_s", tolerance_s, "最近邻关联的容差（秒）");
@@ -83,6 +85,67 @@ public:
 private:
     Config config_;
     RpeOptions options_;
+};
+
+/// KITTI 里程计官方口径：段长 100–800 米，每隔 `step_frames` 帧一个起点，走过的路沿真值累积，
+/// 不对齐。平移误差是百分比，旋转误差是每米的度数，都是全部段的平均。与官方的一处不同：
+/// 官方要求两边帧数相同、按行号配对，这里按时刻关联，只在关联上的帧上取段。
+class KittiEvaluator final : public EvaluatorBase {
+public:
+    static constexpr std::string_view kTypeName = "kitti";
+
+    struct Config {
+        std::string estimate = "odometry";
+        std::int64_t step_frames = 10;
+        std::string association = "nearest";
+        double tolerance_s = 0.02;
+        double max_interpolation_gap_s = 0.15;
+
+        template <class V>
+        void visit(V& v) {
+            v("estimate", estimate, "评哪条估计：odometry / online / keyframes");
+            v("step_frames", step_frames, "每隔多少个关联上的帧取一个起点（官方是 10）");
+            v("association", association,
+              "关联：nearest 最近邻 / interpolate 把真值插值到估计的时刻");
+            v("tolerance_s", tolerance_s, "最近邻关联的容差（秒）");
+            v("max_interpolation_gap_s", max_interpolation_gap_s, "插值关联的最大括点间隔（秒）");
+        }
+    };
+
+    /// 起点间隔不是正数、写法不对时抛 `std::invalid_argument`。
+    explicit KittiEvaluator(const Config& config);
+
+    [[nodiscard]] Needs needs() const override { return Needs{.groundtruth = true}; }
+    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+
+private:
+    Config config_;
+    KittiOptions options_;
+};
+
+/// 耗时：读一个度量（默认里程计每帧的 `track.duration`），给 mean、median、p95、max。
+/// 统计量与 evo、rpg 同一套，p95 在相邻样本之间线性插值。
+class TimingEvaluator final : public EvaluatorBase {
+public:
+    static constexpr std::string_view kTypeName = "timing";
+
+    struct Config {
+        std::string key = "track.duration";
+
+        template <class V>
+        void visit(V& v) {
+            v("key", key, "读哪个度量：模块与插件用 log_.metric 记下的键");
+        }
+    };
+
+    /// 键是空的时抛 `std::invalid_argument`。
+    explicit TimingEvaluator(const Config& config);
+
+    [[nodiscard]] Needs needs() const override { return Needs{}; }
+    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+
+private:
+    Config config_;
 };
 
 }  // namespace simpleslam::eval

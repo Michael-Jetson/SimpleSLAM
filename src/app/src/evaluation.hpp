@@ -7,13 +7,15 @@
 /// 对一份任务记录评测，写下结论。入口层内部的头文件，不是公共接口。
 ///
 /// 执行器跑完之后、单独评测、多序列的每个子任务记录都走这里，评测只读任务记录，
-/// 所以跑完立刻评与事后补评数字一样。结论写成 `result.json`（格式版本 2），
-/// 逐样本的表格写进 `evaluation/`。
+/// 所以跑完立刻评与事后补评数字一样。结论写成 `result.json`（格式版本见
+/// `run_dir::kResultSchema`），逐样本的表格写进 `evaluation/`。
 
 #include <SimpleSLAM/app/task.hpp>
 #include <SimpleSLAM/eval/evaluator.hpp>
+#include <SimpleSLAM/framework/calibration.hpp>
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <ostream>
@@ -25,23 +27,41 @@ namespace simpleslam::app {
 
 namespace fs = std::filesystem;
 
-/// 任务记录作为评测函数的输入：轨迹、真值与生效的标定从目录里读；目标窗口由调用方给，
-/// 任务记录的取自它的 `outcome.yaml`（`run_dir::readTargetWindow`）。
+/// 估计跟踪 body、真值跟踪别的传感器时，按生效外参把估计换算到真值的传感器上，写进说明。
+/// 标定只在要换算时才取（`calibration`），任务记录的标定要从文件里读。
+void toReferenceSensor(eval::ComparablePair& pair,
+                       const std::function<fw::CalibrationData()>& calibration);
+
+/// 任务记录作为评测函数的输入：轨迹、真值、生效的标定、度量与事件从目录里读；目标窗口
+/// 由调用方给，任务记录的取自它的 `outcome.yaml`（`run_dir::readTargetWindow`）。
 class RunDirInputs final : public eval::EvaluationInputs {
 public:
     RunDirInputs(fs::path dir, std::optional<fw::TimeRange> window);
 
     [[nodiscard]] eval::ComparablePair pair(std::string_view estimate) const override;
     [[nodiscard]] std::optional<fw::TimeRange> targetWindow() const override;
+    [[nodiscard]] fw::Trajectory estimate(std::string_view name) const override;
+    [[nodiscard]] std::vector<eval::MetricSample> metrics(std::string_view key) const override;
+    [[nodiscard]] std::vector<eval::EventSample> events(std::string_view key) const override;
 
     /// 自上次取走以来用到的轨迹文件（相对任务记录的路径），取走后清空。
     [[nodiscard]] std::vector<std::string> takeUsed() const;
 
 private:
+    void use(const std::string& file) const;
+
     fs::path dir_;
     std::optional<fw::TimeRange> window_;
     mutable std::vector<std::string> used_;
 };
+
+/// 评测函数给的名字进指标名、文件名与 CSV 的表头，表格的每一行要与表头对齐。不合格时抛，
+/// 指名是哪个评测函数。跑完评与在线评都在用结果之前核对。
+void checkEvaluation(const std::string& evaluator, const eval::Evaluation& result);
+
+/// 给人看的一行：样本数与进汇总表的那几项；没测出东西时写最后一条说明。
+[[nodiscard]] std::string summaryLine(const std::string& name, const std::string& type,
+                                      const eval::Evaluation& result);
 
 /// 一个评测函数的结果，连同它的名字、节点与用到的输入。
 struct NamedEvaluation {

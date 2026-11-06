@@ -37,12 +37,18 @@ struct Statistics {
 
 [[nodiscard]] Statistics statisticsOf(std::vector<double> values);
 
+/// 分位数，`p` 在 [0, 1]：排序后在相邻两个样本之间线性插值（numpy 的默认做法）。没有样本时为 0。
+[[nodiscard]] double percentileOf(std::vector<double> values, double p);
+
 /// 对齐方式。评测结论必须写明用了哪一种。
 enum class AlignmentKind : std::uint8_t {
     kNone,       ///< 不对齐：两条轨迹已在同一系同一 gauge
     kFirstPose,  ///< 用首帧对齐：估计的首帧搬到参考的首帧
     kSe3,        ///< Umeyama 刚体最小二乘对齐
     kSim3,       ///< Umeyama 带尺度对齐（单目等尺度不可观的情形）
+    /// 位置加绕世界 z 轴的航向，4 自由度（VIO：重力方向可观，不可观的只有位置与航向）。
+    /// 要求两边的世界系都是 z 轴沿重力的。
+    kPosYaw,
 };
 
 [[nodiscard]] std::string toString(AlignmentKind kind);
@@ -199,5 +205,38 @@ struct RpeResult {
 
 [[nodiscard]] RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& reference,
                                           const RpeOptions& options = {});
+
+/// KITTI 里程计官方口径：段长 100–800 米，每隔若干帧一个起点，走过的路沿真值累积，不对齐。
+/// 官方要求两边帧数相同、按行号配对；这里按时刻关联，只在关联上的帧上取段。
+struct KittiOptions {
+    fw::Duration tolerance = std::chrono::milliseconds(20);
+    AssociationMode association = AssociationMode::kNearest;
+    fw::Duration max_interpolation_gap = std::chrono::milliseconds(150);
+    /// 每隔多少个关联上的帧取一个起点（官方是 10）。
+    std::size_t step_frames = 10;
+};
+
+/// 官方的段长（米）。
+inline constexpr double kKittiLengths[] = {100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0};
+
+/// 一段的误差。平移是误差平移量除以段长（米/米），旋转是误差转角除以段长（弧度/米）。
+struct KittiSegment {
+    fw::Timestamp start{0};  ///< 段起点在参考侧的时刻
+    double length_m = 0.0;
+    double translation = 0.0;
+    double rotation_rad = 0.0;
+};
+
+struct KittiResult {
+    std::vector<KittiSegment> segments;
+    std::size_t pairs = 0;  ///< 关联上的帧数
+    /// 全部段的平均：平移（米/米）、旋转（弧度/米）。官方的数就是它们，乘 100 是百分比。
+    [[nodiscard]] double translationMean() const noexcept;
+    [[nodiscard]] double rotationMean() const noexcept;
+};
+
+[[nodiscard]] KittiResult kittiOdometryError(const Trajectory& estimate,
+                                             const Trajectory& reference,
+                                             const KittiOptions& options = {});
 
 }  // namespace simpleslam::eval

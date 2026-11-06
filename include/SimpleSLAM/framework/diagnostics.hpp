@@ -44,6 +44,9 @@ struct DiagnosticHeader {
     /// 记录所关于的那条输入的序号，按产生记录的模块自己的输入计：里程计是数据包的
     /// 发布序号，后端与位置识别是关键帧库序号。不针对某条输入的记录填最近处理的那一条。
     std::uint64_t frame_sequence = 0;
+    /// 记录是否关于某一条输入。为 false 时 `frame_sequence` 与 `data_time` 没有意义
+    /// （运行时自己报的错误不针对哪一帧）。
+    bool has_frame = false;
     SessionId session{};
     std::uint64_t parameter_revision = 0;
 };
@@ -114,6 +117,16 @@ public:
         return n;
     }
 
+    /// 键为 `key` 的度量，按记下的先后。只复制匹配的那几条：在线评测每次只要一个键。
+    [[nodiscard]] std::vector<DiagnosticRecord> metrics(std::string_view key) const {
+        return matching<MetricRecord>(key);
+    }
+
+    /// 键为 `key` 的事件，按记下的先后。
+    [[nodiscard]] std::vector<DiagnosticRecord> events(std::string_view key) const {
+        return matching<EventRecord>(key);
+    }
+
     /// 某个事件键出现了几次。测试与健康监控都按键计数，不按下标取记录。
     [[nodiscard]] std::size_t countEvent(std::string_view key) const {
         std::lock_guard lock(mutex_);
@@ -127,6 +140,18 @@ public:
     }
 
 private:
+    template <class Payload>
+    [[nodiscard]] std::vector<DiagnosticRecord> matching(std::string_view key) const {
+        std::lock_guard lock(mutex_);
+        std::vector<DiagnosticRecord> out;
+        for (const auto& r : records_) {
+            if (const auto* p = std::get_if<Payload>(&r.payload); p != nullptr && p->key == key) {
+                out.push_back(r);
+            }
+        }
+        return out;
+    }
+
     mutable std::mutex mutex_;
     std::vector<DiagnosticRecord> records_;
 };

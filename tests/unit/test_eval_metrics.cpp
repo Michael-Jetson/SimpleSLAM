@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-/// ATE / RPE：对齐方式是结果的一部分、平移与旋转分开统计、
-/// 关联覆盖率如实给出、尺度不可观时 Sim3 能把它解出来。
+/// ATE / RPE / KITTI：对齐方式是结果的一部分、平移与旋转分开统计、关联覆盖率如实给出、
+/// 尺度不可观时 Sim3 能把它解出来、4 自由度对齐只吸收航向与位置、KITTI 按官方口径取段。
 
 #include <SimpleSLAM/eval/metrics.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace simpleslam;
@@ -207,4 +208,112 @@ TEST_CASE("时钟域不同一律拒绝比较", "[eval][metrics]") {
     reference.setClock(fw::ClockDomainId{2});
 
     CHECK_THROWS_AS(absoluteTrajectoryError(estimate, reference, AteOptions{}), TrajectoryError);
+}
+
+namespace {
+
+/// 一段螺旋：绕 z 走半圈、同时缓缓升高。点不共线，航向定得出来。
+Trajectory helix(int count) {
+    Trajectory trajectory;
+    for (int i = 0; i < count; ++i) {
+        const double angle = 0.15 * i;
+        const Eigen::Quaterniond heading(Eigen::AngleAxisd(angle, Vec3d::UnitZ()));
+        trajectory.push(fw::Timestamp{static_cast<std::int64_t>(i) * 100'000'000},
+                        SE3d(Vec3d(10.0 * std::cos(angle), 10.0 * std::sin(angle), 0.1 * i),
+                             heading));
+    }
+    return trajectory;
+}
+
+/// 每个位姿左乘同一个变换：整条轨迹换到另一个世界系里。
+Trajectory moved(const Trajectory& trajectory, const SE3d& transform) {
+    Trajectory out;
+    for (const auto& sample : trajectory) out.push(sample.time, transform.compose(sample.pose));
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("4 自由度对齐：吸收航向与位置，吸收不了倾斜", "[eval][metrics]") {
+    const auto truth = helix(40);
+    const SE3d yaw_and_shift(Vec3d(3.0, -2.0, 1.0),
+                             Eigen::Quaterniond(Eigen::AngleAxisd(0.5, Vec3d::UnitZ())));
+    AteOptions options;
+    options.alignment = AlignmentKind::kPosYaw;
+    const auto aligned = absoluteTrajectoryError(moved(truth, yaw_and_shift), truth, options);
+    CHECK(aligned.alignment.kind == AlignmentKind::kPosYaw);
+    CHECK(aligned.translation.rmse == Approx(0.0).margin(1e-9));
+    CHECK(aligned.rotation_deg.rmse == Approx(0.0).margin(1e-6));
+    CHECK(aligned.alignment.scale == 1.0);
+
+    // 世界系绕 x 倾斜了：VIO 的重力方向可观，这种差别是真误差，4 自由度对齐不该把它藏起来
+    const SE3d tilt(Vec3d::Zero(), Eigen::Quaterniond(Eigen::AngleAxisd(0.2, Vec3d::UnitX())));
+    const auto tilted = absoluteTrajectoryError(moved(truth, tilt), truth, options);
+    CHECK(tilted.translation.rmse > 0.1);
+    options.alignment = AlignmentKind::kSe3;
+    CHECK(absoluteTrajectoryError(moved(truth, tilt), truth, options).translation.rmse
+          == Approx(0.0).margin(1e-9));
+
+    CHECK(parseAlignmentKind("posyaw") == AlignmentKind::kPosYaw);
+    CHECK(toString(AlignmentKind::kPosYaw) == "posyaw");
+}
+
+TEST_CASE("分位数在相邻样本之间线性插值", "[eval][metrics]") {
+    CHECK(percentileOf({5.0, 1.0, 4.0, 2.0, 3.0}, 0.95) == Approx(4.8));
+    CHECK(percentileOf({5.0, 1.0, 4.0, 2.0, 3.0}, 0.5) == Approx(3.0));
+    CHECK(percentileOf({1.0, 2.0}, 0.0) == Approx(1.0));
+    CHECK(percentileOf({1.0, 2.0}, 1.0) == Approx(2.0));
+    CHECK(percentileOf({7.0}, 0.95) == Approx(7.0));
+    CHECK(percentileOf({}, 0.95) == 0.0);
+}
+
+TEST_CASE("KITTI：按官方口径取段，平移误差是每米的漂移，不受全局位姿影响", "[eval][metrics]") {
+    // 每帧 0.1 米走 1000 米；估计多走 1%：每段都多出段长的 1%
+    const auto truth = line(10'001, 0.1);
+    const auto longer = line(10'001, 0.1, 0.1, SE3d::Identity(), 1.01);
+    const auto kitti = kittiOdometryError(longer, truth);
+    REQUIRE_FALSE(kitti.segments.empty());
+    CHECK(kitti.pairs == 10'001);
+    // 段的终点是第一个走过的路严格超过段长的帧，所以实际走的比段长多出不到一帧
+    CHECK(kitti.translationMean() == Approx(0.01).epsilon(2e-3));
+    CHECK(kitti.rotationMean() == Approx(0.0).margin(1e-12));
+    // 八种段长都有，起点每 10 帧一个
+    for (const double length : kKittiLengths) {
+        const auto count = std::count_if(kitti.segments.begin(), kitti.segments.end(),
+                                         [&](const auto& s) { return s.length_m == length; });
+        CHECK(count > 0);
+    }
+    CHECK(kitti.segments[1].start - kitti.segments[0].start == fw::Duration{0});
+    CHECK(kitti.segments[8].start - kitti.segments[0].start
+          == fw::Duration{1'000'000'000});  // 第二个起点在 10 帧之后（每帧 0.1 秒）
+
+    // 不对齐也不受全局位姿影响：只比相对运动
+    const SE3d elsewhere(Vec3d(50.0, -20.0, 3.0),
+                         Eigen::Quaterniond(Eigen::AngleAxisd(1.0, Vec3d::UnitZ())));
+    const auto shifted = kittiOdometryError(moved(longer, elsewhere), truth);
+    CHECK(shifted.translationMean() == Approx(kitti.translationMean()).epsilon(1e-9));
+
+    // 走过的路不足 100 米：一段都没有，不给数
+    const auto short_run = kittiOdometryError(line(500, 0.1), line(500, 0.1));
+    CHECK(short_run.segments.empty());
+    CHECK(short_run.translationMean() == 0.0);
+}
+
+TEST_CASE("KITTI：估计稀疏时走过的路仍沿真值自身的采样累积", "[eval][metrics]") {
+    // 真值每 0.1 秒一个点绕圈；估计只有每 10 个真值点一个：弦长短于走过的路
+    Trajectory truth;
+    Trajectory sparse;
+    for (int i = 0; i < 4'000; ++i) {
+        const double angle = 0.01 * i;
+        const SE3d pose(Vec3d(50.0 * std::cos(angle), 50.0 * std::sin(angle), 0.0),
+                        Eigen::Quaterniond(Eigen::AngleAxisd(angle, Vec3d::UnitZ())));
+        const fw::Timestamp time{static_cast<std::int64_t>(i) * 100'000'000};
+        truth.push(time, pose);
+        if (i % 10 == 0) sparse.push(time, pose);
+    }
+    const auto kitti = kittiOdometryError(sparse, truth);
+    REQUIRE_FALSE(kitti.segments.empty());
+    CHECK(kitti.translationMean() == Approx(0.0).margin(1e-9));  // 估计就是真值上的点
+    // 第一段（100 米）的终点按真值走过的路找：半径 50 米的圆上 100 米是 2 弧度
+    CHECK(kitti.segments.front().length_m == 100.0);
 }

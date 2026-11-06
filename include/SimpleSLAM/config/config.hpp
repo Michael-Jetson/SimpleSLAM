@@ -105,12 +105,21 @@ struct DataSection {
     std::vector<std::string> sequences;
 };
 
+/// 在线评测：跑着的时候按数据时间每隔一段，对"到目前为止"的轨迹调一批评测函数，
+/// 结果记成度量、终端上每次一行。它是过程量，不进结论。
+struct OnlineEvaluation {
+    /// 在线评哪几个：`evaluation.evaluators` 里的名字。空表示不做在线评测。
+    std::vector<std::string> evaluators;
+    double interval_s = 10.0;  ///< 每隔多少秒（数据时间）评一次
+};
+
 struct EvaluationSection {
     /// 这次跑哪些评测函数：名字 → 插件节点。空表示只跑不评测。名字只用字母、数字与
     /// `_`：它是结果里指标名的前缀，也是逐样本表格的文件名。
     PluginMap evaluators;
     /// 真值轨迹文件。空表示用数据集自带的真值。
     std::string groundtruth;
+    OnlineEvaluation online;
 };
 
 /// 日志的等级。只决定记下哪些、显示哪些，不影响结果。
@@ -195,6 +204,10 @@ void visitConfig(Config& c, Visitor&& visit) {
           "这次跑哪些评测函数：名字 → 插件节点；没有就不评测", Tunable::kNo);
     visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）",
           Tunable::kNo);
+    visit("evaluation.online.evaluators", c.evaluation.online.evaluators,
+          "在线评哪几个：evaluation.evaluators 里的名字；空表示不做在线评测", Tunable::kNo);
+    visit("evaluation.online.interval_s", c.evaluation.online.interval_s,
+          "在线评测每隔多少秒（数据时间）评一次", Tunable::kNo);
 
     visit("outputs.dir", c.outputs.dir, "任务记录目录（留空为 runs/<task.name>）",
           Tunable::kNo);

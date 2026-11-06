@@ -5,12 +5,15 @@
 
 #include <cmath>
 #include <format>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace simpleslam::eval {
 
 namespace {
+
+constexpr double kRadToDeg = 57.295779513082320876798154814105;
 
 /// 秒到纳秒：四舍五入；非有限、负数与装不下的量拒绝。
 fw::Duration seconds(double value, const char* name) {
@@ -65,7 +68,7 @@ AteEvaluator::AteEvaluator(const Config& config) : config_(config) {
     requireEstimate(config_.estimate);
     const auto alignment = parseAlignmentKind(config_.alignment);
     if (!alignment) {
-        throw std::invalid_argument("alignment 只收 none / first_pose / se3 / sim3，得到 "
+        throw std::invalid_argument("alignment 只收 none / first_pose / se3 / sim3 / posyaw，得到 "
                                     + config_.alignment);
     }
     options_.alignment = *alignment;
@@ -152,6 +155,112 @@ Evaluation RpeEvaluator::evaluate(const EvaluationInputs& inputs) const {
     addStatistics(out, "translation", rpe.translation, translation_unit, "RPE_t");
     addStatistics(out, "rotation", rpe.rotation_deg, rotation_unit, "RPE_r");
     out.tables.push_back(errorTable("segments", rpe.errors, translation_unit, rotation_unit));
+    return out;
+}
+
+KittiEvaluator::KittiEvaluator(const Config& config) : config_(config) {
+    requireEstimate(config_.estimate);
+    if (config_.step_frames <= 0) {
+        throw std::invalid_argument(
+            std::format("step_frames 要是正整数，得到 {}", config_.step_frames));
+    }
+    options_.step_frames = static_cast<std::size_t>(config_.step_frames);
+    options_.association = association(config_.association);
+    options_.tolerance = seconds(config_.tolerance_s, "tolerance_s");
+    options_.max_interpolation_gap =
+        seconds(config_.max_interpolation_gap_s, "max_interpolation_gap_s");
+}
+
+Evaluation KittiEvaluator::evaluate(const EvaluationInputs& inputs) const {
+    ComparablePair pair = inputs.pair(config_.estimate);
+    const KittiResult kitti = kittiOdometryError(pair.estimate, pair.reference, options_);
+
+    Evaluation out;
+    out.notes = std::move(pair.notes);
+    out.samples = kitti.segments.size();
+    out.notes.push_back(std::format(
+        "KITTI 口径：段长 100–800 米，每 {} 帧一个起点，走过的路沿真值累积，不对齐",
+        config_.step_frames));
+    out.notes.push_back(std::format("按时刻关联（{}），在关联上的 {} 帧上取段",
+                                    toString(options_.association), kitti.pairs));
+    if (kitti.segments.empty()) {
+        out.notes.push_back("真值走过的路不足 100 米，或者关联上的帧不够，KITTI 无结果");
+        return out;
+    }
+    // 多序列汇总按段数加权：与官方把各序列的段合在一起平均一致
+    const auto weight = static_cast<double>(kitti.segments.size());
+    out.add("translation.mean", kitti.translationMean() * 100.0, "%", "KITTI_t", weight);
+    out.add("rotation.mean", kitti.rotationMean() * kRadToDeg, "deg/m", "KITTI_r", weight);
+    Table table{.name = "segments",
+                .columns = {{.name = "time_ns", .unit = "ns"},
+                            {.name = "length", .unit = "m"},
+                            {.name = "translation", .unit = "%"},
+                            {.name = "rotation", .unit = "deg/m"}},
+                .rows = {}};
+    table.rows.reserve(kitti.segments.size());
+    for (const auto& segment : kitti.segments) {
+        table.rows.push_back({Cell{static_cast<std::int64_t>(segment.start.count())},
+                              Cell{segment.length_m}, Cell{segment.translation * 100.0},
+                              Cell{segment.rotation_rad * kRadToDeg}});
+    }
+    out.tables.push_back(std::move(table));
+    return out;
+}
+
+TimingEvaluator::TimingEvaluator(const Config& config) : config_(config) {
+    if (config_.key.empty()) throw std::invalid_argument("key 不能是空的：要读哪个度量");
+}
+
+Evaluation TimingEvaluator::evaluate(const EvaluationInputs& inputs) const {
+    const auto samples = inputs.metrics(config_.key);
+    Evaluation out;
+    if (samples.empty()) {
+        out.notes.push_back(std::format("没有记下度量 {}，timing 无结果", config_.key));
+        return out;
+    }
+    const std::string& unit = samples.front().unit;
+    std::vector<double> values;
+    values.reserve(samples.size());
+    std::size_t not_finite = 0;
+    for (const auto& sample : samples) {
+        if (sample.unit != unit) {
+            out.notes.push_back(std::format("度量 {} 的单位不一致（{} 与 {}），timing 无结果",
+                                            config_.key, unit, sample.unit));
+            return out;
+        }
+        if (!std::isfinite(sample.value)) {
+            ++not_finite;
+            continue;
+        }
+        values.push_back(sample.value);
+    }
+    out.notes.push_back(std::format("读度量 {}：{} 个", config_.key, samples.size()));
+    if (not_finite > 0) out.notes.push_back(std::format("{} 个不是有限数，不计", not_finite));
+    out.samples = values.size();
+    if (values.empty()) return out;
+
+    const Statistics stats = statisticsOf(values);
+    out.add("duration.mean", stats.mean, unit, "T_mean");
+    out.add("duration.median", stats.median, unit);
+    out.add("duration.p95", percentileOf(values, 0.95), unit, "T_p95");
+    out.add("duration.max", stats.max, unit);
+
+    // 帧序号与数据时刻是整数；记下它的不针对某条输入时没有，那一格留空
+    constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
+    Table table{.name = "samples",
+                .columns = {{.name = "frame", .unit = ""},
+                            {.name = "time_ns", .unit = "ns"},
+                            {.name = "value", .unit = unit}},
+                .rows = {}};
+    table.rows.reserve(samples.size());
+    for (const auto& sample : samples) {
+        table.rows.push_back(
+            {sample.frame ? Cell{static_cast<std::int64_t>(*sample.frame)} : Cell{kNone},
+             sample.data_time ? Cell{static_cast<std::int64_t>(sample.data_time->count())}
+                              : Cell{kNone},
+             Cell{sample.value}});
+    }
+    out.tables.push_back(std::move(table));
     return out;
 }
 

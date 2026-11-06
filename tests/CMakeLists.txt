@@ -36,7 +36,7 @@ add_executable(test_slam_system unit/test_slam_system.cpp)
 target_link_libraries(test_slam_system PRIVATE simpleslam_modules Catch2::Catch2WithMain)
 catch_discover_tests(test_slam_system)
 
-# ── 评测 / 回放 / 配置 ──
+# ── 评测 / 配置 / 执行器 ──
 if(SIMPLESLAM_BUILD_TOOLING)
     foreach(t eval_trajectory eval_metrics eval_evaluators)
         add_executable(test_${t} unit/test_${t}.cpp)

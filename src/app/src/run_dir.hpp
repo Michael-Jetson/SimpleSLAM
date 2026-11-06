@@ -10,6 +10,8 @@
 
 #include <SimpleSLAM/config/config.hpp>
 #include <SimpleSLAM/config/loader.hpp>
+#include <SimpleSLAM/eval/evaluator.hpp>
+#include <SimpleSLAM/framework/diagnostics.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 
 #include <cstddef>
@@ -19,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace simpleslam::app::run_dir {
@@ -75,11 +78,24 @@ void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const
 /// 读回运行时来源声明的目标窗口；没声明时为空。
 [[nodiscard]] std::optional<fw::TimeRange> readTargetWindow(const fs::path& dir);
 
-/// 一个标量在结论里的样子：值、单位、进汇总表时的短名。
+/// 模块与插件记下的度量与事件写成 `metrics.csv`（一个度量一行）与 `events.jsonl`
+/// （一个事件一行），评测函数读它们，事后不必重跑。
+void writeDiagnostics(const fs::path& dir, const std::vector<fw::DiagnosticRecord>& records);
+
+/// 读回键为 `key` 的度量，按记下的先后。任务记录里没有 `metrics.csv` 时抛：写它的软件
+/// 还不记逐帧度量。
+[[nodiscard]] std::vector<eval::MetricSample> readMetrics(const fs::path& dir,
+                                                          std::string_view key);
+
+/// 读回键为 `key` 的事件，按记下的先后。没有 `events.jsonl` 时抛。
+[[nodiscard]] std::vector<eval::EventSample> readEvents(const fs::path& dir, std::string_view key);
+
+/// 一个标量在结论里的样子：值、单位、进汇总表时的短名、多序列汇总的权重。
 struct ScalarValue {
     double value = 0.0;
     std::string unit;
     std::string label;
+    std::optional<double> weight;
 };
 
 /// 一份任务记录的结论摘要：多序列汇总时读每个子任务记录的 `result.json`。

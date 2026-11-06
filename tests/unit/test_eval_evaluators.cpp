@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-/// 内置评测函数 ate、rpe：只读输入、只返回值；写法不对在构造时报；没测出东西不给数；
-/// 单位随取段方式；实际用的对齐方式写进说明；逐样本误差进表格。
+/// 内置评测函数 ate、rpe、kitti、timing：只读输入、只返回值；写法不对在构造时报；没测出
+/// 东西不给数；单位随取段方式；实际用的对齐方式写进说明；逐样本误差进表格；多序列要的权重
+/// 随标量给出；评测输入的可选能力没有时明确报错。
 
 #include <SimpleSLAM/eval/evaluators.hpp>
 
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 using namespace simpleslam;
 using namespace simpleslam::eval;
@@ -183,4 +185,131 @@ TEST_CASE("写法不对在构造时报：装配时试构造一次就能发现", 
     RpeEvaluator::Config negative;
     negative.delta_m = -1.0;
     CHECK_THROWS_AS(RpeEvaluator{negative}, std::invalid_argument);
+}
+
+namespace {
+
+/// 只带度量的输入：timing 只读度量，不要真值。
+class MetricInputs final : public EvaluationInputs {
+public:
+    explicit MetricInputs(std::vector<MetricSample> samples) : samples_(std::move(samples)) {}
+
+    [[nodiscard]] ComparablePair pair(std::string_view /*estimate*/) const override {
+        throw std::runtime_error("没有真值");
+    }
+    [[nodiscard]] std::optional<fw::TimeRange> targetWindow() const override {
+        return std::nullopt;
+    }
+    [[nodiscard]] std::vector<MetricSample> metrics(std::string_view key) const override {
+        asked = std::string(key);
+        return samples_;
+    }
+
+    mutable std::string asked;
+
+private:
+    std::vector<MetricSample> samples_;
+};
+
+MetricSample duration(std::uint64_t frame, double value, std::string unit = "ms") {
+    return MetricSample{.frame = frame,
+                        .data_time = at(static_cast<int>(frame)),
+                        .source = "odometry",
+                        .value = value,
+                        .unit = std::move(unit)};
+}
+
+}  // namespace
+
+TEST_CASE("kitti：平移是百分比、旋转是每米的度数，权重是段数，逐段进表格", "[eval][evaluators]") {
+    // 每 0.1 秒沿 x 走 0.1 米，共 1000 米；估计每步多走 1%
+    const auto truth = line(10'001, 0.1);
+    const auto longer = line(10'001, 0.101);
+    const auto out = KittiEvaluator(KittiEvaluator::Config{}).evaluate(FixedInputs(longer, truth));
+
+    REQUIRE(out.samples > 0);
+    const auto* translation = find(out, "translation.mean");
+    REQUIRE(translation != nullptr);
+    CHECK(translation->value == Approx(1.0).epsilon(2e-3));
+    CHECK(translation->unit == "%");
+    CHECK(translation->label == "KITTI_t");
+    CHECK(translation->weight == static_cast<double>(out.samples));  // 多序列按段数加权
+    const auto* rotation = find(out, "rotation.mean");
+    REQUIRE(rotation != nullptr);
+    CHECK(rotation->unit == "deg/m");
+    CHECK(rotation->label == "KITTI_r");
+    REQUIRE(out.tables.size() == 1);
+    CHECK(out.tables[0].name == "segments");
+    CHECK(out.tables[0].rows.size() == out.samples);
+    CHECK(out.tables[0].columns.size() == 4);
+    CHECK(noted(out, "按时刻关联"));
+    CHECK(noted(out, "真值换算过"));  // 输入给的换算说明照样带上
+
+    // 走过的路不足 100 米：没有段，不给数，说明为什么
+    const KittiEvaluator kitti(KittiEvaluator::Config{});
+    const auto none = kitti.evaluate(FixedInputs(line(50, 1.0), line(50, 1.0)));
+    CHECK(none.samples == 0);
+    CHECK(none.scalars.empty());
+    CHECK(noted(none, "不足 100 米"));
+
+    KittiEvaluator::Config zero;
+    zero.step_frames = 0;
+    CHECK_THROWS_AS(KittiEvaluator{zero}, std::invalid_argument);
+}
+
+TEST_CASE("timing：读一个度量给 mean、median、p95、max，单位随度量", "[eval][evaluators]") {
+    std::vector<MetricSample> samples;
+    for (int i = 1; i <= 5; ++i) samples.push_back(duration(static_cast<std::uint64_t>(i), i));
+    samples.push_back(MetricSample{.frame = std::nullopt,
+                                   .data_time = std::nullopt,
+                                   .source = "odometry",
+                                   .value = std::nan(""),
+                                   .unit = "ms"});
+    const MetricInputs inputs(samples);
+    const auto out = TimingEvaluator(TimingEvaluator::Config{}).evaluate(inputs);
+
+    CHECK(inputs.asked == "track.duration");  // 默认读里程计每帧的耗时
+    CHECK(out.samples == 5);                  // 非有限的不计
+    CHECK(noted(out, "不是有限数"));
+    CHECK(find(out, "duration.mean")->value == Approx(3.0));
+    CHECK(find(out, "duration.mean")->label == "T_mean");
+    CHECK(find(out, "duration.median")->value == Approx(3.0));
+    CHECK(find(out, "duration.p95")->value == Approx(4.8));
+    CHECK(find(out, "duration.p95")->label == "T_p95");
+    CHECK(find(out, "duration.max")->value == Approx(5.0));
+    CHECK(find(out, "duration.max")->unit == "ms");
+    REQUIRE(out.tables.size() == 1);
+    CHECK(out.tables[0].rows.size() == 6);
+    // 不针对某条输入的度量：帧序号那一格是空的
+    CHECK(std::isnan(std::get<double>(out.tables[0].rows.back()[0])));
+
+    // 一条都没有、单位不一致：都不给数，说明为什么
+    const auto empty = TimingEvaluator(TimingEvaluator::Config{}).evaluate(MetricInputs({}));
+    CHECK(empty.samples == 0);
+    CHECK(noted(empty, "没有记下度量 track.duration"));
+    const auto mixed = TimingEvaluator(TimingEvaluator::Config{})
+                           .evaluate(MetricInputs({duration(1, 1.0), duration(2, 0.002, "s")}));
+    CHECK(mixed.samples == 0);
+    CHECK(noted(mixed, "单位不一致"));
+
+    TimingEvaluator::Config keyless;
+    keyless.key = "";
+    CHECK_THROWS_AS(TimingEvaluator{keyless}, std::invalid_argument);
+}
+
+TEST_CASE("评测输入没有度量、事件或单独的估计时明确报错，不当作空", "[eval][evaluators]") {
+    const FixedInputs inputs(line(3, 1.0), line(3, 1.0));  // 只实现了 pair 与 targetWindow
+    CHECK_THROWS_AS(inputs.metrics("track.duration"), std::runtime_error);
+    CHECK_THROWS_AS(inputs.events("odometry.lost"), std::runtime_error);
+    CHECK_THROWS_AS(inputs.estimate("odometry"), std::runtime_error);
+    CHECK_THROWS_AS(TimingEvaluator(TimingEvaluator::Config{}).evaluate(inputs),
+                    std::runtime_error);
+}
+
+TEST_CASE("ate 收 posyaw：位置加航向的 4 自由度对齐", "[eval][evaluators]") {
+    AteEvaluator::Config config;
+    config.alignment = "posyaw";
+    const auto out = AteEvaluator(config).evaluate(FixedInputs(line(10, 1.0, 0.5), line(10, 1.0)));
+    REQUIRE(out.samples == 10);
+    CHECK(find(out, "translation.rmse")->value == Approx(0.0).margin(1e-9));  // 平移被吸收
 }

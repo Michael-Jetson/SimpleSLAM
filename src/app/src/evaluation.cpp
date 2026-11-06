@@ -86,9 +86,9 @@ bool plainName(std::string_view name, bool segments) {
     });
 }
 
-/// 评测函数给的名字进指标名、文件名与 CSV 的表头，表格的每一行要与表头对齐：
-/// 写任何文件之前核对，写错了指名是哪个评测函数。
-void checkResult(const std::string& evaluator, const eval::Evaluation& result) {
+}  // namespace
+
+void checkEvaluation(const std::string& evaluator, const eval::Evaluation& result) {
     const auto fail = [&](const std::string& what) {
         throw std::runtime_error(std::format("评测函数 {} 给的结果不合格：{}", evaluator, what));
     };
@@ -126,6 +126,8 @@ void checkResult(const std::string& evaluator, const eval::Evaluation& result) {
     }
 }
 
+namespace {
+
 void writeTable(const fs::path& dir, const std::string& evaluator, const eval::Table& table) {
     std::ostringstream text;
     for (std::size_t i = 0; i < table.columns.size(); ++i) {
@@ -141,10 +143,11 @@ void writeTable(const fs::path& dir, const std::string& evaluator, const eval::T
     run_dir::writeText(dir / tableFile(evaluator, table.name), text.str());
 }
 
-/// 给人看的一行：样本数与进汇总表的那几项；没测出东西时写最后一条说明。
-std::string summaryLine(const NamedEvaluation& named) {
-    const auto& result = named.result;
-    std::string line = std::format("评测 {}（{}）: ", named.name, named.spec.type);
+}  // namespace
+
+std::string summaryLine(const std::string& name, const std::string& type,
+                        const eval::Evaluation& result) {
+    std::string line = std::format("评测 {}（{}）: ", name, type);
     if (result.samples == 0) {
         return line + "无结果" + (result.notes.empty() ? "" : "——" + result.notes.back());
     }
@@ -156,6 +159,8 @@ std::string summaryLine(const NamedEvaluation& named) {
     }
     return line;
 }
+
+namespace {
 
 std::string evaluationJson(const NamedEvaluation& named) {
     const auto& result = named.result;
@@ -174,7 +179,9 @@ std::string evaluationJson(const NamedEvaluation& named) {
         out << (i == 0 ? "\n" : ",\n") << "        " << jsonString(scalar.name)
             << ": {\"value\": " << jsonNumber(scalar.value)
             << ", \"unit\": " << jsonString(scalar.unit)
-            << ", \"label\": " << jsonString(scalar.label) << "}";
+            << ", \"label\": " << jsonString(scalar.label);
+        if (scalar.weight) out << ", \"weight\": " << jsonNumber(*scalar.weight);
+        out << "}";
     }
     out << (result.scalars.empty() ? "" : "\n      ") << "},\n      \"tables\": {";
     for (std::size_t i = 0; i < result.tables.size(); ++i) {
@@ -216,30 +223,57 @@ eval::ComparablePair RunDirInputs::pair(std::string_view estimate) const {
         .estimate = eval::readTrajectory((dir_ / estimate_file).string(), kTum),
         .reference = eval::readTrajectory((dir_ / truth_file).string(), kTum),
         .notes = {}};
-    for (const auto& file : {estimate_file, truth_file}) {
-        if (std::find(used_.begin(), used_.end(), file) == used_.end()) used_.push_back(file);
-    }
+    use(estimate_file);
+    use(truth_file);
     // 真值写进任务记录时已经换算到比较用的传感器上；估计跟踪 body，不同就按生效外参换算
-    const std::string& target = pair.reference.tracked();
-    const std::string& tracked = pair.estimate.tracked();
-    if (!target.empty() && !tracked.empty() && tracked != target) {
-        if (tracked != "body") {
-            throw std::runtime_error("估计跟踪的不是 body（" + tracked + "），无从换算到 "
-                                     + target);
-        }
-        const auto calibration = config::loadCalibrationFile((dir_ / "calibration.yaml").string());
-        const auto T_body_target = calibration.T_body_sensor(target);
-        if (!T_body_target) {
-            throw std::runtime_error("比较要用 " + target
-                                     + " 的外参，但任务记录里生效的标定没有它");
-        }
-        pair.estimate = eval::rightMultiplied(pair.estimate, *T_body_target, target);
-        pair.notes.push_back("估计从 body 按生效外参换算到 " + target);
-    }
+    toReferenceSensor(pair, [this] {
+        return config::loadCalibrationFile((dir_ / "calibration.yaml").string());
+    });
     return pair;
 }
 
 std::optional<fw::TimeRange> RunDirInputs::targetWindow() const { return window_; }
+
+fw::Trajectory RunDirInputs::estimate(std::string_view name) const {
+    const std::string file = "trajectory/" + std::string(name) + ".tum";
+    if (!fs::exists(dir_ / file)) {
+        throw std::runtime_error("任务记录里没有估计轨迹 " + (dir_ / file).string());
+    }
+    use(file);
+    return eval::readTrajectory((dir_ / file).string(), eval::TrajectoryFormat::kTum);
+}
+
+std::vector<eval::MetricSample> RunDirInputs::metrics(std::string_view key) const {
+    auto samples = run_dir::readMetrics(dir_, key);
+    use("metrics.csv");
+    return samples;
+}
+
+std::vector<eval::EventSample> RunDirInputs::events(std::string_view key) const {
+    auto samples = run_dir::readEvents(dir_, key);
+    use("events.jsonl");
+    return samples;
+}
+
+void RunDirInputs::use(const std::string& file) const {
+    if (std::find(used_.begin(), used_.end(), file) == used_.end()) used_.push_back(file);
+}
+
+void toReferenceSensor(eval::ComparablePair& pair,
+                       const std::function<fw::CalibrationData()>& calibration) {
+    const std::string& target = pair.reference.tracked();
+    const std::string& tracked = pair.estimate.tracked();
+    if (target.empty() || tracked.empty() || tracked == target) return;
+    if (tracked != "body") {
+        throw std::runtime_error("估计跟踪的不是 body（" + tracked + "），无从换算到 " + target);
+    }
+    const auto T_body_target = calibration().T_body_sensor(target);
+    if (!T_body_target) {
+        throw std::runtime_error("比较要用 " + target + " 的外参，但生效的标定没有它");
+    }
+    pair.estimate = eval::rightMultiplied(pair.estimate, *T_body_target, target);
+    pair.notes.push_back("估计从 body 按生效外参换算到 " + target);
+}
 
 std::vector<std::string> RunDirInputs::takeUsed() const { return std::exchange(used_, {}); }
 
@@ -263,8 +297,8 @@ EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
                               .spec = slot.resolved(),
                               .result = evaluator->evaluate(inputs),
                               .inputs = inputs.takeUsed()};
-        checkResult(name, named.result);
-        out << summaryLine(named) << '\n';
+        checkEvaluation(name, named.result);
+        out << summaryLine(named.name, named.spec.type, named.result) << '\n';
         outcome.evaluations.push_back(std::move(named));
     }
 

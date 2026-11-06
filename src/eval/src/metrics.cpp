@@ -16,11 +16,47 @@ namespace {
 constexpr double kRadToDeg = 57.295779513082320876798154814105;
 
 /// 相对位姿的旋转角（度）。用四元数实部，数值上比 acos(trace) 稳。
-double rotationAngleDeg(const SE3d& delta) {
+double rotationAngleRad(const SE3d& delta) {
     const Eigen::Quaterniond q = delta.quat().normalized();
     const double w = std::clamp(std::abs(q.w()), 0.0, 1.0);
-    return 2.0 * std::acos(w) * kRadToDeg;
+    return 2.0 * std::acos(w);
 }
+
+double rotationAngleDeg(const SE3d& delta) { return rotationAngleRad(delta) * kRadToDeg; }
+
+/// 沿参考轨迹**自身的采样**累积的路程。估计稀疏时，相邻两对之间的参考点不能跳过：
+/// 只数被关联上的那几个点，量到的是弦长，不是走过的路。
+class PathLength {
+public:
+    explicit PathLength(const Trajectory& reference)
+        : samples_(reference.samples()), cumulative_(samples_.size(), 0.0) {
+        for (std::size_t k = 1; k < samples_.size(); ++k) {
+            cumulative_[k] =
+                cumulative_[k - 1]
+                + (samples_[k].pose.translation() - samples_[k - 1].pose.translation()).norm();
+        }
+    }
+
+    /// 某一时刻处的累积路程：在括住它的两个样本之间线性插值。
+    [[nodiscard]] double at(fw::Timestamp t) const {
+        const auto later = [](fw::Timestamp value, const TrajectorySample& sample) {
+            return value < sample.time;
+        };
+        const auto upper = std::upper_bound(samples_.begin(), samples_.end(), t, later);
+        if (upper == samples_.begin()) return 0.0;
+        const auto after = static_cast<std::size_t>(upper - samples_.begin());
+        if (after >= samples_.size()) return cumulative_.back();
+        const auto before = after - 1;
+        const double span =
+            static_cast<double>((samples_[after].time - samples_[before].time).count());
+        const double part = static_cast<double>((t - samples_[before].time).count());
+        return cumulative_[before] + (cumulative_[after] - cumulative_[before]) * (part / span);
+    }
+
+private:
+    const std::vector<TrajectorySample>& samples_;
+    std::vector<double> cumulative_;
+};
 
 }  // namespace
 
@@ -51,12 +87,23 @@ Statistics statisticsOf(std::vector<double> values) {
     return stats;
 }
 
+double percentileOf(std::vector<double> values, double p) {
+    if (values.empty()) return 0.0;
+    std::sort(values.begin(), values.end());
+    const double rank = std::clamp(p, 0.0, 1.0) * static_cast<double>(values.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(rank));
+    const auto upper = std::min(lower + 1, values.size() - 1);
+    const double fraction = rank - static_cast<double>(lower);
+    return values[lower] + (values[upper] - values[lower]) * fraction;
+}
+
 std::string toString(AlignmentKind kind) {
     switch (kind) {
         case AlignmentKind::kNone: return "none";
         case AlignmentKind::kFirstPose: return "first_pose";
         case AlignmentKind::kSe3: return "se3";
         case AlignmentKind::kSim3: return "sim3";
+        case AlignmentKind::kPosYaw: return "posyaw";
     }
     return "none";
 }
@@ -66,6 +113,7 @@ std::optional<AlignmentKind> parseAlignmentKind(std::string_view text) {
     if (text == "first_pose") return AlignmentKind::kFirstPose;
     if (text == "se3") return AlignmentKind::kSe3;
     if (text == "sim3") return AlignmentKind::kSim3;
+    if (text == "posyaw") return AlignmentKind::kPosYaw;
     return std::nullopt;
 }
 
@@ -83,6 +131,35 @@ Alignment computeAlignment(const Trajectory& estimate, const Trajectory& referen
         const SE3d& est = estimate.at(first.estimate_index).pose;
         const SE3d& ref = reference.at(first.reference_index).pose;
         alignment.transform = ref.compose(est.inverse());
+        return alignment;
+    }
+
+    if (kind == AlignmentKind::kPosYaw) {
+        // 航向至少要两对点才定得出；不够就退化成首帧对齐并如实记下来
+        if (associations.size() < 2) {
+            return computeAlignment(estimate, reference, associations, AlignmentKind::kFirstPose);
+        }
+        Vec3d source_mean = Vec3d::Zero();
+        Vec3d target_mean = Vec3d::Zero();
+        for (const auto& pair : associations) {
+            source_mean += estimate.at(pair.estimate_index).pose.translation();
+            target_mean += reference.at(pair.reference_index).pose.translation();
+        }
+        source_mean /= static_cast<double>(associations.size());
+        target_mean /= static_cast<double>(associations.size());
+        // 去掉质心之后，只在水平面上求让两组点最贴合的转角：闭式解是一个 atan2
+        double dot = 0.0;
+        double cross = 0.0;
+        for (const auto& pair : associations) {
+            const Vec3d a = estimate.at(pair.estimate_index).pose.translation() - source_mean;
+            const Vec3d b = reference.at(pair.reference_index).pose.translation() - target_mean;
+            dot += a.x() * b.x() + a.y() * b.y();
+            cross += a.x() * b.y() - a.y() * b.x();
+        }
+        // 估计在水平面上挤在一点时航向定不出来：只平移
+        const double yaw = (dot == 0.0 && cross == 0.0) ? 0.0 : std::atan2(cross, dot);
+        const Eigen::Quaterniond rotation(Eigen::AngleAxisd(yaw, Vec3d::UnitZ()));
+        alignment.transform = SE3d(Vec3d(target_mean - rotation * source_mean), rotation);
         return alignment;
     }
 
@@ -241,30 +318,9 @@ RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& origin
     std::vector<double> translation_errors;
     std::vector<double> rotation_errors;
 
-    // 按距离取段时，走过的路沿参考轨迹**自身的采样**累积：估计稀疏时，相邻两对之间的
-    // 参考点不能跳过——只数被关联上的那几个点，量到的是弦长，不是走过的路
-    const auto& original_samples = original.samples();
-    std::vector<double> cumulative(original_samples.size(), 0.0);
-    for (std::size_t k = 1; k < original_samples.size(); ++k) {
-        cumulative[k] = cumulative[k - 1]
-                        + (original_samples[k].pose.translation()
-                           - original_samples[k - 1].pose.translation())
-                              .norm();
-    }
-    // 参考轨迹上某一时刻处的累积路程：在括住它的两个样本之间线性插值
-    const auto distanceAt = [&](fw::Timestamp t) {
-        const auto upper = std::upper_bound(
-            original_samples.begin(), original_samples.end(), t,
-            [](fw::Timestamp value, const TrajectorySample& sample) { return value < sample.time; });
-        if (upper == original_samples.begin()) return 0.0;
-        const auto after = static_cast<std::size_t>(upper - original_samples.begin());
-        if (after >= original_samples.size()) return cumulative.back();
-        const auto before = after - 1;
-        const double span =
-            static_cast<double>((original_samples[after].time - original_samples[before].time).count());
-        const double part = static_cast<double>((t - original_samples[before].time).count());
-        return cumulative[before] + (cumulative[after] - cumulative[before]) * (part / span);
-    };
+    // 按距离取段时，走过的路沿参考轨迹自身的采样累积
+    const PathLength path(original);
+    const auto distanceAt = [&](fw::Timestamp t) { return path.at(t); };
     const auto timeOf = [&](std::size_t association) {
         return reference.at(associations[association].reference_index).time;
     };
@@ -336,5 +392,71 @@ RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& origin
     return result;
 }
 
+
+double KittiResult::translationMean() const noexcept {
+    if (segments.empty()) return 0.0;
+    double sum = 0.0;
+    for (const auto& segment : segments) sum += segment.translation;
+    return sum / static_cast<double>(segments.size());
+}
+
+double KittiResult::rotationMean() const noexcept {
+    if (segments.empty()) return 0.0;
+    double sum = 0.0;
+    for (const auto& segment : segments) sum += segment.rotation_rad;
+    return sum / static_cast<double>(segments.size());
+}
+
+KittiResult kittiOdometryError(const Trajectory& estimate, const Trajectory& original,
+                               const KittiOptions& options) {
+    if (const auto problem = trackedMismatch(estimate, original); !problem.empty()) {
+        throw TrajectoryError(problem);
+    }
+    const bool interpolate = options.association == AssociationMode::kInterpolate;
+    Resampled resampled;
+    if (interpolate) {
+        if (estimate.clock() != original.clock()) {
+            throw TrajectoryError("两条轨迹的时钟域不同，必须先显式换算");
+        }
+        resampled = resampleOnto(original, estimate, options.max_interpolation_gap);
+    }
+    const Trajectory& reference = interpolate ? resampled.trajectory : original;
+    const auto associations =
+        associate(estimate, reference, interpolate ? fw::Duration{0} : options.tolerance);
+
+    KittiResult result;
+    result.pairs = associations.size();
+    if (associations.size() < 2 || options.step_frames == 0) return result;
+
+    // 关联上的每一帧处沿真值走过的路：单调不减，所以段的终点可以二分查找
+    const PathLength path(original);
+    std::vector<double> distance(associations.size());
+    for (std::size_t i = 0; i < associations.size(); ++i) {
+        distance[i] = path.at(reference.at(associations[i].reference_index).time);
+    }
+    for (std::size_t first = 0; first < associations.size(); first += options.step_frames) {
+        for (const double length : kKittiLengths) {
+            // 官方的终点：第一个走过的路严格超过段长的帧
+            const auto end = std::upper_bound(distance.begin() + static_cast<std::ptrdiff_t>(first),
+                                              distance.end(), distance[first] + length);
+            if (end == distance.end()) break;  // 更长的段也凑不齐
+            const auto last = static_cast<std::size_t>(end - distance.begin());
+            const SE3d& truth_first = reference.at(associations[first].reference_index).pose;
+            const SE3d& truth_last = reference.at(associations[last].reference_index).pose;
+            const SE3d& estimate_first = estimate.at(associations[first].estimate_index).pose;
+            const SE3d& estimate_last = estimate.at(associations[last].estimate_index).pose;
+            const SE3d truth_delta = truth_first.inverse().compose(truth_last);
+            const SE3d estimate_delta = estimate_first.inverse().compose(estimate_last);
+            // 官方的误差：估计的相对运动之逆乘真值的相对运动
+            const SE3d error = estimate_delta.inverse().compose(truth_delta);
+            result.segments.push_back(
+                KittiSegment{.start = reference.at(associations[first].reference_index).time,
+                             .length_m = length,
+                             .translation = error.translation().norm() / length,
+                             .rotation_rad = rotationAngleRad(error) / length});
+        }
+    }
+    return result;
+}
 
 }  // namespace simpleslam::eval

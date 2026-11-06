@@ -236,13 +236,18 @@ const run_dir::ScalarValue* find(const Scalars& scalars, const std::string& name
     return nullptr;
 }
 
-/// 各序列的平均。有一个序列没有这一项，这一项就不算平均：缺了的序列不能当零。
+/// 各序列的平均。有一个序列没有这一项，这一项就不算平均：缺了的序列不能当零。每个序列都给了
+/// 权重的量按权重平均，平均的权重是权重之和（`kitti` 按段数，与官方把各序列的段合在一起
+/// 平均一致）；其余按序列平均。
 Scalars mean(const std::vector<SequenceRun>& runs) {
     Scalars out;
     if (runs.empty() || !runs.front().result) return out;
     for (const auto& [name, first] : runs.front().result->scalars) {
         double sum = 0.0;
+        double weighted_sum = 0.0;
+        double total_weight = 0.0;
         bool all = true;
+        bool weighted = true;
         for (const auto& run : runs) {
             const auto* value = run.result ? find(run.result->scalars, name) : nullptr;
             if (value == nullptr) {
@@ -250,13 +255,23 @@ Scalars mean(const std::vector<SequenceRun>& runs) {
                 break;
             }
             sum += value->value;
+            if (value->weight && *value->weight > 0.0) {
+                weighted_sum += *value->weight * value->value;
+                total_weight += *value->weight;
+            } else {
+                weighted = false;
+            }
         }
-        if (all) {
-            const double average = sum / static_cast<double>(runs.size());
-            out.emplace_back(name, run_dir::ScalarValue{.value = average,
-                                                        .unit = first.unit,
-                                                        .label = first.label});
+        if (!all) continue;
+        run_dir::ScalarValue average{.value = sum / static_cast<double>(runs.size()),
+                                     .unit = first.unit,
+                                     .label = first.label,
+                                     .weight = std::nullopt};
+        if (weighted) {
+            average.value = weighted_sum / total_weight;
+            average.weight = total_weight;
         }
+        out.emplace_back(name, std::move(average));
     }
     return out;
 }
@@ -267,7 +282,9 @@ std::string scalarsJson(const Scalars& scalars) {
         out += (out.size() == 1 ? "" : ", ") + run_dir::jsonString(name)
                + ": {\"value\": " + run_dir::jsonNumber(value.value)
                + ", \"unit\": " + run_dir::jsonString(value.unit)
-               + ", \"label\": " + run_dir::jsonString(value.label) + "}";
+               + ", \"label\": " + run_dir::jsonString(value.label)
+               + (value.weight ? ", \"weight\": " + run_dir::jsonNumber(*value.weight) : "")
+               + "}";
     }
     return out + "}";
 }

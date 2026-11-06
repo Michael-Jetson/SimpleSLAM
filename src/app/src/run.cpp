@@ -3,6 +3,7 @@
 
 #include "evaluation.hpp"
 #include "line_stream.hpp"
+#include "online_evaluation.hpp"
 #include "run_dir.hpp"
 #include "sequences.hpp"
 
@@ -44,9 +45,9 @@ namespace {
 namespace fs = std::filesystem;
 
 /// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
-constexpr const char* kRunDirFiles[] = {"task.yaml",  "outcome.yaml", "calibration.yaml",
-                                        "result.json", "run.log",      "queues.txt",
-                                        "trajectory",  "evaluation",   "source"};
+constexpr const char* kRunDirFiles[] = {
+    "task.yaml",  "outcome.yaml", "calibration.yaml", "result.json", "run.log",    "queues.txt",
+    "metrics.csv", "events.jsonl", "trajectory",      "evaluation",  "source"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -173,6 +174,37 @@ struct RunFacts {
     std::map<std::string, std::string> effective;
 };
 
+/// 在线评测：运行之前按开始时生效的标定把真值换算到比较用的传感器上，连同所选的评测函数
+/// 交给在线评测模块。评测函数与跑完之后评的是同一批、同一份参数。
+void addOnlineEvaluation(modules::SlamSystem& system, const ResolvedTask& task,
+                         const plugin::Dataset& dataset, const fw::SourceDescriptor& descriptor,
+                         std::ostream& out) {
+    const auto& c = task.config;
+    const auto& online = c.evaluation.online;
+    OnlineEvaluationModule::Setup setup;
+    setup.interval = secondsToDuration(online.interval_s);
+    const logging::Logger parent = system.logRouter().root(kOnlineEvaluationModule);
+    std::string names;
+    for (const auto& name : online.evaluators) {
+        const auto& slot = task.evaluators.at(name);
+        setup.evaluators.push_back(OnlineEvaluator{
+            .name = name, .type = slot.resolved().type, .evaluator = slot.make(parent, name)});
+        names += (names.empty() ? "" : "、") + name;
+    }
+    if (dataset.ground_truth) {
+        std::vector<std::string> notes;  // 换算的说明随跑完之后的评测写一次，这里不重复
+        setup.reference = comparisonGroundTruth(*dataset.ground_truth, dataset.calibration,
+                                                descriptor, !c.data.calibration.empty(),
+                                                dataset.evaluate_at_ground_truth_sensor, notes);
+    }
+    setup.calibration = dataset.calibration;
+    setup.resources = &system.resources();
+    setup.diagnostics = &system.diagnostics();
+    system.runtime().addModule<OnlineEvaluationModule>(std::string(kOnlineEvaluationModule),
+                                                       std::move(setup));
+    out << "在线评测: " << names << "，每 " << online.interval_s << " 秒（数据时间）\n";
+}
+
 /// 三条轨迹总写 TUM（带语义，评测读它）；要的话另写一份 KITTI 格式给官方评测程序。
 void writeTrajectories(const fs::path& dir, const modules::RunResult& result,
                        const config::TaskConfig& c, std::ostream& out) {
@@ -265,6 +297,9 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
                 task.graph_optimizer.make(router.root(modules::kGraphOptimizerModule), "plugin"),
                 toEdgePolicy(c.system.modules.graph_optimizer));
         }
+        if (!c.evaluation.online.evaluators.empty()) {
+            addOnlineEvaluation(system, task, dataset, facts.descriptor, info);
+        }
         applyToParameters(c, system.runtime().params());
         system.init();
 
@@ -304,6 +339,8 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
             for (const auto& note : notes) info << note << '\n';
         }
         config::writeCalibrationFile((dir / "calibration.yaml").string(), calibration);
+        // 度量与事件进任务记录：评测函数读它们，事后不必重跑
+        run_dir::writeDiagnostics(dir, system.diagnostics().records());
         // 缓冲满了丢掉的 debug、info 也是结局的一部分：写下来，不静默
         router.flush();
         const std::uint64_t dropped = router.dropped();

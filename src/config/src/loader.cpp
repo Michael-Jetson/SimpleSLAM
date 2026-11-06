@@ -667,6 +667,20 @@ void validateConfig(const TaskConfig& config) {
             throw ConfigError("evaluation.evaluators." + name + " 要写 type，选一个评测函数");
         }
     }
+    // 在线评测选的是上面列出的评测函数：同一份参数，跑着评与跑完评才对得上
+    const auto& online = config.evaluation.online;
+    std::set<std::string> online_names;
+    for (const auto& name : online.evaluators) {
+        if (!config.evaluation.evaluators.contains(name)) {
+            throw ConfigError("evaluation.online.evaluators 里的 " + name
+                              + " 不在 evaluation.evaluators 里：先在那里列出它");
+        }
+        if (!online_names.insert(name).second) {
+            throw ConfigError("evaluation.online.evaluators 里 " + name + " 写了两次");
+        }
+    }
+    requireDuration("evaluation.online.interval_s", online.interval_s);
+    if (!(online.interval_s > 0.0)) throw ConfigError("evaluation.online.interval_s 必须为正");
 
     const auto& log = config.outputs.log;
     requireOneOf("outputs.log.console", log.console, {"debug", "info", "warn", "error"});

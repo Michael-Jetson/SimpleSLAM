@@ -1,7 +1,7 @@
 # SimpleSLAM 源码根 —— 各模块库（实现在此，公共头文件在 ${PROJECT_SOURCE_DIR}/include）
 # 按依赖顺序加入：core 在最前，runner 在最后
 
-# 新栈：日志 → 通信 → 框架契约 → 算法库 → 插件（方案）→ 模块层 → 评测 / 回放 / 配置 → 入口
+# 新栈：日志 → 通信 → 框架契约 → 算法库 → 插件（方案）→ 模块层 → 评测 / 配置 → 入口
 add_subdirectory(logging)
 add_subdirectory(comm)
 add_subdirectory(framework)

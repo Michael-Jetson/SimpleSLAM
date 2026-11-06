@@ -83,6 +83,7 @@ fw::DiagnosticRecord toDiagnostic(const logging::Event& event) {
     record.header.source = event.source;
     record.header.process_time = fw::Timestamp{event.time_ns};
     if (event.frame) {
+        record.header.has_frame = true;
         record.header.frame_sequence = event.frame->sequence;
         record.header.data_time = fw::Timestamp{event.frame->data_time_ns};
         record.header.session = fw::SessionId{event.frame->session};

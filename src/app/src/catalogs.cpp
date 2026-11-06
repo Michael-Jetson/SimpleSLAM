@@ -28,6 +28,8 @@ config::Catalogs builtinCatalogs() {
     auto& evaluators = catalogs.of<eval::EvaluatorBase>();
     evaluators.add<eval::AteEvaluator>();
     evaluators.add<eval::RpeEvaluator>();
+    evaluators.add<eval::KittiEvaluator>();
+    evaluators.add<eval::TimingEvaluator>();
     // 空目录：方案没有内置实现，用户在入口追加
     (void)catalogs.of<plugin::OdometryBase>();
     return catalogs;
