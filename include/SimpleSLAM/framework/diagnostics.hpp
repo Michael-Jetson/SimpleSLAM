@@ -76,7 +76,7 @@ public:
     virtual void submit(const DiagnosticRecord& record) noexcept = 0;
 };
 
-/// 内存汇聚，用于测试与离线回放。
+/// 内存汇聚：系统用它收事件与度量（`SlamSystem::diagnostics()`），测试也用它。
 ///
 /// 汇聚点是跨模块共享的：多个模块的执行上下文会同时写它。各模块内部串行
 /// 并不能保证它们之间串行，所以这里必须自己加锁：不加锁就是多模块并发写同一个

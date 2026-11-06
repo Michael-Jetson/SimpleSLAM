@@ -47,9 +47,7 @@ void writeSources(const fs::path& dir, const config::TaskSource& source, const s
 [[nodiscard]] std::string quotedList(const std::vector<std::string>& items);
 
 /// `result.json` 的格式版本。字段改了含义或删了字段就加一，读的一方先核对它。
-/// 读旧写新：写第 3 版，读的一方也认第 2 版（多出的哈希、完整性来源、门禁等字段不读）。
 inline constexpr int kResultSchema = 3;
-inline constexpr int kOldestResultSchema = 2;
 
 /// JSON 字符串与数。`result.json` 是给程序读的结论，操作台（Python）读它，不解析 YAML。
 [[nodiscard]] std::string jsonString(const std::string& text);
@@ -74,12 +72,8 @@ void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const
 /// 读回 `<dir>/outcome.yaml` 里"运行是否完整"。读不懂就抛。
 [[nodiscard]] bool readComplete(const fs::path& dir);
 
-/// 读回运行时来源声明的目标窗口；没声明时为空。v3 写的任务记录把它记在 `identity.yaml` 里。
+/// 读回运行时来源声明的目标窗口；没声明时为空。
 [[nodiscard]] std::optional<fw::TimeRange> readTargetWindow(const fs::path& dir);
-
-/// 写这份任务记录的软件的大版本号（`outcome.yaml` 的 `software_version`；v3 及以前的在
-/// `identity.yaml` 里）；读不出来时为空。
-[[nodiscard]] std::optional<int> writtenByMajor(const fs::path& dir);
 
 /// 一个标量在结论里的样子：值、单位、进汇总表时的短名。
 struct ScalarValue {

@@ -103,20 +103,6 @@ int main(int argc, char** argv) {
                                                            secondsToTimestamp(end)};
             }
             else if (flag == "--dataset") request.name = value();
-            else if (flag == "--config-hash") {
-                (void)value();  // 旧选项：身份不再按哈希核对，照样接受，提示一句
-                std::cerr << "注意: --config-hash 不再核对（任务靠名字区分），忽略\n";
-            }
-            else if (flag == "--baselines" || flag == "--run-report"
-                     || flag == "--assume-complete" || flag == "--allow-incomparable") {
-                throw std::runtime_error(
-                    "选项 " + flag + " 去掉了：simpleslam-eval 只评测、不过门禁；"
-                    "自己跑出来的轨迹用 <入口> evaluate <任务记录> 补评");
-            }
-            else if (flag == "--report") {
-                throw std::runtime_error("选项 --report 已经不用了：结论写进 --out 目录里的 "
-                                         "result.json；不给 --out 时只打印、不留记录");
-            }
             else return usage();
         } catch (const std::exception& e) {
             std::cerr << "错误: " << e.what() << '\n';

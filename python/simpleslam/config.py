@@ -19,9 +19,9 @@
 ``python -m simpleslam config render task.py -o task.yaml``。
 
 Python 只写显式设置过的项，按 C++ 导出的 schema 核对键名与类型，免得扫参时几个子进程
-一起报同一个拼写错误。读系统文件、应用覆盖项、还原插件节点、补默认值、换算旧写法都在
-C++ 一处：要完整的任务，交给入口的 ``dump``（:meth:`Config.dump`、:meth:`Config.load`、
-:meth:`Config.through_cpp`）。旧写法的路径由 schema 的换算表给出，Python 认得它们，原样渲染。
+一起报同一个拼写错误。读系统文件、应用覆盖项、还原插件节点、补默认值都在 C++ 一处：
+要完整的任务，交给入口的 ``dump``（:meth:`Config.dump`、:meth:`Config.load`、
+:meth:`Config.through_cpp`）。
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ import math
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -357,12 +356,11 @@ class Config:
             path, equals, _ = item.partition("=")
             if not equals or not path:
                 raise ConfigError(f"覆盖项要写成 路径=值，得到 {item}")
-            known = path in schema or path in schema.legacy
-            if not known and _slot_containing(path, schema) is None:
+            if path not in schema and _slot_containing(path, schema) is None:
                 raise ConfigError(f"覆盖项里的未知配置项 {path}")
         for path, value in self._values.items():
-            if path in (SYSTEM_FILE, OVERRIDES) or path in schema.legacy:
-                continue  # 旧写法由 C++ 换算并核对
+            if path in (SYSTEM_FILE, OVERRIDES):
+                continue
             if system_file is not None and path.startswith("system."):
                 raise ConfigError(f"{path}：system 引用了系统文件 {system_file}，"
                                   "改系统参数要写成覆盖项（config.override）")
@@ -379,10 +377,6 @@ class Config:
                 raise ConfigError(f"未知配置项 {path}")
             _coerce_kind(schema.field(path).type, value, path)
         return self
-
-    def legacy_paths(self, schema: Schema) -> list[str]:
-        """用了哪些旧写法。换算在 C++ 加载器里，Python 原样渲染。"""
-        return sorted(path for path in self._values if path in schema.legacy)
 
     # ── 渲染 ──
 
@@ -411,12 +405,6 @@ class Config:
                     order.append(pseudo(SYSTEM_FILE, ""))
                 continue
             order.append(field)
-        # 旧写法的键放进它所在的节，原样渲染，由 C++ 换算
-        for path in self.legacy_paths(schema):
-            section = path.split(".", 1)[0] + "."
-            at = max((i for i, field in enumerate(order) if field.path.startswith(section)),
-                     default=len(order) - 1)
-            order.insert(at + 1, pseudo(path, self._values[path]))
         if OVERRIDES in self._values:
             order.append(pseudo(OVERRIDES, ""))
         return order
@@ -515,9 +503,6 @@ def _dump(binary: str, path: Path) -> str:
         raise ConfigError(f"{binary} dump {path} 失败: {exc.stderr.strip()}") from exc
     except OSError as exc:
         raise ConfigError(f"调用 {binary} 失败: {exc}") from exc
-    # C++ 换算旧写法时的说明（带替换用的新写法）照样给人看
-    if result.stderr:
-        sys.stderr.write(result.stderr)
     return result.stdout
 
 

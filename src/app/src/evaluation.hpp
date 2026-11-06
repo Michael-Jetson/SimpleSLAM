@@ -69,17 +69,17 @@ struct EvaluationOutcome {
                                                std::optional<fw::TimeRange> window,
                                                std::ostream& out);
 
-/// 结论里的身份：任务名与运行方式。任务记录的取自任务；外部轨迹没有任务，名字由调用方给，
+/// 结论的抬头：任务名与运行方式。任务记录的取自任务；外部轨迹没有任务，名字由调用方给，
 /// 不编一个出来。
-struct ResultIdentity {
+struct ResultHeader {
     std::string task;
     std::string mode;
 };
 
-[[nodiscard]] ResultIdentity identityOf(const ResolvedTask& task);
+[[nodiscard]] ResultHeader headerOf(const ResolvedTask& task);
 
-/// 写 `result.json`：身份、运行是否完整（外部轨迹为 null）、退出码、评测（没评测时为空）。
-void writeResult(const fs::path& dir, const ResultIdentity& identity, std::optional<bool> complete,
+/// 写 `result.json`：抬头、运行是否完整（外部轨迹为 null）、退出码、评测（没评测时为空）。
+void writeResult(const fs::path& dir, const ResultHeader& header, std::optional<bool> complete,
                  const EvaluationOutcome* evaluated);
 
 }  // namespace simpleslam::app

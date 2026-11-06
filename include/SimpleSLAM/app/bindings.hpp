@@ -42,7 +42,7 @@ namespace simpleslam::app {
 /// 把可调字段推进参数存储，并装上校验：运行期提交的参数要过和加载时同一套校验。
 void applyToParameters(const config::TaskConfig& config, comm::ParameterStore& store);
 
-/// 把参数快照里的可调字段读回配置（校验与回放用）。
+/// 把参数快照里的可调字段读回配置：参数存储的校验器用它，与启动加载走同一套校验。
 void readFromParameters(config::TaskConfig& config, const comm::ParamSnapshot& snapshot);
 
 }  // namespace simpleslam::app

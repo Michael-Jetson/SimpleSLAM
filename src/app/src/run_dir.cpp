@@ -21,17 +21,6 @@ namespace simpleslam::app::run_dir {
 
 namespace {
 
-/// 运行的事实在 `outcome.yaml` 里；v3 及以前写在 `identity.yaml` 里。前者有这一项就取前者。
-std::optional<YAML::Node> runFact(const fs::path& dir, const char* key) {
-    for (const char* file : {"outcome.yaml", "identity.yaml"}) {
-        const fs::path path = dir / file;
-        if (!fs::exists(path)) continue;
-        const YAML::Node value = YAML::LoadFile(path.string())[key];
-        if (value) return value;
-    }
-    return std::nullopt;
-}
-
 std::optional<std::int64_t> parseNanoseconds(const YAML::Node& node) {
     if (!node || !node.IsScalar()) return std::nullopt;
     const std::string text = node.Scalar();
@@ -167,28 +156,14 @@ void writeSources(const fs::path& dir, const config::TaskSource& source, const s
 
 std::optional<fw::TimeRange> readTargetWindow(const fs::path& dir) {
     try {
-        const auto effective = runFact(dir, "effective");
-        if (!effective || !effective->IsMap()) return std::nullopt;
-        const auto begin = parseNanoseconds((*effective)["source.evaluation_window_begin_ns"]);
-        const auto end = parseNanoseconds((*effective)["source.evaluation_window_end_ns"]);
+        const YAML::Node effective = YAML::LoadFile((dir / "outcome.yaml").string())["effective"];
+        if (!effective || !effective.IsMap()) return std::nullopt;
+        const auto begin = parseNanoseconds(effective["source.evaluation_window_begin_ns"]);
+        const auto end = parseNanoseconds(effective["source.evaluation_window_end_ns"]);
         if (!begin || !end) return std::nullopt;
         return fw::TimeRange{fw::Timestamp{*begin}, fw::Timestamp{*end}};
     } catch (const YAML::Exception& e) {
         throw std::runtime_error("读不懂任务记录 " + dir.string() + " 里的运行事实: " + e.what());
-    }
-}
-
-std::optional<int> writtenByMajor(const fs::path& dir) {
-    try {
-        const auto version = runFact(dir, "software_version");
-        if (!version || !version->IsScalar()) return std::nullopt;
-        const std::string text = version->Scalar();
-        int major = 0;
-        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), major);
-        if (error != std::errc{} || end == text.data()) return std::nullopt;
-        return major;
-    } catch (const YAML::Exception&) {
-        return std::nullopt;
     }
 }
 
@@ -202,10 +177,9 @@ ResultSummary readResult(const fs::path& dir) {
         throw std::runtime_error("读不懂结论 " + path.string() + ": " + e.what());
     }
     const int schema = root["schema"] ? root["schema"].as<int>() : 0;
-    if (schema < kOldestResultSchema || schema > kResultSchema) {
-        throw std::runtime_error(std::format("结论 {} 的格式版本是 {}，这里读得懂 {} 到 {}",
-                                             path.string(), schema, kOldestResultSchema,
-                                             kResultSchema));
+    if (schema != kResultSchema) {
+        throw std::runtime_error(std::format("结论 {} 的格式版本是 {}，这里读的是第 {} 版",
+                                             path.string(), schema, kResultSchema));
     }
     ResultSummary summary;
     summary.exit_code = root["exit_code"].as<int>();

@@ -31,9 +31,9 @@ struct Dataset {
     std::unique_ptr<fw::ISensorSource> source;
     fw::CalibrationData calibration;
     std::optional<fw::Trajectory> ground_truth;
-    /// 读取器按实测数据给出的推荐打包策略。给不出来（例如回放）时为空，用系统配置的。
+    /// 读取器按实测数据给出的推荐打包策略。给不出来时为空，用系统配置的。
     std::optional<fw::PacketizerPolicy> recommended_policy;
-    /// 帧数。不读一遍就不知道时（例如回放）为空：零帧与不知道不能长得一样。
+    /// 帧数。不读一遍就不知道时为空：零帧与不知道不能长得一样。
     std::optional<std::size_t> frames;
     /// 评测时在真值跟踪的传感器上比较（把估计换算过去），而不是把真值换算到 body。
     /// 数据集的真值本来就在相机系、又要求按相机系比较时为真。

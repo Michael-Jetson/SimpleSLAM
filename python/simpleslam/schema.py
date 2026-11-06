@@ -1,9 +1,8 @@
 """配置 schema：从 C++ 那份唯一的字段清单读出来，不在这里重写一遍。
 
-字段清单之外还有三样：插件字段要求的接口（``slots``），各目录里每个实现的
-字段清单（``plugins``），以及旧写法的换算表（``legacy``：旧路径到新写法的说明，换算本身
-在 C++ 加载器里）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用用户
-自己的入口导出。
+字段清单之外还有两样：插件字段要求的接口（``slots``），以及各目录里每个实现的
+字段清单（``plugins``）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用
+用户自己的入口导出。
 
 没有缓存副本。缓存会漂移，而漂移了的 schema 比没有 schema 更糟——
 它会让校验通过，然后在 C++ 侧报未知键。
@@ -85,13 +84,11 @@ class Schema:
         fields: Iterable[Field],
         slots: dict[str, str] | None = None,
         plugins: Iterable[PluginSchema] = (),
-        legacy: dict[str, str] | None = None,
     ) -> None:
         self._fields = list(fields)
         self._by_path = {field.path: field for field in self._fields}
         self._slots = dict(slots or {})
         self._plugins = {(plugin.interface, plugin.type): plugin for plugin in plugins}
-        self._legacy = dict(legacy or {})
 
     # ── 构造 ──
 
@@ -129,12 +126,11 @@ class Schema:
                 for item in payload.get("plugins", [])
             ]
             slots = dict(payload.get("slots", {}))
-            legacy = dict(payload.get("legacy", {}))
         except (KeyError, TypeError) as exc:
             raise SchemaError(f"schema 结构不对: {exc}") from exc
         if not fields:
             raise SchemaError("schema 里一个字段也没有")
-        return cls(fields, slots, plugins, legacy)
+        return cls(fields, slots, plugins)
 
     @classmethod
     def from_tool(cls, tool: str | None = None) -> "Schema":
@@ -175,11 +171,6 @@ class Schema:
     def interfaces(self) -> list[str]:
         """目录里出现过的全部接口。"""
         return sorted({i for (i, _) in self._plugins})
-
-    @property
-    def legacy(self) -> dict[str, str]:
-        """旧写法的路径到新写法的说明。换算由 C++ 加载器做，Python 只认得这些键。"""
-        return dict(self._legacy)
 
     @property
     def slots(self) -> dict[str, str]:

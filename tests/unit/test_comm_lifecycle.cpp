@@ -75,7 +75,7 @@ private:
 
 TEST_CASE("停止之后已接纳的输入把因果链走完", "[comm][lifecycle]") {
     // 停止时如果连派生消息也不处理，已经进系统的那一帧产不出下游的结果，
-    // 最终图和轨迹静悄悄地少一截，而精度门禁正是拿它们下结论的。
+    // 最终图和轨迹静悄悄地少一截，而评测正是拿它们算精度的。
     auto relayed = std::make_shared<std::atomic<int>>(0);
     auto sunk = std::make_shared<std::atomic<int>>(0);
     Runtime runtime(RuntimeOptions{true});

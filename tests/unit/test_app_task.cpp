@@ -330,7 +330,7 @@ TEST_CASE("可调字段进参数存储，名字是模块的私有名；不可调
     CHECK(config.system.modules.graph_optimizer.odometry_translation_weight == 3.5);
 }
 
-TEST_CASE("配置命令：check、dump、hash、schema 都由目录还原插件节点", "[app][task]") {
+TEST_CASE("配置命令：check、dump、schema 都由目录还原插件节点", "[app][task]") {
     Fixture fixture;
     const auto path = fixture.task_file.string();
     std::ostringstream out;
@@ -340,10 +340,6 @@ TEST_CASE("配置命令：check、dump、hash、schema 都由目录还原插件�
     const std::string dumped = out.str();
     CHECK(dumped.find("type: \"still\"") != std::string::npos);
     CHECK(dumped.find("keyframe_every: 5") != std::string::npos);  // 默认值已补齐
-
-    // 任务靠名字区分，要比两份任务就比导出：hash 命令去掉了，说清楚该怎么办
-    CHECK(app::configCommand({"hash", path}, catalogs(), out, err) == 2);
-    CHECK(err.str().find("用 dump 导出后对比") != std::string::npos);
 
     out.str("");
     REQUIRE(app::configCommand({"schema"}, catalogs(), out, err) == 0);
@@ -371,22 +367,18 @@ TEST_CASE("从任务文件跑到任务记录：结果、出处、结局、结论
         CHECK(fs::exists(fixture.run_dir / name));
     }
     CHECK(readText(fixture.run_dir / "outcome.yaml").find("complete: true") != std::string::npos);
-    CHECK_FALSE(fs::exists(fixture.run_dir / "identity.yaml"));
     // 机器读的结论：操作台读它，不解析 YAML
     const std::string result = readText(fixture.run_dir / "result.json");
     CHECK(result.find("\"schema\": 3,") != std::string::npos);
     CHECK(result.find("\"kind\": \"run\"") != std::string::npos);
     CHECK(result.find("\"complete\": true,\n  \"exit_code\": 0,") != std::string::npos);
-    // 只评测、不判通过与否：没有门禁，也不记文件的内容摘要
-    CHECK(result.find("\"gate\"") == std::string::npos);
-    CHECK(result.find("\"status\": \"ok\"") != std::string::npos);  // 评测函数测出了东西
-    CHECK(result.find("digest") == std::string::npos);
+    // 每个评测函数一段：测出了东西、读了哪些文件
+    CHECK(result.find("\"status\": \"ok\"") != std::string::npos);
     CHECK(result.find("\"inputs\": [\"trajectory/odometry.tum\", \"trajectory/groundtruth.tum\"]")
           != std::string::npos);
     CHECK(result.find("\"translation.rmse\": {\"value\": ") != std::string::npos);
     CHECK(result.find("\"label\": \"ATE_t\"") != std::string::npos);
     CHECK(result.find("\"file\": \"evaluation/ate.errors.csv\"") != std::string::npos);
-    CHECK(fixture.out.str().find("门禁") == std::string::npos);
     CHECK(fixture.out.str().find("结论: ") != std::string::npos);
     // 评测读的轨迹带着语义：坐标系、跟踪的传感器、时钟
     CHECK(readText(fixture.run_dir / "trajectory" / "odometry.tum")
@@ -402,11 +394,8 @@ TEST_CASE("从任务文件跑到任务记录：结果、出处、结局、结论
     CHECK(readText(fixture.run_dir / "source" / "system_still.yaml")
           == readText(fixture.dir.path() / "systems" / "still.yaml"));
     CHECK_FALSE(fs::exists(fixture.run_dir / "source" / "overrides.txt"));  // 没有覆盖项
-    // 任务靠名字区分，哪里都不记哈希
-    const std::string outcome = readText(fixture.run_dir / "outcome.yaml");
-    CHECK(outcome.find("hash") == std::string::npos);
-    CHECK(fixture.out.str().find("哈希") == std::string::npos);
     CHECK(fixture.out.str().starts_with("任务: still（"));
+    const std::string outcome = readText(fixture.run_dir / "outcome.yaml");
     // 运行的事实：写它的软件版本、实际生效的输入；目标窗口在里面，事后补评从这里读
     CHECK(outcome.find("software_version:") != std::string::npos);
     CHECK(outcome.find("\"source.evaluation_window_end_ns\": \"900000000\"")
@@ -430,25 +419,6 @@ TEST_CASE("从任务文件跑到任务记录：结果、出处、结局、结论
     CHECK(readText(fixture.run_dir / "source" / "still.py") == readText(script));
     CHECK(readText(fixture.run_dir / "source" / "overrides.txt")
           == "outputs.kitti_trajectories=false\n");
-}
-
-TEST_CASE("去掉的键：取旧默认值的静默去掉，会让人以为生效的报错", "[app][task][legacy]") {
-    Fixture fixture("");
-    // v3 写的每份 task.yaml 都带着这几行，照样能重跑
-    REQUIRE(fixture.run({"task.seed=0", "outputs.record=false", "outputs.record_diagnostics=true",
-                         "evaluation.allow_incomplete=false", "evaluation.baselines="})
-            == 0);
-    CHECK(fixture.err.str().find("去掉了") == std::string::npos);
-    // 取了别的值：说明一句
-    CHECK(fixture.run({"task.seed=7"}, /*overwrite=*/true) == 0);
-    CHECK(fixture.err.str().find("task.seed 去掉了") != std::string::npos);
-    // 忽略了会让人以为生效的：报错，不留下任务记录
-    Fixture other("");
-    CHECK(other.run({"outputs.record=true"}) == 1);
-    CHECK(other.err.str().find("outputs.record 去掉了") != std::string::npos);
-    CHECK(other.run({"evaluation.baselines=b.yaml"}) == 1);
-    CHECK(other.err.str().find("evaluation.baselines 去掉了") != std::string::npos);
-    CHECK_FALSE(fs::exists(other.run_dir));
 }
 
 TEST_CASE("只跑不评测：结论里只有运行的事实；还不支持的组合在运行之前拒绝", "[app][task]") {
@@ -576,56 +546,6 @@ TEST_CASE("评测函数给的名字进文件名与表头：写错了在写任何
     CHECK(app::loadTask((dir / "task.yaml").string(), {}, catalogs()).evaluators.count("bad") == 0);
 }
 
-TEST_CASE("v2 的任务照样能跑：按新写法评测，说明进终端与 run.log；只跑不评测时提示一句",
-          "[app][task][legacy]") {
-    {
-        Fixture fixture("evaluation:\n  alignment: se3\n  format: kitti\n");  // v2 的写法
-        REQUIRE(fixture.run() == 0);
-        INFO(fixture.out.str() << fixture.err.str());
-        CHECK(fixture.err.str().find("用了 v2 的写法") != std::string::npos);
-        CHECK(readText(fixture.run_dir / "run.log").find("用了 v2 的写法") != std::string::npos);
-        const std::string result = readText(fixture.run_dir / "result.json");
-        CHECK(result.find("\"ate\": {\n      \"type\": \"ate\"") != std::string::npos);
-        CHECK(result.find("\"rpe\": {\n      \"type\": \"rpe\"") != std::string::npos);
-        CHECK(fs::exists(fixture.run_dir / "trajectory" / "odometry.txt"));  // format: kitti
-        // 任务记录里存的是新写法：原样重跑不再有说明
-        const auto again = app::loadTask((fixture.run_dir / "task.yaml").string(), {}, catalogs());
-        CHECK(again.notes.empty());
-    }
-    {
-        Fixture fixture("");  // 数据有真值，任务没列评测函数
-        REQUIRE(fixture.run() == 0);
-        CHECK(fixture.out.str().find("提示: 数据有真值，任务里没有评测函数") != std::string::npos);
-    }
-}
-
-TEST_CASE("旧版本写的任务记录：v3 的照样补评，v2 的说清楚怎么办", "[app][evaluate][legacy]") {
-    Fixture fixture;
-    REQUIRE(fixture.run() == 0);
-    const fs::path& dir = fixture.run_dir;
-    std::ostringstream out;
-    std::ostringstream err;
-
-    // v3 把软件版本与目标窗口记在 identity.yaml 里，outcome.yaml 里没有：补评照样读到窗口
-    const std::string outcome = readText(dir / "outcome.yaml");
-    writeText(dir / "outcome.yaml", outcome.substr(0, outcome.find("effective:")));
-    writeText(dir / "identity.yaml",
-              "software_version: \"3.1\"\neffective:\n"
-              "  \"source.evaluation_window_begin_ns\": \"0\"\n"
-              "  \"source.evaluation_window_end_ns\": \"900000000\"\n");
-    REQUIRE(app::evaluateTask(dir.string(), {}, catalogs(), out, err) == 0);
-    INFO(out.str() << err.str());
-    CHECK(readText(dir / "result.json").find("\"target_coverage\"") != std::string::npos);
-
-    // v2 写的任务记录：缺真值与生效的标定，不补；说清楚还能怎么办
-    const fs::path old = fixture.dir.path() / "runs" / "v2";
-    writeText(old / "task.yaml", readText(fixture.task_file));
-    writeText(old / "identity.yaml", "software_version: \"2.4\"\n");
-    CHECK(app::evaluateTask(old.string(), {}, catalogs(), out, err) == 1);
-    CHECK(err.str().find("是 v2 写的任务记录") != std::string::npos);
-    CHECK(err.str().find("simpleslam-eval") != std::string::npos);
-}
-
 TEST_CASE("数据没有真值而所选的评测函数要真值：在运行之前拒绝", "[app][task][evaluate]") {
     Fixture fixture;
     makeOdometryDataset(fixture.dir.path() / "kitti", 4, "11");
@@ -653,13 +573,10 @@ TEST_CASE("单独评测外部轨迹：写成一份最小的任务记录，只评
     const fs::path external = request.out;
     CHECK(fs::exists(external / "trajectory" / "odometry.tum"));
     CHECK(fs::exists(external / "trajectory" / "groundtruth.tum"));
-    CHECK_FALSE(fs::exists(external / "identity.yaml"));
     const std::string result = readText(external / "result.json");
     CHECK(result.find("\"complete\": null,\n  \"exit_code\": 0,") != std::string::npos);
-    CHECK(result.find("\"gate\"") == std::string::npos);
     // 没有任务就不编：名字取估计轨迹的文件名
     CHECK(result.find("\"task\": \"odometry\"") != std::string::npos);
-    CHECK(result.find("_hash") == std::string::npos);
     CHECK(result.find("\"translation.rmse\": {\"value\": ") != std::string::npos);
     // 数字与任务记录里跑完立刻评的相同
     CHECK(readText(external / "evaluation" / "ate.errors.csv")
@@ -698,12 +615,10 @@ TEST_CASE("多序列：每个序列一个子进程、一份子任务记录，最
     CHECK(result.find("\"kind\": \"sequences\"") != std::string::npos);
     CHECK(result.find("\"exit_code\": 0,") != std::string::npos);
     CHECK(result.find("{\"name\": \"01\"") != std::string::npos);
-    CHECK(result.find("\"status\"") == std::string::npos);
     CHECK(result.find("\"scalars\": {\"ate.translation.rmse\": {\"value\": ")
           != std::string::npos);
     // 每个序列都有结果，才有平均
     CHECK(result.find("\"ate.translation.rmse\"", result.find("\"mean\"")) != std::string::npos);
-    CHECK_FALSE(fs::exists(fixture.run_dir / "identity.yaml"));
     CHECK(readText(fixture.run_dir / "task.yaml").find("sequences: [\"00\", \"01\"]")
           != std::string::npos);
     CHECK(fs::exists(fixture.run_dir / "source" / "still.yaml"));  // 顶层也存原始配置

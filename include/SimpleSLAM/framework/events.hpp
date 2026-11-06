@@ -184,7 +184,7 @@ enum class HealthLevel : std::uint8_t { kHealthy, kWarning, kCritical, kFatal };
 struct HealthEvent {
     Timestamp time{0};
     HealthLevel level = HealthLevel::kHealthy;
-    std::uint64_t frame_sequence = 0;  ///< 实际生效的帧，便于回放
+    std::uint64_t frame_sequence = 0;  ///< 从哪一帧起生效
     const char* reason = "";
 };
 

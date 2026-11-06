@@ -70,7 +70,7 @@ public:
     [[nodiscard]] bool finished() const noexcept { return finished_; }
     /// 来源已经读完（next() 返回过空）。与 finished() 不同：读完之后还可能有触发帧在排空。
     [[nodiscard]] bool sourceExhausted() const noexcept { return source_exhausted_; }
-    /// 来源的终态。未结束时是 kRunning；不完整的回放在这里可见。
+    /// 来源的终态。未结束时是 kRunning；没读完的输入在这里可见。
     [[nodiscard]] fw::SourceOutcome outcome() const noexcept { return outcome_; }
     [[nodiscard]] std::uint64_t publishedPackets() const noexcept { return published_; }
     [[nodiscard]] std::uint64_t consumedPackets() const noexcept { return consumed_; }

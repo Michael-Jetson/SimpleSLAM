@@ -65,7 +65,7 @@ using KeyframePtr = std::shared_ptr<const Keyframe>;
 
 /// 关键帧库的内容。按 id 升序追加，遍历顺序确定。
 ///
-/// 存储用 AppendLog：新增一帧不再整份复制索引（append_log.hpp 说明了代价）。
+/// 存储用 AppendLog：新增一帧不必整份复制索引（append_log.hpp 说明了代价）。
 struct KeyframeStoreData {
     AppendLog<KeyframePtr> frames;
     std::uint64_t next_sequence = 1;

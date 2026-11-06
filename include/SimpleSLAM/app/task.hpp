@@ -27,8 +27,6 @@ struct ResolvedTask {
     /// 插件节点已换成还原后的节点。
     config::TaskConfig config;
     config::TaskSource source;
-    /// 换算过的旧写法，每条带替换用的新写法（`config::LoadedTask::notes`）。
-    std::vector<std::string> notes;
     config::Slot<plugin::DatasetReader> data;
     config::Slot<plugin::OdometryBase> odometry;
     config::Slot<plugin::PlaceRecognizerBase> place_recognizer;

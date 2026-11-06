@@ -5,7 +5,7 @@
 
 /// @file line_stream.hpp
 /// 把 `<<` 写出的每一行变成一条日志：执行器沿用流式的写法（含 `std::fixed`、
-/// `std::setprecision`），输出照样进日志组件，终端上与原来一字不差，run.log 里多了前缀。
+/// `std::setprecision`），输出进日志组件：终端上只有正文，run.log 里每行带等级、时刻与来源。
 
 #include <SimpleSLAM/logging/logger.hpp>
 

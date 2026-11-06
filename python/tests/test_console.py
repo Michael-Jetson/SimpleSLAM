@@ -157,39 +157,6 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("ate:ATE_t", header)
             self.assertIn("ate_sim3:ATE_t", header)
 
-    def test_results_written_by_v2_are_read(self):
-        # 读旧写新：v2 写的第 1 版在内存里换成现在的样子，能和新写的结果放进一张表；
-        # 那时的哈希不再用，读的时候不管
-        common = {"mode": "offline", "purpose": "experiment", "software_version": "2.4",
-                  "task_hash": "a" * 16, "system_hash": "b" * 16}
-        with tempfile.TemporaryDirectory() as directory:
-            old = Path(directory) / "old"
-            old.mkdir()
-            (old / "result.json").write_text(json.dumps({
-                "schema": 1, "kind": "run", "task": "kitti-00", "complete": True, "exit_code": 0,
-                "status": "pass", "detail": "", "summary": {"ate.translation.rmse": 1.5},
-                "metrics": {"ate.translation.rmse": 1.5, "ate.rotation_deg.rmse": 0.25,
-                            "ate.pairs": 30, "ate.max_reference_gap_s": 0.1,
-                            "rpe.translation.rmse": 0.0, "rpe.pairs": 0}, **common}))
-            [row] = rows(old)
-            self.assertEqual(row.scalars["ate.rotation.rmse"].label, "ATE_r")
-            self.assertEqual(row.scalars["ate.rotation.rmse"].unit, "deg")
-            self.assertEqual(row.scalars["ate.max_reference_gap"].unit, "s")
-            self.assertNotIn("rpe.translation.rmse", row.scalars)  # 一对都没关联上：不给数
-            self.assertEqual(row.metrics["ate.translation.rmse"], 1.5)  # v2 的属性名留作别名
-            self.assertIn("ATE_r", table(rows(old)))
-            suite = Path(directory) / "suite"
-            suite.mkdir()
-            (suite / "result.json").write_text(json.dumps({
-                "schema": 1, "kind": "sequences", "task": "s", "exit_code": 0,
-                "sequences": [{"name": "00", "archive": "x", "log": "y", "exit_code": 0,
-                               "status": "pass", "complete": True, "problem": "",
-                               "metrics": {"ate.translation.rmse": 2.0, "ate.pairs": 10}}],
-                "mean": {"ate.translation.rmse": 2.0}, **common}))
-            [item] = rows(suite)
-            self.assertEqual(item.scalars["ate.translation.rmse"].label, "ATE_t")
-            self.assertIn("2.0000", describe(suite).splitlines()[-1])  # 平均那一行
-
     def test_missing_or_foreign_results_are_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ResultError, "没有 result.json"):

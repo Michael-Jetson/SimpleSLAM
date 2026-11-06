@@ -1,7 +1,6 @@
-# 配置层：配置聚合体（真源）、YAML 加载/导出、schema 导出、旧写法的换算。
+# 配置层：配置聚合体（真源）、YAML 加载/导出、schema 导出。
 add_library(simpleslam_config STATIC
     src/loader.cpp
-    src/legacy.cpp
     src/calibration_io.cpp
 )
 target_include_directories(simpleslam_config PUBLIC "${PROJECT_SOURCE_DIR}/include")

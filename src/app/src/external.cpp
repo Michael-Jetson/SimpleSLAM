@@ -16,9 +16,8 @@ namespace simpleslam::app {
 
 namespace {
 
-/// 外部轨迹的任务记录里由这里写的文件；`identity.yaml` 是旧版本写过的，覆盖时一并删掉。
-constexpr const char* kExternalFiles[] = {"trajectory", "evaluation", "result.json",
-                                          "identity.yaml"};
+/// 外部轨迹的任务记录里由这里写的文件。
+constexpr const char* kExternalFiles[] = {"trajectory", "evaluation", "result.json"};
 
 eval::TrajectoryFormat formatOf(const std::string& text, const std::string& path) {
     if (text.empty()) return eval::detectTrajectoryFormat(path);
@@ -67,7 +66,7 @@ int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Cata
         // 没有任务：名字取调用方给的，没给就取估计轨迹的文件名；运行方式留空，完整性不知道
         const std::string name =
             request.name.empty() ? fs::path(request.estimate).stem().string() : request.name;
-        writeResult(dir, ResultIdentity{.task = name, .mode = {}}, std::nullopt, &evaluated);
+        writeResult(dir, ResultHeader{.task = name, .mode = {}}, std::nullopt, &evaluated);
         if (request.keep_record) out << "结论: " << (dir / "result.json").string() << '\n';
         return 0;
     } catch (const std::exception& e) {

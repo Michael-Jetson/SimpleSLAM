@@ -45,7 +45,6 @@ struct FieldSchema {
 
 /// schema 的 JSON 导出。`slots` 是插件字段到它要求的接口名，`plugins` 是各目录里
 /// 每个实现的字段清单；两者由知道目录的一方（入口层）给出，配置层不认识接口。
-/// 另带旧写法的换算表（`legacy`：旧路径到新写法的说明），Python 据此认得旧键。
 [[nodiscard]] std::string schemaJson(const std::map<std::string, std::string>& slots = {},
                                      const std::vector<PluginSchema>& plugins = {});
 
@@ -63,8 +62,6 @@ struct TaskSource {
 struct LoadedTask {
     TaskConfig config;
     TaskSource source;
-    /// 换算过的旧写法，每条带替换用的新写法。执行器与配置命令把它们印出来。
-    std::vector<std::string> notes;
 };
 
 /// `base_dir` 用来解析 `system` 里的相对路径。
@@ -75,10 +72,8 @@ struct LoadedTask {
                                       const std::vector<std::string>& overrides = {});
 
 /// 应用"路径=值"覆盖项，写法与任务文件里的 `overrides` 相同；改某个插件节点的 `type`
-/// 时，这个节点换成新实现的默认参数。然后整体校验。旧写法的路径按换算表换成新写法，
-/// 说明写进 `notes`（给了的话）。
-void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
-                    std::vector<std::string>* notes = nullptr);
+/// 时，这个节点换成新实现的默认参数。然后整体校验。
+void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments);
 
 /// 规范化导出：按 schema 顺序、按节嵌套、数值格式固定，写不写默认值、键序与注释都不影响它。
 /// 任务记录里的 `task.yaml` 就是它，两份任务要不要比、比什么，直接比它。

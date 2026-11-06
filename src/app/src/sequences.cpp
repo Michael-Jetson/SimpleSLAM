@@ -42,9 +42,8 @@ namespace {
 namespace fs = std::filesystem;
 
 /// 多序列任务记录的顶层由执行器写的文件。`--overwrite` 只删这些；各序列的子任务记录由子进程自己清。
-/// 多序列顶层由执行器写的文件；`identity.yaml` 是旧版本写过的，覆盖时一并删掉。
-constexpr const char* kSuiteFiles[] = {"task.yaml", "result.json", "logs", "source",
-                                       "identity.yaml"};
+/// 多序列顶层由执行器写的文件。
+constexpr const char* kSuiteFiles[] = {"task.yaml", "result.json", "logs", "source"};
 
 /// 一个序列：怎么跑，跑成什么样。
 struct SequenceRun {

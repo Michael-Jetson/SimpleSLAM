@@ -276,16 +276,16 @@ EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
     return outcome;
 }
 
-ResultIdentity identityOf(const ResolvedTask& task) {
+ResultHeader headerOf(const ResolvedTask& task) {
     const auto& c = task.config;
-    return ResultIdentity{.task = c.task.name, .mode = c.task.mode};
+    return ResultHeader{.task = c.task.name, .mode = c.task.mode};
 }
 
-void writeResult(const fs::path& dir, const ResultIdentity& identity, std::optional<bool> complete,
+void writeResult(const fs::path& dir, const ResultHeader& header, std::optional<bool> complete,
                  const EvaluationOutcome* evaluated) {
     std::ostringstream text;
     text << "{\n  \"schema\": " << run_dir::kResultSchema << ",\n  \"kind\": \"run\",\n  \"task\": "
-         << jsonString(identity.task) << ",\n  \"mode\": " << jsonString(identity.mode)
+         << jsonString(header.task) << ",\n  \"mode\": " << jsonString(header.mode)
          << ",\n  \"software_version\": " << jsonString(SIMPLESLAM_VERSION)
          << ",\n  \"complete\": " << (complete ? (*complete ? "true" : "false") : "null")
          << ",\n  \"exit_code\": " << exitCodeFor(complete) << ",\n  \"evaluations\": {";

@@ -2,7 +2,7 @@
 
 只测库函数不够：库的结果正确，不代表入口把它原样接上了。这里直接跑可执行文件：
 只评测、不判通过与否，结论（``result.json``）里写着评测函数的参数与结果，完整性是 null；
-没测出东西时如实写无结果，不写成零误差；去掉的选项报错时指明替代。
+没测出东西时如实写无结果，不写成零误差；认不出的选项给出用法。
 """
 
 import json
@@ -62,7 +62,6 @@ class EvalCliTest(unittest.TestCase):
         self.assertEqual(data["task"], "kitti/00")
         self.assertIsNone(data["complete"])  # 一条轨迹文件说不出产生它的运行是否完整
         self.assertEqual(data["exit_code"], 0)
-        self.assertNotIn("gate", data)
         self.assertEqual(data["evaluations"]["ate"]["status"], "ok")
         self.assertEqual(data["evaluations"]["ate"]["samples"], 4)
 
@@ -79,14 +78,11 @@ class EvalCliTest(unittest.TestCase):
         self.assertEqual(data["evaluations"]["ate"]["status"], "no_result")
         self.assertEqual(data["evaluations"]["ate"]["scalars"], {})  # 无结果不写成零误差
 
-    def test_removed_options_say_what_to_use(self):
-        for args in (["--report", "report.yaml"], ["--baselines", "b.yaml"],
-                     ["--run-report", "result.json"], ["--assume-complete", "说明"],
-                     ["--allow-incomparable"]):
-            code, data, stderr = self.run_tool(str(self.estimate), str(self.same), *args)
-            self.assertEqual(code, 2, args)
-            self.assertIsNone(data, args)
-            self.assertTrue("--out" in stderr or "evaluate" in stderr, stderr)
+    def test_unknown_option_prints_usage(self):
+        code, data, stderr = self.run_tool(str(self.estimate), str(self.same), "--nope")
+        self.assertEqual(code, 2)
+        self.assertIsNone(data)
+        self.assertIn("用法: simpleslam-eval", stderr)
 
     def test_non_finite_or_out_of_range_numbers_are_rejected(self):
         # nan、负的间隔、带单位的数：不能原样写进评测函数的参数

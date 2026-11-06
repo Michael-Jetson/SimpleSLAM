@@ -43,12 +43,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。后三个是旧版本
-/// 写过的：覆盖旧的任务记录时不留下它们。
-constexpr const char* kRunDirFiles[] = {
-    "task.yaml",  "outcome.yaml",  "calibration.yaml", "result.json",
-    "run.log",    "queues.txt",    "trajectory",       "evaluation",
-    "source",     "identity.yaml", "recording.ssrec",  "recording.ssrec.diagnostics.jsonl"};
+/// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
+constexpr const char* kRunDirFiles[] = {"task.yaml",  "outcome.yaml", "calibration.yaml",
+                                        "result.json", "run.log",      "queues.txt",
+                                        "trajectory",  "evaluation",   "source"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -200,7 +198,7 @@ int usage(std::ostream& err) {
                                           --source 另存一份原始文件进任务记录（如 .py 任务）
   check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
   dump  <任务.yaml> [路径=值 …]           还原后的完整任务
-  evaluate <任务记录> [evaluation.…=值 …]  单独评测：补评或换评测函数、协议重评，不重跑
+  evaluate <任务记录> [evaluation.…=值 …]  单独评测：补评或换评测函数、换参数重评，不重跑
   schema                                  配置 schema，含目录里每个实现的字段
   default                                 全部默认值
 
@@ -232,17 +230,11 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     LineStream warn(runner, logging::Level::kWarn);
     try {
         info << "任务: " << c.task.name << "（" << options.task_file << "）\n";
-        for (const auto& note : task.notes) warn << "注意: " << note << '\n';
         // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
         const fs::path dir = run_dir::directory(c);
         run_dir::refuseOccupied(dir, options.overwrite);
         plugin::Dataset dataset = openData(task, runner);
-        if (task.evaluators.empty() && dataset.ground_truth) {
-            // v2 的任务默认评测，v3 没列评测函数就不评：只靠默认值的旧任务认不出来，提示一句
-            info << "提示: 数据有真值，任务里没有评测函数，只跑不评测；要评测就在 "
-                    "evaluation.evaluators 里列出，如 ate: {type: ate}\n";
-        }
         run_dir::prepare(dir, kRunDirFiles);
         fs::create_directories(dir / "trajectory");
         system.logRouter().openFile(dir / "run.log");
@@ -327,11 +319,11 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
         // 评测只读任务记录：完整性与目标窗口都从刚写下的文件里读
         const bool complete = run_dir::readComplete(dir);
         if (task.evaluators.empty()) {  // 只跑不评测
-            writeResult(dir, identityOf(task), complete, nullptr);
+            writeResult(dir, headerOf(task), complete, nullptr);
             return exitCodeFor(complete);
         }
         const auto evaluated = evaluateRunDir(dir, task, run_dir::readTargetWindow(dir), info);
-        writeResult(dir, identityOf(task), complete, &evaluated);
+        writeResult(dir, headerOf(task), complete, &evaluated);
         reportResult(dir, complete, info, warn);
         return exitCodeFor(complete);
     } catch (const std::exception& e) {
@@ -349,7 +341,6 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         const auto& c = task.config;
         if (c.data.sequences.empty()) return runSingle(task, options, out, err);
         out << "任务: " << c.task.name << "（" << options.task_file << "）\n";
-        for (const auto& note : task.notes) err << "注意: " << note << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
     } catch (const std::exception& e) {
@@ -364,14 +355,6 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
         const fs::path dir(dir_text);
         if (!fs::exists(dir / "task.yaml")) {
             throw std::runtime_error(dir_text + " 不是任务记录：里面没有 task.yaml");
-        }
-        // v2 写的任务记录缺评测的输入（真值、生效的标定、轨迹的语义），补齐要回头读数据、
-        // 还要假设轨迹跟踪的传感器，所以不补：说清楚还能怎么办
-        if (const auto major = run_dir::writtenByMajor(dir); major && *major < 3) {
-            throw std::runtime_error(
-                dir_text + " 是 v" + std::to_string(*major) + " 写的任务记录，缺评测要的输入"
-                "（真值、生效的标定、轨迹的语义）：用现在的版本重跑这个任务（它的 task.yaml "
-                "照样能用），或用 simpleslam-eval 评测它的轨迹");
         }
         for (const auto& item : overrides) {
             if (!item.starts_with("evaluation.")) {
@@ -389,7 +372,7 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
         }
         const bool complete = run_dir::readComplete(dir);
         const auto evaluated = evaluateRunDir(dir, task, run_dir::readTargetWindow(dir), out);
-        writeResult(dir, identityOf(task), complete, &evaluated);
+        writeResult(dir, headerOf(task), complete, &evaluated);
         // 评测一节随这次评测更新：评测不改变这次运行
         config::writeConfigFile((dir / "task.yaml").string(), task.config);
         reportResult(dir, complete, out, err);
@@ -412,17 +395,11 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
         out << config::dumpConfig(config::TaskConfig{});
         return 0;
     }
-    if (command == "hash") {
-        err << "错误: hash 命令去掉了：任务靠名字区分；"
-               "要看两份任务有什么不同，用 dump 导出后对比\n";
-        return 2;
-    }
     if (command != "check" && command != "dump") return -1;
     if (args.size() < 2) return usage(err);
     try {
         const auto task =
             loadTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()), catalogs);
-        for (const auto& note : task.notes) err << "注意: " << note << '\n';
         if (command == "check") {
             out << "任务有效: " << args[1] << '\n';
         } else {

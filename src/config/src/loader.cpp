@@ -3,7 +3,6 @@
 
 #include <SimpleSLAM/config/loader.hpp>
 
-#include "legacy.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -601,13 +600,7 @@ std::string schemaJson(const std::map<std::string, std::string>& slots,
         }
         out << "]}";
     }
-    out << (plugins.empty() ? "" : "\n  ") << "],\n  \"legacy\": {";
-    const auto& legacy_fields = legacy::fields();
-    for (std::size_t i = 0; i < legacy_fields.size(); ++i) {
-        out << (i == 0 ? "\n" : ",\n") << "    " << quoteJson(legacy_fields[i].first) << ": "
-            << quoteJson(legacy_fields[i].second);
-    }
-    out << (legacy_fields.empty() ? "" : "\n  ") << "}\n}\n";
+    out << (plugins.empty() ? "" : "\n  ") << "]\n}\n";
     return out.str();
 }
 
@@ -743,9 +736,6 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         throw ConfigError(origin + ": system 要写成系统文件的路径");
     }
 
-    // 旧写法先换成新写法，再查未知键：换算表以外的未知键照样报错
-    legacy::upgradeTree(root, origin, loaded.notes);
-
     // 未知键先查：拼错的键静默忽略，比报错难查得多
     const FieldPaths paths = fieldPaths();
     std::vector<std::string> present;
@@ -763,7 +753,7 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         assign(value, node, path, origin);
     });
     // 类型对了不等于值有意义：覆盖全部到位之后整体校验
-    applyOverrides(loaded.config, loaded.source.overrides, &loaded.notes);
+    applyOverrides(loaded.config, loaded.source.overrides);
     return loaded;
 }
 
@@ -773,23 +763,8 @@ LoadedTask loadTaskFile(const std::string& path, const std::vector<std::string>&
                           parent.empty() ? std::string(".") : parent.string(), overrides);
 }
 
-void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
-                    std::vector<std::string>* notes) {
-    std::vector<std::string> unused;
-    std::vector<std::string>& out = notes == nullptr ? unused : *notes;
-    for (const auto& assignment : assignments) {
-        const auto equals = assignment.find('=');
-        if (equals != std::string::npos && equals > 0) {
-            const auto translated = legacy::translateAssignment(
-                config, assignment.substr(0, equals), assignment.substr(equals + 1), out);
-            if (translated) {
-                for (const auto& item : translated->assignments) applyAssignment(config, item);
-                if (translated->rpe_deltas) legacy::dropRpeWithoutDelta(config, out);
-                continue;
-            }
-        }
-        applyAssignment(config, assignment);
-    }
+void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments) {
+    for (const auto& assignment : assignments) applyAssignment(config, assignment);
     validateConfig(config);
 }
 

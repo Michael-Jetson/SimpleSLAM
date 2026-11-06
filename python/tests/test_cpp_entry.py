@@ -1,6 +1,6 @@
 """Python 写的任务经 C++ 入口加载与导出：渲染出的 YAML C++ 读得懂，读到的就是 Python 写的。
 
-还原插件节点、补默认值、读系统文件、应用覆盖项、换算旧写法都只在 C++ 一处，Python 不留
+还原插件节点、补默认值、读系统文件、应用覆盖项都只在 C++ 一处，Python 不留
 第二份。这里核对两边接得上：schema 从入口导出，任务经入口的 ``dump`` 展开。
 
 要一个登记了里程计的入口：内置目录里没有里程计（算法由用户写），示例入口
@@ -107,7 +107,6 @@ class ThroughCppTest(unittest.TestCase):
         self.assertIn("my_lio", self.schema.implementations("OdometryBase"))
         self.assertEqual(self.schema.implementations("DatasetReader"),
                          ["kitti_odometry", "kitti_raw"])
-        self.assertIn("task.seed", self.schema.legacy)  # 去掉的键也在换算表里，Python 认得
 
     def test_rendered_tasks_load_as_written(self):
         nasty = 'a # b: "c" \\ d\n\te'
@@ -152,17 +151,6 @@ class ThroughCppTest(unittest.TestCase):
                                           schema=self.schema)["evaluation.evaluators"]
         self.assertEqual(sorted(evaluators), ["ate", "rpe", "z9"])
         self.assertEqual(evaluators["ate"]["alignment"], "none")
-
-    def test_old_spelling_goes_through_cpp_to_the_same_task(self):
-        # 旧写法交给 C++ 换算：与新写法得到同一份完整的任务
-        old = self.base(task={"name": "py", "purpose": "experiment"},
-                        evaluation={"alignment": "sim3", "rpe_delta_s": 1.0})
-        new = self.base(task={"name": "py"}, evaluation={"evaluators": {
-            "ate": {"type": "ate", "alignment": "sim3"}, "rpe": {"type": "rpe", "delta_s": 1.0}}})
-        self.assertEqual(old.legacy_paths(self.schema),
-                         ["evaluation.alignment", "evaluation.rpe_delta_s", "task.purpose"])
-        self.assertEqual(old.dump(tool=TASK_TOOL, schema=self.schema),
-                         new.dump(tool=TASK_TOOL, schema=self.schema))
 
     def test_evaluator_names_and_types_are_checked(self):
         for name in ("ate.v2", "ate-2", ""):
@@ -210,9 +198,6 @@ class ThroughCppTest(unittest.TestCase):
             check = run_python("-m", "simpleslam", "config", "check", example,
                                "--entry", TASK_TOOL)
             self.assertIn("任务有效", check)
-            # 旧的 --tool 写法照样能用
-            old = run_python("-m", "simpleslam", "--tool", TASK_TOOL, "config", "check", example)
-            self.assertIn("任务有效", old)
 
             # 扫参的变体：每个都能加载，改的是系统，展开后的系统各不相同
             listed = run_python(example, str(Path(directory) / "sweep")).split()

@@ -44,10 +44,7 @@ _DATA_PATHS = ("data.source.path=", "data.calibration=", "evaluation.groundtruth
 
 
 def _config_entry(args: argparse.Namespace) -> str:
-    """config 子命令用的入口：``--tool`` 给的可执行文件（旧写法），否则同别的子命令，
-    ``--entry`` 或示例入口，按需构建。"""
-    if args.tool:
-        return args.tool
+    """config 子命令用的入口：同别的子命令，``--entry`` 或示例入口，按需构建。"""
     return str(_workspace(args).entry(args.entry, build=not args.no_build))
 
 
@@ -71,11 +68,6 @@ def _print_schema(schema: Schema) -> None:
 
 
 def _config_command(args: argparse.Namespace) -> int:
-    if args.action == "hash":
-        # 任务靠名字区分，不再算哈希：要看两份任务有什么不同，导出完整任务后对比
-        print("错误: hash 去掉了：任务靠名字区分；要看两份任务有什么不同，"
-              "用 config render --full 导出后对比", file=sys.stderr)
-        return 2
     tool = _config_entry(args)
     schema = Schema.from_tool(tool)
     if args.action == "schema":
@@ -178,7 +170,6 @@ def _impls_command(args: argparse.Namespace) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m simpleslam",
                                      description="SimpleSLAM 的操作台：构建、跑任务、看结果")
-    parser.add_argument("--tool", help="config 子命令用的入口（可执行文件）；不给时同 --entry")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = argparse.ArgumentParser(add_help=False)
@@ -231,7 +222,7 @@ def _parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("config", parents=[build], help="任务渲染与校验")
     config_parser.add_argument(
-        "action", choices=["schema", "render", "check", "hash"], help="要做什么（hash 已去掉）"
+        "action", choices=["schema", "render", "check"], help="要做什么"
     )
     config_parser.add_argument("input", nargs="?", help="任务文件（.py 或 .yaml）")
     config_parser.add_argument("-o", "--output", help="输出文件（默认打到标准输出）")

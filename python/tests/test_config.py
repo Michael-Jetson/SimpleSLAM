@@ -12,7 +12,7 @@ LIO = "system.modules.odometry.plugin"
 SOURCE = "data.source"
 
 
-def fake_schema(extra_fields=(), legacy=None) -> Schema:
+def fake_schema(extra_fields=()) -> Schema:
     return Schema(
         [
             Field("task.name", "string", "default", "任务名", False),
@@ -26,7 +26,6 @@ def fake_schema(extra_fields=(), legacy=None) -> Schema:
             *extra_fields,
         ],
         slots={LIO: "OdometryBase", SOURCE: "DatasetReader"},
-        legacy=legacy,
         plugins=[
             PluginSchema("OdometryBase", "lio", (
                 PluginField("keyframe_distance_m", "double", "1", "关键帧距离"),
@@ -52,20 +51,19 @@ def minimal(**extra) -> Config:
 
 
 class SchemaTest(unittest.TestCase):
-    def test_plugin_fields_and_legacy_table_are_read_from_cpp_json(self):
+    def test_plugin_fields_are_read_from_cpp_json(self):
         # C++ 导出的子槽默认节点（default_spec）不读：还原插件节点在 C++
         text = (
             '{"fields": [{"path": "task.name", "type": "string", "default": "x", "doc": "", '
             '"tunable": false}], "slots": {}, "plugins": [{"interface": "OdometryBase", '
             '"type": "nested", "fields": [{"name": "map", "kind": "slot:Map", '
             '"default": "voxel", "doc": "地图", "default_spec": {"type": "voxel", "params": {}, '
-            '"children": {}}}]}], "legacy": {"task.repeats": "去掉了"}}'
+            '"children": {}}}]}]}'
         )
         schema = Schema.from_json(text)
         field = schema.plugin("OdometryBase", "nested").fields[0]
         self.assertEqual((field.name, field.kind, field.default), ("map", "slot:Map", "voxel"))
         self.assertEqual(schema.implementations("OdometryBase"), ["nested"])
-        self.assertEqual(schema.legacy, {"task.repeats": "去掉了"})
 
 
 class RenderTest(unittest.TestCase):
@@ -139,35 +137,6 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "未知配置项 task.nam"):
             Config().override("task.nam", "x").validate(fake_schema())
         Config().override(f"{LIO}.anything", 1).validate(fake_schema())  # 插件内部归目录查
-
-
-class LegacyTest(unittest.TestCase):
-    """旧写法：Python 认得 schema 换算表里的旧键，原样渲染进所在的节，换算交给 C++。"""
-
-    @staticmethod
-    def schema() -> Schema:
-        return fake_schema(
-            extra_fields=[Field("evaluation.groundtruth", "string", "", "真值", False)],
-            legacy={"task.purpose": "去掉了", "evaluation.alignment": "evaluators.ate.alignment"})
-
-    def test_old_keys_are_known_and_rendered_in_their_section(self):
-        schema = self.schema()
-        config = minimal(task={"name": "old", "purpose": "experiment"},
-                         evaluation={"groundtruth": "gt.tum", "alignment": "sim3"})
-        config.validate(schema)
-        self.assertEqual(config.legacy_paths(schema), ["evaluation.alignment", "task.purpose"])
-        text = config.to_yaml(schema)
-        self.assertIn('task:\n  name: "old"\n  purpose: "experiment"\n', text)
-        self.assertIn('evaluation:\n  groundtruth: "gt.tum"\n  alignment: "sim3"\n', text)
-        with self.assertRaisesRegex(ConfigError, "未知配置项 task.purpose"):
-            config.validate(fake_schema())  # 没有换算表就不认得
-
-    def test_old_override_paths_are_known(self):
-        config = minimal()
-        config.override("evaluation.alignment", "sim3")
-        config.validate(self.schema())
-        with self.assertRaisesRegex(ConfigError, "覆盖项里的未知配置项"):
-            config.validate(fake_schema())
 
 
 class ParseTest(unittest.TestCase):

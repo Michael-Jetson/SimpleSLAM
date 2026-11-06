@@ -81,8 +81,7 @@ struct TrajectoryEvaluation {
 int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Catalogs& catalogs,
                          std::ostream& out, std::ostream& err);
 
-/// 配置命令：schema、default、check、dump（hash 去掉了，报错时指明用 dump 对比）。
-/// 不是配置命令时返回 -1，用法错误返回 2。
+/// 配置命令：schema、default、check、dump。不是配置命令时返回 -1，用法错误返回 2。
 int configCommand(const std::vector<std::string>& args, const config::Catalogs& catalogs,
                   std::ostream& out, std::ostream& err);
 
