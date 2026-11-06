@@ -9,13 +9,17 @@
 /// `outcome.yaml` 的写与读放在这里：单次运行写它，多序列的汇总读它，格式只有一份。
 
 #include <SimpleSLAM/config/config.hpp>
+#include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace simpleslam::app::archive {
@@ -37,6 +41,26 @@ void writeText(const fs::path& path, const std::string& text);
 /// YAML 双引号字符串。档案里的字符串一律加引号，读回来不会变成别的类型。
 [[nodiscard]] std::string quoted(const std::string& text);
 [[nodiscard]] std::string quotedList(const std::vector<std::string>& items);
+
+/// 汇总表的列：表头与指标名。单序列的 `result.json`、多序列的汇总与终端表格用的都是它。
+inline constexpr std::array<std::pair<const char*, const char*>, 4> kSummaryColumns = {{
+    {"ATE_t", "ate.translation.rmse"},
+    {"ATE_r", "ate.rotation_deg.rmse"},
+    {"RPE_t", "rpe.translation.rmse"},
+    {"RPE_r", "rpe.rotation_deg.rmse"},
+}};
+
+/// 汇总表里的指标。结论无效、或这一族一对都没关联上时没有值：零误差与没有结果不能长得一样。
+[[nodiscard]] std::map<std::string, double> summaryMetrics(
+    eval::BaselineOutcome outcome, const std::map<std::string, double>& metrics);
+
+/// `result.json` 的格式版本。字段改了含义或删了字段就加一，读的一方先核对它。
+inline constexpr int kResultSchema = 1;
+
+/// JSON 字符串。`result.json` 是档案的机器读摘要，操作台（Python）读它，不解析 YAML。
+[[nodiscard]] std::string jsonString(const std::string& text);
+/// 指标表的 JSON 对象，键按字典序；非有限值写 null（JSON 没有 NaN）。
+[[nodiscard]] std::string jsonMetrics(const std::map<std::string, double>& metrics);
 
 /// 一次运行的规模，进 `outcome.yaml`。
 struct RunCounts {

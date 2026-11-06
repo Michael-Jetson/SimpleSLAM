@@ -43,12 +43,7 @@ namespace {
 namespace fs = std::filesystem;
 
 /// 多序列档案顶层由执行器写的文件。`--overwrite` 只删这些；各序列的子档案由子进程自己清。
-constexpr const char* kSuiteFiles[] = {"task.yaml", "identity.yaml", "summary.yaml", "logs"};
-
-/// 汇总表的列与表头。
-constexpr const char* kColumns[] = {"ate.translation.rmse", "ate.rotation_deg.rmse",
-                                     "rpe.translation.rmse", "rpe.rotation_deg.rmse"};
-constexpr const char* kHeaders[] = {"ATE_t", "ATE_r", "RPE_t", "RPE_r"};
+constexpr const char* kSuiteFiles[] = {"task.yaml", "identity.yaml", "result.json", "logs"};
 
 /// 一个序列：怎么跑，跑成什么样。
 struct SequenceRun {
@@ -241,26 +236,17 @@ std::string status(const SequenceRun& run, const std::string& purpose) {
     return "error";
 }
 
-/// 一个序列在汇总表里的指标。结论无效、或这一族一对都没关联上时没有值：
-/// 零误差与没有结果不能长得一样。
+/// 一个序列在汇总表里的指标。
 std::map<std::string, double> values(const SequenceRun& run) {
-    std::map<std::string, double> out;
-    if (!run.report || run.report->outcome == eval::BaselineOutcome::kInvalid) return out;
-    const auto& metrics = run.report->metrics;
-    for (const std::string key : kColumns) {
-        const auto pairs = metrics.find(key.substr(0, key.find('.')) + ".pairs");
-        const auto value = metrics.find(key);
-        if (pairs != metrics.end() && pairs->second > 0.0 && value != metrics.end()) {
-            out.emplace(key, value->second);
-        }
-    }
-    return out;
+    if (!run.report) return {};
+    return archive::summaryMetrics(run.report->outcome, run.report->metrics);
 }
 
 /// 各序列的平均。有一个序列没有这一项，这一项就不算平均：缺了的序列不能当零。
 std::map<std::string, double> mean(const std::vector<SequenceRun>& runs) {
     std::map<std::string, double> out;
-    for (const std::string key : kColumns) {
+    for (const auto& [header, column] : archive::kSummaryColumns) {
+        const std::string key(column);
         double sum = 0.0;
         bool all = !runs.empty();
         for (const auto& run : runs) {
@@ -298,18 +284,6 @@ int worstExitCode(const std::vector<SequenceRun>& runs) {
     return worst;
 }
 
-void emitMetrics(std::ostream& text, const std::map<std::string, double>& metrics,
-                 const char* indent) {
-    if (metrics.empty()) {
-        text << " {}\n";
-        return;
-    }
-    text << '\n';
-    for (const auto& [key, value] : metrics) {
-        text << indent << key << ": " << std::format("{}", value) << '\n';
-    }
-}
-
 void writeIdentity(const fs::path& dir, const ResolvedTask& task) {
     const auto& c = task.config;
     archive::writeText(
@@ -324,25 +298,33 @@ void writeIdentity(const fs::path& dir, const ResolvedTask& task) {
                     archive::quotedList(c.data.sequences)));
 }
 
-void writeSummary(const fs::path& dir, const config::TaskConfig& c,
-                  const std::vector<SequenceRun>& runs, int exit_code) {
+/// 汇总写成 `result.json`：与单序列档案同一种机器读摘要，操作台（Python）读它。
+void writeResult(const fs::path& dir, const config::TaskConfig& c,
+                 const std::vector<SequenceRun>& runs, int exit_code) {
+    using archive::jsonString;
     std::ostringstream text;
-    text << "task: " << archive::quoted(c.task.name) << "\nexit_code: " << exit_code
-         << "\nsequences:\n";
-    for (const auto& run : runs) {
-        text << "  - name: " << archive::quoted(run.name) << '\n'
-             << "    archive: " << archive::quoted(run.archive.string()) << '\n'
-             << "    log: " << archive::quoted(run.log.string()) << '\n'
-             << "    exit_code: " << run.exit_code << '\n'
-             << "    status: " << archive::quoted(status(run, c.task.purpose)) << '\n';
-        if (run.complete) text << "    complete: " << (*run.complete ? "true" : "false") << '\n';
-        if (!run.problem.empty()) text << "    problem: " << archive::quoted(run.problem) << '\n';
-        text << "    metrics:";
-        emitMetrics(text, values(run), "      ");
+    text << "{\n  \"schema\": " << archive::kResultSchema
+         << ",\n  \"kind\": \"sequences\",\n  \"task\": " << jsonString(c.task.name)
+         << ",\n  \"mode\": " << jsonString(c.task.mode)
+         << ",\n  \"purpose\": " << jsonString(c.task.purpose)
+         << ",\n  \"software_version\": " << jsonString(SIMPLESLAM_VERSION)
+         << ",\n  \"task_hash\": " << jsonString(config::configHash(c))
+         << ",\n  \"system_hash\": " << jsonString(config::systemHash(c))
+         << ",\n  \"exit_code\": " << exit_code << ",\n  \"sequences\": [";
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        const auto& run = runs[i];
+        text << (i == 0 ? "\n" : ",\n") << "    {\"name\": " << jsonString(run.name)
+             << ", \"archive\": " << jsonString(run.archive.string())
+             << ", \"log\": " << jsonString(run.log.string())
+             << ", \"exit_code\": " << run.exit_code
+             << ", \"status\": " << jsonString(status(run, c.task.purpose)) << ", \"complete\": "
+             << (run.complete ? (*run.complete ? "true" : "false") : "null")
+             << ", \"problem\": " << jsonString(run.problem)
+             << ", \"metrics\": " << archive::jsonMetrics(values(run)) << "}";
     }
-    text << "mean:";
-    emitMetrics(text, mean(runs), "  ");
-    archive::writeText(dir / "summary.yaml", text.str());
+    text << (runs.empty() ? "" : "\n  ") << "],\n  \"mean\": " << archive::jsonMetrics(mean(runs))
+         << "\n}\n";
+    archive::writeText(dir / "result.json", text.str());
 }
 
 /// 按终端的显示宽度补齐：汉字占两列。
@@ -363,18 +345,20 @@ void printTable(std::ostream& out, const std::vector<SequenceRun>& runs,
         return it == metrics.end() ? std::string("-") : std::format("{:.4f}", it->second);
     };
     out << pad("序列", 28) << pad("退出码", 8) << pad("结论", 14);
-    for (const char* header : kHeaders) out << pad(header, 12);
+    for (const auto& [header, key] : archive::kSummaryColumns) out << pad(header, 12);
     out << '\n';
     for (const auto& run : runs) {
         const auto metrics = values(run);
         out << pad(run.name, 28) << pad(std::to_string(run.exit_code), 8)
             << pad(status(run, purpose), 14);
-        for (const char* key : kColumns) out << pad(cell(metrics, key), 12);
+        for (const auto& [header, key] : archive::kSummaryColumns) {
+            out << pad(cell(metrics, key), 12);
+        }
         out << '\n';
     }
     const auto average = mean(runs);
     out << pad("平均（每个序列都有结果才算）", 50);
-    for (const char* key : kColumns) out << pad(cell(average, key), 12);
+    for (const auto& [header, key] : archive::kSummaryColumns) out << pad(cell(average, key), 12);
     out << '\n';
 }
 
@@ -397,9 +381,9 @@ int runSequences(const ResolvedTask& task, const RunOptions& options, std::ostre
     runAll(runs, options.jobs, out);
     for (auto& run : runs) collect(run, c.task.purpose);
     const int exit_code = worstExitCode(runs);
-    writeSummary(dir, c, runs, exit_code);
+    writeResult(dir, c, runs, exit_code);
     printTable(out, runs, c.task.purpose);
-    out << "汇总: " << (dir / "summary.yaml").string() << '\n';
+    out << "汇总: " << (dir / "result.json").string() << '\n';
     return exit_code;
 }
 

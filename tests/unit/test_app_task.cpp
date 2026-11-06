@@ -268,11 +268,17 @@ TEST_CASE("从任务文件跑到任务档案：结果、出处、结局、报告
     INFO(fixture.out.str() << fixture.err.str());
 
     for (const char* name : {"task.yaml", "identity.yaml", "outcome.yaml", "report.yaml",
-                             "trajectory/odometry.tum", "trajectory/online.tum",
+                             "result.json", "trajectory/odometry.tum", "trajectory/online.tum",
                              "trajectory/keyframes.tum"}) {
         CHECK(fs::exists(fixture.archive / name));
     }
     CHECK(readText(fixture.archive / "outcome.yaml").find("complete: true") != std::string::npos);
+    // 机器读的摘要：操作台读它，不解析 YAML
+    const std::string result = readText(fixture.archive / "result.json");
+    CHECK(result.find("\"kind\": \"run\"") != std::string::npos);
+    CHECK(result.find("\"status\": \"pass\"") != std::string::npos);
+    CHECK(result.find("\"complete\": true") != std::string::npos);
+    CHECK(result.find("\"ate.translation.rmse\": ") != std::string::npos);
 
     // 档案里的任务就是这次运行的唯一输入：重新加载、还原，得到同一个哈希
     const auto again = app::loadTask((fixture.archive / "task.yaml").string(), {}, catalogs());
@@ -328,6 +334,8 @@ TEST_CASE("只出结果的任务不评测；还不支持的组合在运行之前
         Fixture fixture("purpose: run");
         REQUIRE(fixture.run() == 0);
         CHECK_FALSE(fs::exists(fixture.archive / "report.yaml"));
+        CHECK(readText(fixture.archive / "result.json").find("\"status\": \"done\"")
+              != std::string::npos);
         CHECK(fs::exists(fixture.archive / "trajectory" / "odometry.tum"));
     }
     {
@@ -361,12 +369,13 @@ TEST_CASE("多序列：每个序列一个子进程、一份子档案，最后汇
                   .find("task_hash: \"" + config::configHash(task.config) + "\"")
               != std::string::npos);
     }
-    const std::string summary = readText(fixture.archive / "summary.yaml");
-    CHECK(summary.find("exit_code: 0\n") != std::string::npos);
-    CHECK(summary.find("name: \"01\"") != std::string::npos);
-    CHECK(summary.find("status: \"pass\"") != std::string::npos);
+    const std::string result = readText(fixture.archive / "result.json");
+    CHECK(result.find("\"kind\": \"sequences\"") != std::string::npos);
+    CHECK(result.find("\"exit_code\": 0,") != std::string::npos);
+    CHECK(result.find("{\"name\": \"01\"") != std::string::npos);
+    CHECK(result.find("\"status\": \"pass\"") != std::string::npos);
     // 每个序列都有结果，才有平均
-    CHECK(summary.find("  ate.translation.rmse:", summary.find("mean:")) != std::string::npos);
+    CHECK(result.find("\"ate.translation.rmse\"", result.find("\"mean\"")) != std::string::npos);
     CHECK(readText(fixture.archive / "identity.yaml").find("sequences: [\"00\", \"01\"]")
           != std::string::npos);
     CHECK(fixture.out.str().find("平均") != std::string::npos);
@@ -387,11 +396,11 @@ TEST_CASE("多序列：一个序列出错不影响别的序列，退出码取最
     CHECK(fs::exists(fixture.archive / "00" / "report.yaml"));  // 00 照常跑完
     CHECK_FALSE(fs::exists(fixture.archive / "07"));             // 07 在建档案之前就出错了
     CHECK(readText(fixture.archive / "logs" / "07.log").find("错误") != std::string::npos);
-    const std::string summary = readText(fixture.archive / "summary.yaml");
-    CHECK(summary.find("exit_code: 1\nsequences:") != std::string::npos);
-    CHECK(summary.find("status: \"error\"") != std::string::npos);
-    CHECK(summary.find("problem: \"目录不存在") != std::string::npos);  // 原因取自日志
-    CHECK(summary.find("mean: {}") != std::string::npos);  // 有序列没出结果，不算平均
+    const std::string result = readText(fixture.archive / "result.json");
+    CHECK(result.find("\"exit_code\": 1,\n  \"sequences\"") != std::string::npos);
+    CHECK(result.find("\"status\": \"error\"") != std::string::npos);
+    CHECK(result.find("\"problem\": \"目录不存在") != std::string::npos);  // 原因取自日志
+    CHECK(result.find("\"mean\": {}") != std::string::npos);  // 有序列没出结果，不算平均
 }
 
 TEST_CASE("多序列：读取器不支持、与 data.source.sequence 同时写，都在运行之前拒绝",

@@ -91,6 +91,12 @@ def _flow_value(value: Any) -> str:
     return _format_value(value)
 
 
+def assignment(path: str, value: Any) -> str:
+    """一条覆盖项：``路径=值``，值按 YAML 的写法给出（字符串加引号转义）。
+    任务文件里的 ``overrides`` 与命令行用的都是这种写法。"""
+    return f"{path}={_flow_value(value)}"
+
+
 def _join(names: list[str]) -> str:
     return "、".join(names)
 
@@ -376,7 +382,7 @@ class Config:
         插件内部的参数也可以：``system.modules.odometry.plugin.keyframe_distance_m``。
         """
         overrides = list(self._values.get(OVERRIDES, []))
-        overrides.append(f"{path}={_flow_value(value)}")
+        overrides.append(assignment(path, value))
         self._values[OVERRIDES] = overrides
         return self
 

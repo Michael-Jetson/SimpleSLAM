@@ -229,6 +229,10 @@ class Schema:
     def implementations(self, interface: str) -> list[str]:
         return sorted(t for (i, t) in self._plugins if i == interface)
 
+    def interfaces(self) -> list[str]:
+        """目录里出现过的全部接口。"""
+        return sorted({i for (i, _) in self._plugins})
+
     def interfaces_providing(self, type_name: str) -> list[str]:
         """哪些接口的目录里有这个类型名。选错接口时给出提示用。"""
         return sorted({i for (i, t) in self._plugins if t == type_name})

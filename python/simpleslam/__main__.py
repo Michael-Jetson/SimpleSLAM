@@ -1,29 +1,42 @@
-"""``python -m simpleslam``：任务渲染与校验、轨迹格式转换、精度速查。
+"""``python -m simpleslam``（根目录的 ``./run.py`` 是同一个东西）：SimpleSLAM 的操作台。
 
-任务可以写成 ``.py``：文件里构造一个名为 ``config`` 的
-:class:`~simpleslam.config.Config`（或提供 ``build()`` 返回它），
-``render`` 把它变成 C++ 能加载的 YAML。``.py`` 里 ``system`` 的相对路径
-相对这个文件所在的目录，和 YAML 任务相对任务文件一样。
+    ./run.py demo                               合成夹具，跑通整条链路
+    ./run.py <任务.yaml|任务.py> [路径=值 …]      构建（按需）后跑一个任务，等同 run
+    ./run.py sweep <任务.py> [路径=值 …]          跑 sweep() 生成的一组变体，最后汇总
+    ./run.py show <档案>                         一个档案的摘要
+    ./run.py compare <档案> … [--csv]            几个档案的对比表
+    ./run.py impls                              入口里登记了哪些实现、各有哪些参数
+    ./run.py config | eval | convert …          任务渲染与校验、轨迹精度速查、轨迹格式转换
 
-schema 与插件的字段清单来自 ``--tool`` 指定的入口：用户写的算法要用登记了它的入口
-（例如 ``simpleslam-lio-skeleton``），``simpleslam-config`` 只有内置实现。
+C++ 入口是加载、校验、执行与评测判定的唯一实现，操作台只编排与展示。入口默认是示例
+``simpleslam_lio_skeleton``，用户写的算法用登记了它的入口（``--entry <目标名或路径>``，或环境
+变量 ``SIMPLESLAM_ENTRY``）。默认在本机构建 Release，``--debug`` 换成 Debug，``--docker`` 在开发
+镜像里做同样的事。
 
-精度的权威实现是 ``simpleslam-eval``（退出码能让流水线失败）；
-这里的 ``eval`` 子命令是给交互式查看用的。
+任务可以写成 ``.py``：文件里构造一个名为 ``config`` 的 :class:`~simpleslam.config.Config`
+（或提供 ``build()`` 返回它）；``.py`` 里 ``system`` 的相对路径相对这个文件所在的目录。
+
+精度的权威实现是 C++（退出码能让流水线失败）；``eval`` 子命令是给交互式查看用的。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import runpy
 import sys
 from pathlib import Path
 
+from simpleslam import console
 from simpleslam.config import SYSTEM_FILE, Config, ConfigError
 from simpleslam.metrics import absolute_trajectory_error, relative_pose_error
+from simpleslam.results import ResultError
 from simpleslam.schema import Schema, SchemaError
 from simpleslam.trajectory import read_trajectory, write_trajectory
+from simpleslam.workspace import BuildError, Workspace, in_docker, repo_root, run_in_docker
+
+COMMANDS = ("run", "demo", "sweep", "show", "compare", "impls", "config", "eval", "convert")
+# 覆盖项里指向数据的路径：--docker 时把它们所在的目录挂进容器
+_DATA_PATHS = ("data.source.path=", "data.calibration=", "evaluation.groundtruth=")
 
 
 def _load_schema(tool: str | None, required: bool) -> Schema | None:
@@ -41,16 +54,7 @@ def _load_config(path: str, schema: Schema | None, tool: str | None) -> Config:
     source = Path(path)
     if source.suffix != ".py":
         return Config.load(source, tool, schema)
-    namespace = runpy.run_path(str(source))
-    config = namespace.get("config")
-    if config is None and callable(namespace.get("build")):
-        config = namespace["build"]()
-    if not isinstance(config, Config):
-        raise ConfigError(f"{path} 里没有名为 config 的 Config，也没有 build() 返回它")
-    system_file = config.get(SYSTEM_FILE)
-    if isinstance(system_file, str):
-        config = config.copy()
-        config[SYSTEM_FILE] = str((source.resolve().parent / system_file).resolve())
+    config = console.load_python_task(source)
     if schema is not None:
         config.validate(schema)
     return config
@@ -159,14 +163,94 @@ def _convert_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m simpleslam")
+def _workspace(args: argparse.Namespace) -> Workspace:
+    return Workspace(repo_root(), "Debug" if args.debug else "Release")
+
+
+def _options(args: argparse.Namespace) -> console.Options:
+    return console.Options(entry=args.entry, build=not args.no_build,
+                           jobs=getattr(args, "jobs", 1),
+                           overwrite=getattr(args, "overwrite", False))
+
+
+def _run_command(args: argparse.Namespace) -> int:
+    return console.run_task(_workspace(args), Path(args.task), args.overrides, _options(args))
+
+
+def _demo_command(args: argparse.Namespace) -> int:
+    return console.demo(_workspace(args), _options(args))
+
+
+def _sweep_command(args: argparse.Namespace) -> int:
+    out = Path(args.out) if args.out else None
+    return console.sweep(_workspace(args), Path(args.task), args.overrides, _options(args), out)
+
+
+def _show_command(args: argparse.Namespace) -> int:
+    print(console.show(Path(args.archive)), end="")
+    return 0
+
+
+def _compare_command(args: argparse.Namespace) -> int:
+    text = console.compare([Path(item) for item in args.archives], as_csv=args.csv is not None)
+    if args.csv:
+        Path(args.csv).write_text(text, encoding="utf-8")
+        print(f"已写出 {args.csv}", file=sys.stderr)
+    else:
+        print(text, end="")
+    return 0
+
+
+def _impls_command(args: argparse.Namespace) -> int:
+    print(console.impls(_workspace(args), _options(args)), end="")
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m simpleslam",
+                                     description="SimpleSLAM 的操作台：构建、跑任务、看结果")
     parser.add_argument(
         "--tool",
-        help="导出 schema、加载任务的入口（登记了你的算法的可执行文件；"
-        "默认 SIMPLESLAM_CONFIG_TOOL，其次 PATH 里的 simpleslam-config）",
+        help="config 子命令用的入口（可执行文件；默认 SIMPLESLAM_CONFIG_TOOL，其次 PATH 里的 "
+        "simpleslam-config）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    build = argparse.ArgumentParser(add_help=False)
+    build.add_argument("--entry", help="入口：CMake 目标名或可执行文件路径（默认示例入口）")
+    build.add_argument("--debug", action="store_true", help="用 Debug 构建（默认 Release）")
+    build.add_argument("--no-build", action="store_true", help="不构建，直接用构建目录里已有的入口")
+    build.add_argument("--docker", action="store_true", help="在开发镜像里构建与运行")
+    build.add_argument("--mount", action="append", default=[],
+                       help="--docker 时只读挂进容器的数据目录，可以写多次")
+
+    run = subparsers.add_parser("run", parents=[build], help="构建（按需）后跑一个任务")
+    run.add_argument("task", help="任务文件（.yaml 或 .py）")
+    run.add_argument("--jobs", type=int, default=1, help="多序列时同时跑几个序列")
+    run.add_argument("--overwrite", action="store_true", help="档案目录已有内容时照样写")
+    run.set_defaults(func=_run_command, overrides=[])
+
+    demo = subparsers.add_parser("demo", parents=[build], help="合成夹具，跑通整条链路")
+    demo.set_defaults(func=_demo_command)
+
+    sweep = subparsers.add_parser("sweep", parents=[build], help="跑 .py 任务里 sweep() 的变体")
+    sweep.add_argument("task", help="定义了 sweep() 的 .py 任务")
+    sweep.add_argument("--jobs", type=int, default=1, help="同时跑几个变体")
+    sweep.add_argument("--overwrite", action="store_true", help="变体的档案目录已有内容时照样写")
+    sweep.add_argument("--out", help="变体档案的上层目录（默认 runs/<文件名>）")
+    sweep.set_defaults(func=_sweep_command, overrides=[])
+
+    show = subparsers.add_parser("show", help="一个档案的摘要")
+    show.add_argument("archive")
+    show.set_defaults(func=_show_command)
+
+    compare = subparsers.add_parser("compare", help="几个档案的对比表")
+    compare.add_argument("archives", nargs="+")
+    compare.add_argument("--csv", metavar="文件", help="把对比表写成 CSV")
+    compare.set_defaults(func=_compare_command)
+
+    impls = subparsers.add_parser("impls", parents=[build], help="入口里登记的实现与参数")
+    impls.set_defaults(func=_impls_command)
 
     config_parser = subparsers.add_parser("config", help="任务渲染与校验")
     config_parser.add_argument(
@@ -199,13 +283,63 @@ def main(argv: list[str] | None = None) -> int:
     convert_parser.add_argument("--format", choices=["tum", "kitti"], default=None)
     convert_parser.add_argument("--to", choices=["tum", "kitti"], required=True)
     convert_parser.set_defaults(func=_convert_command)
+    return parser
 
-    args = parser.parse_args(argv)
+
+def normalize(argv: list[str]) -> list[str]:
+    """没写子命令而给了任务文件时，等同 ``run``：``./run.py 任务.yaml`` 就是一键运行。
+    ``run`` 插在最前面，任务文件前后的选项（``--entry`` 等）都归它。"""
+    if any(arg in COMMANDS for arg in argv):
+        return argv
+    if any(not arg.startswith("-") and arg.endswith((".yaml", ".yml", ".py")) for arg in argv):
+        return ["run", *argv]
+    return argv
+
+
+def _docker_argv(argv: list[str]) -> list[str]:
+    """容器里执行的命令行：去掉 --docker 与 --mount，它们只对宿主有意义。"""
+    out: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg == "--docker" or arg.startswith("--mount="):
+            continue
+        elif arg == "--mount":
+            skip = True
+        else:
+            out.append(arg)
+    return out
+
+
+def _data_mounts(args: argparse.Namespace) -> list[Path]:
+    mounts = [Path(item) for item in args.mount]
+    for item in getattr(args, "overrides", []):
+        for prefix in _DATA_PATHS:
+            if item.startswith(prefix):
+                path = Path(item[len(prefix):].strip('"'))
+                if path.exists():
+                    mounts.append(path if path.is_dir() else path.parent)
+    return mounts
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = normalize(list(sys.argv[1:] if argv is None else argv))
+    parser = _parser()
+    args, extra = parser.parse_known_args(argv)
+    # 跑任务的命令里，形如 路径=值 的参数是覆盖项，原样交给 C++ 入口
+    if args.command in ("run", "sweep"):
+        args.overrides = [item for item in extra if "=" in item and not item.startswith("-")]
+        extra = [item for item in extra if item not in args.overrides]
+    if extra:
+        parser.error(f"认不出的参数: {' '.join(extra)}")
     if args.command == "config" and args.action != "schema" and not args.input:
         parser.error("config " + args.action + " 需要一个任务文件")
     try:
+        if getattr(args, "docker", False) and not in_docker():
+            return run_in_docker(repo_root(), _docker_argv(argv), _data_mounts(args))
         return int(args.func(args))
-    except (ConfigError, SchemaError, OSError, ValueError) as exc:
+    except (BuildError, ConfigError, ResultError, SchemaError, OSError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 

@@ -5,6 +5,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <cmath>
 #include <format>
 #include <fstream>
 #include <stdexcept>
@@ -54,6 +55,50 @@ std::string quotedList(const std::vector<std::string>& items) {
     std::string out = "[";
     for (std::size_t i = 0; i < items.size(); ++i) out += (i == 0 ? "" : ", ") + quoted(items[i]);
     return out + "]";
+}
+
+std::map<std::string, double> summaryMetrics(eval::BaselineOutcome outcome,
+                                             const std::map<std::string, double>& metrics) {
+    std::map<std::string, double> out;
+    if (outcome == eval::BaselineOutcome::kInvalid) return out;
+    for (const auto& [header, key] : kSummaryColumns) {
+        const std::string name(key);
+        const auto pairs = metrics.find(name.substr(0, name.find('.')) + ".pairs");
+        const auto value = metrics.find(name);
+        if (pairs != metrics.end() && pairs->second > 0.0 && value != metrics.end()) {
+            out.emplace(name, value->second);
+        }
+    }
+    return out;
+}
+
+std::string jsonString(const std::string& text) {
+    std::string out = "\"";
+    for (const char c : text) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += std::format("\\u{:04x}", static_cast<unsigned>(c));
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out + '"';
+}
+
+std::string jsonMetrics(const std::map<std::string, double>& metrics) {
+    std::string out = "{";
+    for (const auto& [key, value] : metrics) {
+        out += (out.size() == 1 ? "" : ", ") + jsonString(key) + ": "
+               + (std::isfinite(value) ? std::format("{}", value) : std::string("null"));
+    }
+    return out + "}";
 }
 
 void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome,

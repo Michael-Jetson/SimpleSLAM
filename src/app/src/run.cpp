@@ -49,7 +49,8 @@ namespace fs = std::filesystem;
 constexpr const char* kArchiveFiles[] = {"task.yaml",       "identity.yaml",
                                          "outcome.yaml",    "report.yaml",
                                          "recording.ssrec", "recording.ssrec.diagnostics.jsonl",
-                                         "queues.txt",      "trajectory"};
+                                         "queues.txt",      "result.json",
+                                         "trajectory"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -206,6 +207,36 @@ void writeIdentity(const fs::path& dir, const ResolvedTask& task, const RunFacts
                     archive::quotedList(task.source.overrides)));
 }
 
+/// 档案的机器读摘要：操作台（Python）读它，不解析 YAML。运行走到最后才写，
+/// 所以有它就说明这次运行有了结论。
+struct ResultDigest {
+    std::string status;  ///< pass / fail / invalid / incomparable；只出结果的任务是 done
+    std::string detail;
+    std::map<std::string, double> summary;  ///< 汇总表那几项，口径见 archive::summaryMetrics
+    std::map<std::string, double> metrics;  ///< 全部指标
+    int exit_code = 0;
+};
+
+void writeResult(const fs::path& dir, const ResolvedTask& task, bool complete,
+                 const ResultDigest& digest) {
+    using archive::jsonString;
+    const auto& c = task.config;
+    archive::writeText(
+        dir / "result.json",
+        std::format("{{\n  \"schema\": {},\n  \"kind\": \"run\",\n  \"task\": {},\n"
+                    "  \"mode\": {},\n"
+                    "  \"purpose\": {},\n  \"software_version\": {},\n  \"task_hash\": {},\n"
+                    "  \"system_hash\": {},\n  \"complete\": {},\n  \"exit_code\": {},\n"
+                    "  \"status\": {},\n  \"detail\": {},\n  \"summary\": {},\n"
+                    "  \"metrics\": {}\n}}\n",
+                    archive::kResultSchema, jsonString(c.task.name), jsonString(c.task.mode),
+                    jsonString(c.task.purpose),
+                    jsonString(SIMPLESLAM_VERSION), jsonString(config::configHash(c)),
+                    jsonString(config::systemHash(c)), complete ? "true" : "false",
+                    digest.exit_code, jsonString(digest.status), jsonString(digest.detail),
+                    archive::jsonMetrics(digest.summary), archive::jsonMetrics(digest.metrics)));
+}
+
 fs::path writeTrajectories(const fs::path& dir, const modules::RunResult& result,
                            const config::TaskConfig& c, std::ostream& out) {
     const auto format =
@@ -338,7 +369,14 @@ int evaluate(const ResolvedTask& task, const fs::path& dir, const fs::path& traj
         err << "评测结论: " << eval::toString(report.verdict.outcome) << ' '
             << report.verdict.detail << '\n';
     }
-    return eval::exitCodeFor(report.verdict);
+    const int exit_code = eval::exitCodeFor(report.verdict);
+    writeResult(dir, task, outcome.complete(),
+                {.status = eval::toString(report.verdict.outcome),
+                 .detail = report.verdict.detail,
+                 .summary = archive::summaryMetrics(report.verdict.outcome, report.metrics),
+                 .metrics = report.metrics,
+                 .exit_code = exit_code});
+    return exit_code;
 }
 
 int usage(std::ostream& err) {
@@ -459,7 +497,12 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         archive::writeOutcome(dir, outcome, {facts.packets, facts.frames, facts.keyframes});
         out << "档案: " << dir.string() << '\n';
 
-        if (c.task.purpose == "run") return 0;
+        if (c.task.purpose == "run") {
+            writeResult(dir, task, outcome.complete(),
+                        {.status = "done", .detail = "", .summary = {}, .metrics = {},
+                         .exit_code = 0});
+            return 0;
+        }
         return evaluate(task, dir, trajectory_file, dataset, result.odometry, outcome, facts,
                         calibration, out, err);
     } catch (const std::exception& e) {

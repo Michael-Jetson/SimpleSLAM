@@ -23,6 +23,9 @@ CMakeFiles/
 logs/
 # 任务档案的默认位置：outputs.dir 没写时是 runs/<任务名>
 runs/
+# 个人的任务文件（本机的数据集路径等），不入库；只留说明
+configs/local/*
+!configs/local/README.md
 
 # 内部文档（蓝图、调研报告等，不对外发布）
 docs/
