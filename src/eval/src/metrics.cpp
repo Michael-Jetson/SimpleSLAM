@@ -104,6 +104,14 @@ Alignment computeAlignment(const Trajectory& estimate, const Trajectory& referen
     const Eigen::Matrix4d transform = Eigen::umeyama(source, target, with_scale);
     const Eigen::Matrix3d scaled_rotation = transform.block<3, 3>(0, 0);
     const double scale = with_scale ? std::cbrt(std::abs(scaled_rotation.determinant())) : 1.0;
+    // 估计的位置挤在一点时尺度定不出来（Umeyama 要除以它们的方差）：退化成刚体对齐，
+    // 实际用的对齐方式如实记下
+    if (with_scale && (!std::isfinite(scale) || !(scale > 0.0) || !transform.allFinite())) {
+        return computeAlignment(estimate, reference, associations, AlignmentKind::kSe3);
+    }
+    if (!transform.allFinite()) {
+        return computeAlignment(estimate, reference, associations, AlignmentKind::kFirstPose);
+    }
     const Eigen::Matrix3d rotation = scale > 0.0 ? Eigen::Matrix3d(scaled_rotation / scale)
                                                  : scaled_rotation;
 
@@ -186,6 +194,9 @@ AteResult absoluteTrajectoryError(const Trajectory& estimate, const Trajectory& 
         const SE3d delta = truth.inverse().compose(aligned);
         translation_errors.push_back(delta.translation().norm());
         rotation_errors.push_back(rotationAngleDeg(delta));
+        result.errors.push_back(ErrorSample{.time = estimate.at(pair.estimate_index).time,
+                                            .translation = translation_errors.back(),
+                                            .rotation_deg = rotation_errors.back()});
     }
 
     result.translation = statisticsOf(std::move(translation_errors));
@@ -309,6 +320,10 @@ RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& origin
         }
         translation_errors.push_back(translation);
         rotation_errors.push_back(rotation);
+        result.errors.push_back(
+            ErrorSample{.time = reference.at(associations[start].reference_index).time,
+                        .translation = translation,
+                        .rotation_deg = rotation});
 
         start = end;
         if (start + 1 >= associations.size()) break;
@@ -321,30 +336,5 @@ RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& origin
     return result;
 }
 
-std::vector<std::pair<std::string, double>> flatten(const AteResult& ate, const RpeResult& rpe) {
-    std::vector<std::pair<std::string, double>> metrics{
-        {"ate.translation.rmse", ate.translation.rmse},
-        {"ate.translation.mean", ate.translation.mean},
-        {"ate.translation.median", ate.translation.median},
-        {"ate.translation.max", ate.translation.max},
-        {"ate.rotation_deg.rmse", ate.rotation_deg.rmse},
-        {"ate.rotation_deg.mean", ate.rotation_deg.mean},
-        {"ate.pairs", static_cast<double>(ate.pairs)},
-        {"ate.coverage", ate.coverage()},
-        {"ate.reference_coverage", ate.referenceCoverage()},
-        {"ate.matched_reference_samples", static_cast<double>(ate.matched_reference_samples)},
-        {"ate.span_ratio", ate.spanRatio()},
-        {"ate.max_reference_gap_s", ate.maxReferenceGap()},
-        {"ate.scale", ate.alignment.scale},
-        {"rpe.translation.rmse", rpe.translation.rmse},
-        {"rpe.translation.mean", rpe.translation.mean},
-        {"rpe.rotation_deg.rmse", rpe.rotation_deg.rmse},
-        {"rpe.rotation_deg.mean", rpe.rotation_deg.mean},
-        {"rpe.pairs", static_cast<double>(rpe.pairs)},
-    };
-    // 任务完成度只在声明了目标窗口时才有：没有目标就没有这个数，不拿参考跨度冒充
-    if (ate.target_declared) metrics.emplace_back("ate.target_coverage", ate.targetCoverage());
-    return metrics;
-}
 
 }  // namespace simpleslam::eval

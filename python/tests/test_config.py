@@ -22,7 +22,7 @@ def fake_schema() -> Schema:
             Field("system.modules.graph_optimizer.weight", "double", "100", "权重", True),
             Field(SOURCE, "slot", "", "数据来源", False),
             Field("data.sequences", "list", "[]", "多序列", False),
-            Field("outputs.dir", "string", "", "档案目录", False),
+            Field("outputs.dir", "string", "", "任务记录目录", False),
         ],
         slots={LIO: "OdometryBase", SOURCE: "DatasetReader"},
         plugins=[

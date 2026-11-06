@@ -52,7 +52,7 @@ struct FieldSchema {
 void validateConfig(const TaskConfig& config);
 
 /// 一个任务的出处：任务文件、它引用的系统文件、施加过的覆盖项（文件里的在前）。
-/// 进任务档案，不进配置哈希：同一份结果，换一种写法得到的应当是同一个哈希。
+/// 进任务记录，不进配置哈希：同一份结果，换一种写法得到的应当是同一个哈希。
 struct TaskSource {
     std::string task_file;
     std::string system_file;
@@ -79,7 +79,8 @@ void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignme
 [[nodiscard]] std::string dumpConfig(const TaskConfig& config);
 void writeConfigFile(const std::string& path, const TaskConfig& config);
 
-/// 整个任务的哈希，不含 `outputs`：产出放在哪里不影响结果，换个档案目录重跑仍是同一个任务。
+/// 整个任务的哈希，不含 `outputs` 与 `evaluation`：产出放在哪里、怎么评测都不影响运行，
+/// 换个任务记录目录重跑、换评测函数重评，仍是同一个任务。
 [[nodiscard]] std::string configHash(const TaskConfig& config);
 /// 只覆盖 `system` 子树：标识算法的配置，与数据、评测、产出无关。
 [[nodiscard]] std::string systemHash(const TaskConfig& config);

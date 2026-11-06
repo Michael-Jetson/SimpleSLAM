@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-#include "archive.hpp"
+#include "evaluation.hpp"
 #include "line_stream.hpp"
+#include "run_dir.hpp"
 #include "sequences.hpp"
 
 #include <SimpleSLAM/app/bindings.hpp>
@@ -12,8 +13,6 @@
 #include <SimpleSLAM/config/calibration_io.hpp>
 #include <SimpleSLAM/config/loader.hpp>
 #include <SimpleSLAM/eval/association.hpp>
-#include <SimpleSLAM/eval/baseline.hpp>
-#include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 #include <SimpleSLAM/record/diagnostic_file_sink.hpp>
@@ -46,12 +45,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// 档案里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
-constexpr const char* kArchiveFiles[] = {"task.yaml",       "identity.yaml",
-                                         "outcome.yaml",    "report.yaml",
-                                         "recording.ssrec", "recording.ssrec.diagnostics.jsonl",
-                                         "queues.txt",      "result.json",
-                                         "run.log",         "trajectory"};
+/// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
+constexpr const char* kRunDirFiles[] = {"task.yaml",        "identity.yaml",
+                                        "outcome.yaml",     "calibration.yaml",
+                                        "result.json",      "run.log",
+                                        "recording.ssrec",  "recording.ssrec.diagnostics.jsonl",
+                                        "queues.txt",       "trajectory",
+                                        "evaluation"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -77,7 +77,7 @@ void checkCombination(const config::TaskConfig& c) {
 }
 
 /// 打开数据：外部标定取代自带的标定，外部真值取代自带的真值。
-/// 实验要有真值：在运行之前就核对，而不是跑完才发现无从评测。
+/// 所选评测函数要真值时，在运行之前就核对，而不是跑完才发现无从评测。
 plugin::Dataset openData(const ResolvedTask& task, const logging::Logger& runner) {
     const auto& c = task.config;
     const bool external_calibration = !c.data.calibration.empty();
@@ -95,9 +95,9 @@ plugin::Dataset openData(const ResolvedTask& task, const logging::Logger& runner
         dataset.ground_truth =
             eval::readTrajectory(groundtruth, eval::detectTrajectoryFormat(groundtruth));
     }
-    if (c.task.purpose == "experiment" && !dataset.ground_truth) {
-        throw std::runtime_error("实验要有真值：数据没有自带，evaluation.groundtruth 也没给；"
-                                 "只出结果把 task.purpose 改成 run");
+    if (!dataset.ground_truth && needsGroundTruth(task)) {
+        throw std::runtime_error("所选的评测函数要真值：数据没有自带，evaluation.groundtruth "
+                                 "也没给；只跑不评测就去掉 evaluation.evaluators");
     }
     return dataset;
 }
@@ -108,7 +108,7 @@ std::string seconds(fw::Duration d) {
     return out.str();
 }
 
-/// 本次运行实际生效、影响结论的输入。进报告，并作为基线可比性的身份。
+/// 本次运行实际生效、影响结论的输入。进 identity.yaml，并作为基线可比性的身份。
 std::map<std::string, std::string> effectiveInputs(const config::TaskConfig& c,
                                                    const fw::CalibrationData& calibration,
                                                    const ResolvedPolicy& resolved,
@@ -137,53 +137,42 @@ std::map<std::string, std::string> effectiveInputs(const config::TaskConfig& c,
     effective["algorithm.support_gap_policy"] = plugin::toString(odometry.supportGapPolicy());
     const auto limit = odometry.maxImuGap();
     effective["algorithm.max_imu_gap_s"] = limit ? seconds(*limit) : "none";
+    // 目标窗口进有效输入：评测函数算任务完成度要它，事后补评从任务记录里读
+    const auto& window = descriptor.evaluation_window;
+    if (window.end >= window.begin && window.end.count() > 0) {
+        effective["source.evaluation_window_begin_ns"] = std::to_string(window.begin.count());
+        effective["source.evaluation_window_end_ns"] = std::to_string(window.end.count());
+    }
     return effective;
 }
 
-/// 让估计与真值跟踪同一个传感器。左乘对齐消不掉右侧外参，所以换算是显式的一步，
-/// 用的是本次生效的外参。
-std::vector<std::string> matchTrackedSensor(fw::Trajectory& estimate,
-                                            fw::Trajectory& ground_truth,
-                                            const fw::CalibrationData& calibration,
-                                            const fw::SourceDescriptor& descriptor,
-                                            bool external_calibration,
-                                            bool compare_at_ground_truth) {
-    std::vector<std::string> notes;
-    if (ground_truth.tracked().empty()) return notes;
+/// 写进任务记录的真值：换算到比较用的传感器上。左乘对齐消不掉右侧外参，所以换算是显式的
+/// 一步，用的是本次生效的外参；估计（跟踪 body）在评测时按任务记录里的生效标定换算过去。
+fw::Trajectory comparisonGroundTruth(fw::Trajectory ground_truth,
+                                     const fw::CalibrationData& calibration,
+                                     const fw::SourceDescriptor& descriptor,
+                                     bool external_calibration, bool compare_at_ground_truth,
+                                     std::vector<std::string>& notes) {
+    if (ground_truth.tracked().empty()) return ground_truth;
     if (external_calibration && ground_truth.tracked() == "body" && !descriptor.body_sensor.empty()
         && calibration.T_body_sensor(descriptor.body_sensor)) {
         ground_truth.setTracked(descriptor.body_sensor);
     }
-    const auto extrinsic = [&](const std::string& sensor) {
-        const auto T = calibration.T_body_sensor(sensor);
-        if (!T) throw std::runtime_error("比较要用 " + sensor + " 的外参，但生效的标定里没有它");
-        return *T;
-    };
-    if (estimate.tracked() != "body") {
-        throw std::runtime_error("估计跟踪的不是 body（" + estimate.tracked() + "），无从换算");
-    }
     const std::string target = compare_at_ground_truth ? ground_truth.tracked() : "body";
     if (ground_truth.tracked() != target) {
         const std::string from = ground_truth.tracked();
-        ground_truth = eval::rightMultiplied(ground_truth, extrinsic(from).inverse(), target);
+        const auto T_body_from = calibration.T_body_sensor(from);
+        if (!T_body_from) {
+            throw std::runtime_error("比较要用 " + from + " 的外参，但生效的标定里没有它");
+        }
+        ground_truth = eval::rightMultiplied(ground_truth, T_body_from->inverse(), target);
         notes.push_back("真值从 " + from + " 按生效外参换算到 " + target);
     }
-    if (estimate.tracked() != target) {
-        estimate = eval::rightMultiplied(estimate, extrinsic(target), target);
-        notes.push_back("估计从 body 按生效外参换算到 " + target);
-    }
-    return notes;
+    return ground_truth;
 }
 
-void printStats(std::ostream& out, const char* title, const eval::Statistics& stats,
-                const char* unit) {
-    out << std::left << std::setw(12) << title << std::right << std::fixed << std::setprecision(4)
-        << " rmse=" << std::setw(10) << stats.rmse << " mean=" << std::setw(10) << stats.mean
-        << " max=" << std::setw(10) << stats.max << "  [" << unit << "] n=" << stats.count
-        << '\n';
-}
 
-/// 一次运行的事实：装配之后、终结之前读出来的东西都在这里，写档案与评测都用它。
+/// 一次运行的事实：装配之后、终结之前读出来的东西都在这里，写任务记录时用。
 struct RunFacts {
     std::size_t packets = 0;
     std::uint64_t frames = 0;
@@ -194,190 +183,40 @@ struct RunFacts {
 };
 
 void writeIdentity(const fs::path& dir, const ResolvedTask& task, const RunFacts& facts) {
-    using archive::quoted;
+    using run_dir::quoted;
     const auto& e = facts.effective;
-    archive::writeText(
+    std::string effective;
+    for (const auto& [key, value] : e) {
+        effective += "  " + quoted(key) + ": " + quoted(value) + "\n";
+    }
+    run_dir::writeText(
         dir / "identity.yaml",
         std::format("software_version: {}\ntask_hash: {}\nsystem_hash: {}\n"
                     "calibration_hash: {}\neffective_hash: {}\nseed: {}\n"
-                    "task_file: {}\nsystem_file: {}\noverrides: {}\n",
+                    "task_file: {}\nsystem_file: {}\noverrides: {}\neffective:\n{}",
                     quoted(SIMPLESLAM_VERSION), quoted(e.at("config_hash")),
                     quoted(e.at("system_hash")), quoted(e.at("calibration_hash")),
                     quoted(e.at("effective_hash")), task.config.task.seed,
                     quoted(task.source.task_file), quoted(task.source.system_file),
-                    archive::quotedList(task.source.overrides)));
+                    run_dir::quotedList(task.source.overrides), effective));
 }
 
-/// 档案的机器读摘要：操作台（Python）读它，不解析 YAML。运行走到最后才写，
-/// 所以有它就说明这次运行有了结论。
-struct ResultDigest {
-    std::string status;  ///< pass / fail / invalid / incomparable；只出结果的任务是 done
-    std::string detail;
-    std::map<std::string, double> summary;  ///< 汇总表那几项，口径见 archive::summaryMetrics
-    std::map<std::string, double> metrics;  ///< 全部指标
-    int exit_code = 0;
-};
-
-void writeResult(const fs::path& dir, const ResolvedTask& task, bool complete,
-                 const ResultDigest& digest) {
-    using archive::jsonString;
-    const auto& c = task.config;
-    archive::writeText(
-        dir / "result.json",
-        std::format("{{\n  \"schema\": {},\n  \"kind\": \"run\",\n  \"task\": {},\n"
-                    "  \"mode\": {},\n"
-                    "  \"purpose\": {},\n  \"software_version\": {},\n  \"task_hash\": {},\n"
-                    "  \"system_hash\": {},\n  \"complete\": {},\n  \"exit_code\": {},\n"
-                    "  \"status\": {},\n  \"detail\": {},\n  \"summary\": {},\n"
-                    "  \"metrics\": {}\n}}\n",
-                    archive::kResultSchema, jsonString(c.task.name), jsonString(c.task.mode),
-                    jsonString(c.task.purpose),
-                    jsonString(SIMPLESLAM_VERSION), jsonString(config::configHash(c)),
-                    jsonString(config::systemHash(c)), complete ? "true" : "false",
-                    digest.exit_code, jsonString(digest.status), jsonString(digest.detail),
-                    archive::jsonMetrics(digest.summary), archive::jsonMetrics(digest.metrics)));
-}
-
-fs::path writeTrajectories(const fs::path& dir, const modules::RunResult& result,
-                           const config::TaskConfig& c, std::ostream& out) {
-    const auto format =
-        eval::parseTrajectoryFormat(c.evaluation.format).value_or(eval::TrajectoryFormat::kTum);
-    const std::string extension = format == eval::TrajectoryFormat::kKitti ? ".txt" : ".tum";
+/// 三条轨迹总写 TUM（带语义，评测读它）；要的话另写一份 KITTI 格式给官方评测程序。
+void writeTrajectories(const fs::path& dir, const modules::RunResult& result,
+                       const config::TaskConfig& c, std::ostream& out) {
     const std::pair<const char*, const fw::Trajectory*> trajectories[] = {
         {"odometry", &result.odometry},
         {"online", &result.online},
         {"keyframes", &result.keyframes}};
     for (const auto& [name, trajectory] : trajectories) {
-        eval::writeTrajectory((dir / "trajectory" / (std::string(name) + extension)).string(),
-                              *trajectory, format);
+        const fs::path base = dir / "trajectory" / name;
+        eval::writeTrajectory(base.string() + ".tum", *trajectory, eval::TrajectoryFormat::kTum);
+        if (c.outputs.kitti_trajectories) {
+            eval::writeTrajectory(base.string() + ".txt", *trajectory,
+                                  eval::TrajectoryFormat::kKitti);
+        }
     }
     out << "轨迹: " << (dir / "trajectory").string() << '\n';
-    return dir / "trajectory" / ("odometry" + extension);
-}
-
-/// 实验：对真值评测，写报告，过基线门禁。返回退出码。
-int evaluate(const ResolvedTask& task, const fs::path& dir, const fs::path& trajectory_file,
-             plugin::Dataset& dataset, fw::Trajectory estimate,
-             const modules::RunOutcome& outcome, RunFacts& facts,
-             const fw::CalibrationData& calibration, std::ostream& out, std::ostream& err) {
-    const auto& c = task.config;
-    const auto& ec = c.evaluation;
-    eval::EvaluationReport report;
-    report.trajectory_file = trajectory_file.string();
-    report.trajectory_digest = eval::trajectoryFileDigest(trajectory_file.string());
-    report.dataset = c.task.name;
-    report.config_hash = config::configHash(c);
-    report.input_complete = outcome.inputComplete();
-    report.completeness =
-        outcome.complete() ? eval::RunCompleteness::kComplete : eval::RunCompleteness::kIncomplete;
-    report.completeness_source = "本次运行";
-    report.run_problems = outcome.reasons();
-    report.notes = facts.descriptor.notes;
-    for (const auto& note : outcome.notes()) report.notes.push_back(note);
-    const auto target = facts.descriptor.evaluation_window;
-    const bool has_target = target.end >= target.begin && target.end.count() > 0;
-    if (has_target) {
-        report.protocol.window_begin_s = std::chrono::duration<double>(target.begin).count();
-        report.protocol.window_end_s = std::chrono::duration<double>(target.end).count();
-    }
-    report.effective = facts.effective;
-
-    const fs::path report_path = dir / "report.yaml";
-    if (!dataset.ground_truth) throw std::logic_error("实验的真值应当在运行之前核对过");
-    fw::Trajectory& ground_truth = *dataset.ground_truth;
-    for (const auto& note :
-         matchTrackedSensor(estimate, ground_truth, calibration, facts.descriptor,
-                            !c.data.calibration.empty(), dataset.evaluate_at_ground_truth_sensor)) {
-        out << note << '\n';
-        report.notes.push_back(note);
-    }
-
-    const bool interpolate = ec.association == "interpolate";
-    eval::AteOptions ate_options;
-    ate_options.alignment =
-        eval::parseAlignmentKind(ec.alignment).value_or(eval::AlignmentKind::kSe3);
-    ate_options.tolerance = secondsToDuration(ec.association_tolerance_s);
-    ate_options.association =
-        interpolate ? eval::AssociationMode::kInterpolate : eval::AssociationMode::kNearest;
-    ate_options.max_interpolation_gap = secondsToDuration(ec.max_interpolation_gap_s);
-    if (has_target) ate_options.target_window = target;
-    const auto ate = eval::absoluteTrajectoryError(estimate, ground_truth, ate_options);
-    eval::RpeOptions rpe_options;
-    rpe_options.tolerance = ate_options.tolerance;
-    rpe_options.association = ate_options.association;
-    rpe_options.max_interpolation_gap = ate_options.max_interpolation_gap;
-    if (ec.rpe_delta_s > 0.0) {
-        rpe_options.delta_kind = eval::RpeDelta::kTime;
-        rpe_options.delta_time = secondsToDuration(ec.rpe_delta_s);
-        rpe_options.normalize = false;
-    } else {
-        rpe_options.delta_kind = eval::RpeDelta::kDistance;
-        rpe_options.delta_distance_m = ec.rpe_delta_m;
-        rpe_options.normalize = true;
-    }
-    const auto rpe = eval::relativePoseError(estimate, ground_truth, rpe_options);
-
-    out << "对齐: " << eval::toString(ate.alignment.kind) << "  关联("
-        << eval::toString(ate_options.association) << "): " << ate.pairs << " 对 (" << std::fixed
-        << std::setprecision(1) << ate.coverage() * 100.0 << "%)\n";
-    if (ate.target_declared) {
-        out << "目标窗口完成度: " << ate.targetCoverage() * 100.0 << "%  参考样本利用: "
-            << ate.referenceCoverage() * 100.0 << "%\n";
-    }
-    if (ate.pairs == 0) {
-        out << "ATE        无结果（没有关联上的样本）\n";
-    } else {
-        printStats(out, "ATE 平移", ate.translation, "m");
-        printStats(out, "ATE 旋转", ate.rotation_deg, "deg");
-    }
-    if (rpe.pairs == 0) {
-        // 没测出来就不打印数字：零误差与"无结果"不能长得一样
-        out << "RPE        无结果（轨迹长度不足一个 RPE 间隔，没有可比的段）\n";
-    } else {
-        printStats(out, "RPE 平移", rpe.translation, rpe.normalized ? "m/m" : "m");
-        printStats(out, "RPE 旋转", rpe.rotation_deg, rpe.normalized ? "deg/m" : "deg");
-    }
-
-    report.alignment = eval::toString(ate.alignment.kind);
-    report.metrics = eval::toMetricMap(ate, rpe);
-    // 评测协议随结果保存：同一份配置换个容差或 RPE 间隔，结论不可直接互比
-    report.protocol.alignment = eval::toString(ate.alignment.kind);
-    report.protocol.alignment_requested = ec.alignment;
-    report.protocol.association = eval::toString(ate_options.association);
-    report.protocol.association_tolerance_s = ec.association_tolerance_s;
-    report.protocol.max_interpolation_gap_s = interpolate ? ec.max_interpolation_gap_s : 0.0;
-    report.protocol.rpe_delta_kind = rpe.delta_kind == eval::RpeDelta::kTime ? "time" : "distance";
-    report.protocol.rpe_delta =
-        rpe.delta_kind == eval::RpeDelta::kTime ? ec.rpe_delta_s : ec.rpe_delta_m;
-    report.protocol.rpe_normalized = rpe.normalized;
-
-    std::vector<eval::DatasetBaseline> baselines;
-    if (!ec.baselines.empty()) baselines = eval::loadBaselines(ec.baselines);
-    eval::GateRequest request;
-    request.metrics = report.metrics;
-    request.dataset = c.task.name;
-    // 基线绑定的是实际用了什么：有效身份，而不只是配置文件的哈希
-    request.config_hash = facts.effective.at("effective_hash");
-    request.protocol = report.protocol;
-    request.completeness = report.completeness;
-    request.allow_incomplete = ec.allow_incomplete;
-    request.baselines = ec.baselines.empty() ? nullptr : &baselines;
-    report.verdict = eval::gate(request);
-
-    eval::writeReport(report_path.string(), report);
-    out << "报告: " << report_path.string() << '\n';
-    if (!report.verdict.passed()) {
-        err << "评测结论: " << eval::toString(report.verdict.outcome) << ' '
-            << report.verdict.detail << '\n';
-    }
-    const int exit_code = eval::exitCodeFor(report.verdict);
-    writeResult(dir, task, outcome.complete(),
-                {.status = eval::toString(report.verdict.outcome),
-                 .detail = report.verdict.detail,
-                 .summary = archive::summaryMetrics(report.verdict.outcome, report.metrics),
-                 .metrics = report.metrics,
-                 .exit_code = exit_code});
-    return exit_code;
 }
 
 int usage(std::ostream& err) {
@@ -387,6 +226,7 @@ int usage(std::ostream& err) {
   check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
   dump  <任务.yaml> [路径=值 …]           还原后的完整任务
   hash  <任务.yaml> [路径=值 …]           任务哈希
+  evaluate <任务记录> [evaluation.…=值 …]  单独评测：补评或换评测函数、协议重评，不重跑
   schema                                  配置 schema，含目录里每个实现的字段
   default                                 全部默认值
 
@@ -396,8 +236,20 @@ int usage(std::ostream& err) {
     return 2;
 }
 
-/// 单个序列的任务。日志组件是系统自带的，所以系统最先建：读数据阶段的日志也进档案。
-/// 档案目录建好之前 run.log 还没接上，那之前的记录先存着；任务在动档案目录之前出错时，
+/// 门禁的结论：没过时写到 err，结论文件的位置写到 out。
+void reportGate(const EvaluationOutcome& evaluated, const fs::path& dir, std::ostream& out,
+                std::ostream& err) {
+    const auto& verdict = evaluated.verdict;
+    if (verdict.passed()) {
+        out << "门禁: pass" << (verdict.detail.empty() ? "" : "（" + verdict.detail + "）") << '\n';
+    } else {
+        err << "门禁: " << eval::toString(verdict.outcome) << ' ' << verdict.detail << '\n';
+    }
+    out << "结论: " << (dir / "result.json").string() << '\n';
+}
+
+/// 单个序列的任务。日志组件是系统自带的，所以系统最先建：读数据阶段的日志也进任务记录。
+/// 任务记录目录建好之前 run.log 还没接上，那之前的记录先存着；任务在动任务记录目录之前出错时，
 /// 它们只出现在终端上。
 int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream& out,
               std::ostream& err) {
@@ -413,12 +265,12 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     try {
         info << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
              << "  系统哈希: " << config::systemHash(c) << '\n';
-        // 不支持的组合、占用的档案目录、没有真值的实验，都在动档案目录之前报错
+        // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
-        const fs::path dir = archive::directory(c);
-        archive::refuseOccupied(dir, options.overwrite);
+        const fs::path dir = run_dir::directory(c);
+        run_dir::refuseOccupied(dir, options.overwrite);
         plugin::Dataset dataset = openData(task, runner);
-        archive::prepare(dir, kArchiveFiles);
+        run_dir::prepare(dir, kRunDirFiles);
         fs::create_directories(dir / "trajectory");
         system.logRouter().openFile(dir / "run.log");
         config::writeConfigFile((dir / "task.yaml").string(), c);
@@ -469,9 +321,9 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
         facts.packets = online ? system.runOnline() : system.runOffline();
         system.shutdown();
         if (online) {
-            // 调 online_max_in_flight 要看队列峰值：统计表打出来，也进档案
+            // 调 online_max_in_flight 要看队列峰值：统计表打出来，也进任务记录
             const std::string queues = system.runtime().statsTable();
-            archive::writeText(dir / "queues.txt", queues);
+            run_dir::writeText(dir / "queues.txt", queues);
             info << queues;
         }
         const auto& result = system.result();
@@ -503,28 +355,43 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
         for (const auto& reason : outcome.reasons()) warn << "运行不完整: " << reason << '\n';
         for (const auto& note : outcome.notes()) info << "说明: " << note << '\n';
 
-        // ── 任务档案 ──
-        const fs::path trajectory_file = writeTrajectories(dir, result, c, info);
+        // ── 任务记录：评测只读它，所以评测要的输入（真值、生效标定）也写进来 ──
+        writeTrajectories(dir, result, c, info);
+        if (dataset.ground_truth) {
+            std::vector<std::string> notes;
+            const auto truth = comparisonGroundTruth(
+                std::move(*dataset.ground_truth), calibration, facts.descriptor,
+                !c.data.calibration.empty(), dataset.evaluate_at_ground_truth_sensor, notes);
+            eval::writeTrajectory((dir / "trajectory" / "groundtruth.tum").string(), truth,
+                                  eval::TrajectoryFormat::kTum);
+            for (const auto& note : notes) info << note << '\n';
+        }
+        config::writeCalibrationFile((dir / "calibration.yaml").string(), calibration);
         writeIdentity(dir, task, facts);
         // 缓冲满了丢掉的 debug、info 也是结局的一部分：写下来，不静默
         router.flush();
         const std::uint64_t dropped = router.dropped();
         if (dropped > 0) warn << "日志缓冲满了，丢掉 " << dropped << " 条 debug、info\n";
-        archive::writeOutcome(dir, outcome,
+        run_dir::writeOutcome(dir, outcome,
                               {.packets = facts.packets,
                                .frames = facts.frames,
                                .keyframes = facts.keyframes,
                                .log_dropped = dropped});
-        info << "档案: " << dir.string() << '\n';
+        info << "任务记录: " << dir.string() << '\n';
 
-        if (c.task.purpose == "run") {
-            writeResult(dir, task, outcome.complete(),
-                        {.status = "done", .detail = "", .summary = {}, .metrics = {},
-                         .exit_code = 0});
+        const Completeness completeness{.state = outcome.complete()
+                                                     ? eval::RunCompleteness::kComplete
+                                                     : eval::RunCompleteness::kIncomplete,
+                                        .source = "本次运行",
+                                        .declaration = {}};
+        if (task.evaluators.empty()) {  // 只跑不评测
+            writeResult(dir, identityOf(task), completeness, nullptr);
             return 0;
         }
-        return evaluate(task, dir, trajectory_file, dataset, result.odometry, outcome, facts,
-                        calibration, info, warn);
+        const auto evaluated = evaluateRunDir(dir, task, completeness.state, info);
+        writeResult(dir, identityOf(task), completeness, &evaluated);
+        reportGate(evaluated, dir, info, warn);
+        return evaluated.exit_code;
     } catch (const std::exception& e) {
         warn << "错误: " << e.what() << '\n';
         return 1;
@@ -543,6 +410,40 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
             << "  系统哈希: " << config::systemHash(c) << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
+    } catch (const std::exception& e) {
+        err << "错误: " << e.what() << '\n';
+        return 1;
+    }
+}
+
+int evaluateTask(const std::string& dir_text, const std::vector<std::string>& overrides,
+                 const config::Catalogs& catalogs, std::ostream& out, std::ostream& err) {
+    try {
+        const fs::path dir(dir_text);
+        if (!fs::exists(dir / "task.yaml")) {
+            throw std::runtime_error(dir_text + " 不是任务记录：里面没有 task.yaml");
+        }
+        for (const auto& item : overrides) {
+            if (!item.starts_with("evaluation.")) {
+                throw std::runtime_error("单独评测只改评测，覆盖项要以 evaluation. 开头，得到 "
+                                         + item);
+            }
+        }
+        const ResolvedTask task = loadTask((dir / "task.yaml").string(), overrides, catalogs);
+        if (!task.config.data.sequences.empty()) {
+            return evaluateSequences(task, dir, overrides, catalogs, out, err);
+        }
+        if (task.evaluators.empty()) {
+            throw std::runtime_error("没有评测函数：在 evaluation.evaluators 里列出，"
+                                     "或者用覆盖项加一个，如 evaluation.evaluators.ate.type=ate");
+        }
+        const Completeness completeness = completenessOf(dir);
+        const auto evaluated = evaluateRunDir(dir, task, completeness.state, out);
+        writeResult(dir, identityOf(task), completeness, &evaluated);
+        // 评测一节随这次评测更新：评测不进任务哈希，运行的身份不变
+        config::writeConfigFile((dir / "task.yaml").string(), task.config);
+        reportGate(evaluated, dir, out, err);
+        return evaluated.exit_code;
     } catch (const std::exception& e) {
         err << "错误: " << e.what() << '\n';
         return 1;
@@ -586,6 +487,11 @@ int run(int argc, char** argv, const config::Catalogs& catalogs) {
     if (args.empty()) return usage(std::cerr);
     if (const int code = configCommand(args, catalogs, std::cout, std::cerr); code != -1) {
         return code;
+    }
+    if (args.front() == "evaluate") {
+        if (args.size() < 2) return usage(std::cerr);
+        return evaluateTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()),
+                            catalogs, std::cout, std::cerr);
     }
     if (args.front() == "run") args.erase(args.begin());
     RunOptions options;

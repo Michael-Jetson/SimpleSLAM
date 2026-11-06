@@ -11,6 +11,7 @@
 #include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/config/loader.hpp>
 #include <SimpleSLAM/eval/baseline.hpp>
+#include <SimpleSLAM/eval/evaluators.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/framework/deskew.hpp>
@@ -205,32 +206,28 @@ void appendKeyframe(fw::WriteToken<fw::KeyframeStoreData>& writer, std::uint64_t
     });
 }
 
-eval::EvaluationProtocol fullProtocol() {
-    eval::EvaluationProtocol protocol;
-    protocol.alignment = "se3";
-    protocol.alignment_requested = "sim3";
-    protocol.association = "interpolate";
-    protocol.association_tolerance_s = 0.02;
-    protocol.max_interpolation_gap_s = 0.15;
-    protocol.rpe_delta_kind = "distance";
-    protocol.rpe_delta = 100.0;
-    protocol.rpe_normalized = true;
-    protocol.window_begin_s = 1317346945.123456789;  // 绝对 UTC 秒：默认精度会丢小数位
-    protocol.window_end_s = 1317346990.987654321;
-    return protocol;
-}
+/// 评测函数的输入：两条现成的轨迹与一个目标窗口。
+class FixedInputs final : public eval::EvaluationInputs {
+public:
+    FixedInputs(fw::Trajectory estimate, fw::Trajectory reference,
+                std::optional<fw::TimeRange> window)
+        : estimate_(std::move(estimate)), reference_(std::move(reference)), window_(window) {}
+    [[nodiscard]] eval::ComparablePair pair(std::string_view /*estimate*/) const override {
+        return {.estimate = estimate_, .reference = reference_, .notes = {}};
+    }
+    [[nodiscard]] std::optional<fw::TimeRange> targetWindow() const override { return window_; }
 
-void checkSameProtocol(const eval::EvaluationProtocol& a, const eval::EvaluationProtocol& b) {
-    CHECK(a.alignment == b.alignment);
-    CHECK(a.alignment_requested == b.alignment_requested);
-    CHECK(a.association == b.association);
-    CHECK(a.association_tolerance_s == b.association_tolerance_s);
-    CHECK(a.max_interpolation_gap_s == b.max_interpolation_gap_s);
-    CHECK(a.rpe_delta_kind == b.rpe_delta_kind);
-    CHECK(a.rpe_delta == b.rpe_delta);
-    CHECK(a.rpe_normalized == b.rpe_normalized);
-    CHECK(a.window_begin_s == b.window_begin_s);
-    CHECK(a.window_end_s == b.window_end_s);
+private:
+    fw::Trajectory estimate_;
+    fw::Trajectory reference_;
+    std::optional<fw::TimeRange> window_;
+};
+
+const eval::Scalar* scalarNamed(const eval::Evaluation& evaluation, const std::string& name) {
+    for (const auto& scalar : evaluation.scalars) {
+        if (scalar.name == name) return &scalar;
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -259,7 +256,7 @@ TEST_CASE("算法在中间一帧失败、之后又成功：那一帧有失败终
     CHECK(system.trajectory()->odometry().size() == 2);
 
     eval::GateRequest request;
-    request.metrics = {{"ate.pairs", 2.0}, {"ate.translation.rmse", 0.0}};
+    request.metrics = {{"ate.samples", 2.0}, {"ate.translation.rmse", 0.0}};
     request.completeness =
         outcome.complete() ? eval::RunCompleteness::kComplete : eval::RunCompleteness::kIncomplete;
     CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
@@ -463,35 +460,26 @@ TEST_CASE("在线运行中并发提交参数：快照按版本顺序换上，最
 
 // ─────────────────────────── 产物与评测协议 ───────────────────────────
 
-TEST_CASE("报告里的评测协议转存为基线，读回来每个字段都一样", "[transitions][eval]") {
-    const auto dir = std::filesystem::temp_directory_path();
-    const auto baseline_path = (dir / "simpleslam_transitions_baseline.yaml").string();
-    const auto report_path = (dir / "simpleslam_transitions_report.yaml").string();
-
+TEST_CASE("评测函数的协议转存为基线，读回来每个字段都一样", "[transitions][eval]") {
+    const auto path =
+        (std::filesystem::temp_directory_path() / "simpleslam_transitions_baseline.yaml").string();
+    const eval::Protocol protocol{{"type", "ate"},
+                                  {"alignment", "se3"},
+                                  {"association", "interpolate"},
+                                  {"tolerance_s", "0.02"},
+                                  {"max_interpolation_gap_s", "0.15"},
+                                  {"estimate", "odometry"},
+                                  // 长数字原样往返：协议是文本，不经过浮点
+                                  {"window_begin_s", "1317346945.123456789"}};
     eval::DatasetBaseline baseline;
     baseline.dataset = "raw/0027";
     baseline.bounds.push_back({"ate.translation.rmse", 1.0});
-    baseline.protocol = fullProtocol();
-    eval::writeBaselines(baseline_path, {baseline});
-    const auto loaded = eval::loadBaselines(baseline_path);
+    baseline.evaluators["ate"] = protocol;
+    eval::writeBaselines(path, {baseline});
+    const auto loaded = eval::loadBaselines(path);
     REQUIRE(loaded.size() == 1);
-    REQUIRE(loaded.front().protocol.has_value());
-    checkSameProtocol(*loaded.front().protocol, fullProtocol());
-    CHECK(loaded.front().protocol->sameMeasurement(fullProtocol()));
-
-    eval::EvaluationReport report;
-    report.protocol = fullProtocol();
-    report.completeness = eval::RunCompleteness::kComplete;
-    report.trajectory_file = "est.tum";
-    report.trajectory_digest = "0123456789abcdef";
-    eval::writeReport(report_path, report);
-    const auto manifest = eval::readRunManifest(report_path);
-    checkSameProtocol(manifest.protocol, fullProtocol());
-    CHECK(manifest.completeness == eval::RunCompleteness::kComplete);
-    CHECK(manifest.trajectory_digest == "0123456789abcdef");
-
-    std::filesystem::remove(baseline_path);
-    std::filesystem::remove(report_path);
+    CHECK(loaded.front().evaluators.at("ate") == protocol);
+    std::filesystem::remove(path);
 }
 
 TEST_CASE("任务完成度按目标窗口算：括点支撑没被用到，不是任务没完成", "[transitions][eval]") {
@@ -512,20 +500,25 @@ TEST_CASE("任务完成度按目标窗口算：括点支撑没被用到，不是
     options.alignment = eval::AlignmentKind::kNone;
     options.association = eval::AssociationMode::kInterpolate;
     options.max_interpolation_gap = 150ms;
-    options.target_window = fw::TimeRange{fw::Timestamp{100ms}, fw::Timestamp{400ms}};
+    const fw::TimeRange window{fw::Timestamp{100ms}, fw::Timestamp{400ms}};
+    options.target_window = window;
     const auto ate = eval::absoluteTrajectoryError(estimate, truth, options);
     CHECK(ate.pairs == 4);
     CHECK(ate.translation.rmse == Approx(0.0).margin(1e-9));
     CHECK(ate.targetCoverage() == Approx(1.0));  // 目标帧全部完成
     CHECK(ate.referenceCoverage() < 1.0);         // 支撑样本没用满
     CHECK(ate.spanRatio() < 1.0);                 // 参考跨度比任务长
-    CHECK(eval::toMetricMap(ate, eval::RpeResult{}).at("ate.target_coverage") == Approx(1.0));
 
-    // 没声明目标就没有任务完成度，不拿参考跨度冒充
-    options.target_window.reset();
-    const auto undeclared = eval::absoluteTrajectoryError(estimate, truth, options);
-    CHECK_FALSE(undeclared.target_declared);
-    CHECK(eval::toMetricMap(undeclared, eval::RpeResult{}).count("ate.target_coverage") == 0);
+    // 评测函数同样只在声明了目标时给任务完成度，不拿参考跨度冒充
+    eval::AteEvaluator::Config config;
+    config.alignment = "none";
+    config.association = "interpolate";
+    const eval::AteEvaluator evaluator(config);
+    const auto declared = evaluator.evaluate(FixedInputs(estimate, truth, window));
+    REQUIRE(scalarNamed(declared, "target_coverage") != nullptr);
+    CHECK(scalarNamed(declared, "target_coverage")->value == Approx(1.0));
+    const auto undeclared = evaluator.evaluate(FixedInputs(estimate, truth, std::nullopt));
+    CHECK(scalarNamed(undeclared, "target_coverage") == nullptr);
 }
 
 TEST_CASE("门禁：完整性未知时没有基线照常测量并注明，有基线不可比较；人工声明要留痕",
@@ -536,7 +529,7 @@ TEST_CASE("门禁：完整性未知时没有基线照常测量并注明，有基
     const std::vector<eval::DatasetBaseline> baselines{baseline};
 
     eval::GateRequest request;
-    request.metrics = {{"ate.pairs", 30.0}, {"ate.translation.rmse", 0.05}};
+    request.metrics = {{"ate.samples", 30.0}, {"ate.translation.rmse", 0.05}};
     request.dataset = "kitti/00";
     CHECK(request.completeness == eval::RunCompleteness::kUnknown);  // 没有证据就不假定完整
 

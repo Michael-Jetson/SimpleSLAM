@@ -3,10 +3,9 @@
 #   simpleslam-lio-skeleton configs/tasks/kitti_odometry.yaml \
 #       data.source.path=/data/kitti/odometry/sequences/00
 #
-# 换算法改 system，换数据改 data.source，只出结果不评测把 task.purpose 改成 run。
+# 换算法改 system，换数据改 data.source，只跑不评测就去掉 evaluation.evaluators。
 task:
   name: kitti-00
-  purpose: experiment
   mode: offline
 system: ../systems/my_lio.yaml
 data:
@@ -15,6 +14,6 @@ data:
     path: /data/kitti/odometry/sequences/00
     groundtruth_frame: body
 evaluation:
-  format: tum
-  alignment: se3
-  association_tolerance_s: 0.02
+  evaluators:
+    ate: {type: ate, alignment: se3}
+    rpe: {type: rpe, delta_m: 100}

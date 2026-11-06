@@ -6,7 +6,6 @@
 # 估计在扫描终点、真值在 OXTS 时刻，两边采样不同步，所以按插值关联。
 task:
   name: kitti-raw-0027
-  purpose: experiment
   mode: offline
 system: ../systems/my_lio.yaml
 data:
@@ -14,7 +13,6 @@ data:
     type: kitti_raw
     path: /data/kitti/raw/2011_09_26/2011_09_26_drive_0027_sync
 evaluation:
-  format: tum
-  alignment: se3
-  association: interpolate
-  max_interpolation_gap_s: 0.15
+  evaluators:
+    ate: {type: ate, alignment: se3, association: interpolate, max_interpolation_gap_s: 0.15}
+    rpe: {type: rpe, delta_m: 100, association: interpolate, max_interpolation_gap_s: 0.15}

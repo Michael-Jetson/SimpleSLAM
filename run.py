@@ -3,7 +3,7 @@
 
     ./run.py demo                       合成夹具，跑通整条链路（不需要下载数据集）
     ./run.py configs/tasks/kitti_odometry.yaml data.source.path=/data/kitti/odometry/sequences/00
-    ./run.py show runs/kitti-00         看一个档案
+    ./run.py show runs/kitti-00         看一份任务记录
     ./run.py --help                     全部子命令
 """
 

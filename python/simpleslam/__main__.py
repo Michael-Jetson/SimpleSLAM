@@ -2,9 +2,12 @@
 
     ./run.py demo                               合成夹具，跑通整条链路
     ./run.py <任务.yaml|任务.py> [路径=值 …]      构建（按需）后跑一个任务，等同 run
+    ./run.py evaluate <任务记录> [evaluation.…=值 …]
+                                                单独评测一份任务记录：补评，或换评测函数重评
     ./run.py sweep <任务.py> [路径=值 …]          跑 sweep() 生成的一组变体，最后汇总
-    ./run.py show <档案>                         一个档案的摘要
-    ./run.py compare <档案> … [--csv]            几个档案的对比表
+    ./run.py show <任务记录> [--metrics …]        一份任务记录的摘要
+    ./run.py compare <任务记录> … [--metrics …] [--csv]
+                                                几份任务记录的对比表
     ./run.py impls                              入口里登记了哪些实现、各有哪些参数
     ./run.py config | eval | convert …          任务渲染与校验、轨迹精度速查、轨迹格式转换
 
@@ -16,7 +19,8 @@ C++ 入口是加载、校验、执行与评测判定的唯一实现，操作台�
 任务可以写成 ``.py``：文件里构造一个名为 ``config`` 的 :class:`~simpleslam.config.Config`
 （或提供 ``build()`` 返回它）；``.py`` 里 ``system`` 的相对路径相对这个文件所在的目录。
 
-精度的权威实现是 C++（退出码能让流水线失败）；``eval`` 子命令是给交互式查看用的。
+精度的权威实现是 C++（退出码能让流水线失败）：``evaluate`` 交给入口，写结论、过门禁；
+``eval`` 子命令是给交互式查看用的，只打印，不写结论。
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ from simpleslam.schema import Schema, SchemaError
 from simpleslam.trajectory import read_trajectory, write_trajectory
 from simpleslam.workspace import BuildError, Workspace, in_docker, repo_root, run_in_docker
 
-COMMANDS = ("run", "demo", "sweep", "show", "compare", "impls", "config", "eval", "convert")
+COMMANDS = ("run", "evaluate", "demo", "sweep", "show", "compare", "impls", "config", "eval",
+            "convert")
 # 覆盖项里指向数据的路径：--docker 时把它们所在的目录挂进容器
 _DATA_PATHS = ("data.source.path=", "data.calibration=", "evaluation.groundtruth=")
 
@@ -177,6 +182,17 @@ def _run_command(args: argparse.Namespace) -> int:
     return console.run_task(_workspace(args), Path(args.task), args.overrides, _options(args))
 
 
+def _evaluate_command(args: argparse.Namespace) -> int:
+    return console.evaluate(_workspace(args), Path(args.run_dir), args.overrides, _options(args))
+
+
+def _metrics(args: argparse.Namespace) -> list[str] | None:
+    """``--metrics a.b.c,d.e.f``：按全名挑列。"""
+    if not args.metrics:
+        return None
+    return [item.strip() for item in args.metrics.split(",") if item.strip()]
+
+
 def _demo_command(args: argparse.Namespace) -> int:
     return console.demo(_workspace(args), _options(args))
 
@@ -187,12 +203,13 @@ def _sweep_command(args: argparse.Namespace) -> int:
 
 
 def _show_command(args: argparse.Namespace) -> int:
-    print(console.show(Path(args.archive)), end="")
+    print(console.show(Path(args.run_dir), _metrics(args)), end="")
     return 0
 
 
 def _compare_command(args: argparse.Namespace) -> int:
-    text = console.compare([Path(item) for item in args.archives], as_csv=args.csv is not None)
+    text = console.compare([Path(item) for item in args.run_dirs], as_csv=args.csv is not None,
+                           metrics=_metrics(args))
     if args.csv:
         Path(args.csv).write_text(text, encoding="utf-8")
         print(f"已写出 {args.csv}", file=sys.stderr)
@@ -227,8 +244,14 @@ def _parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", parents=[build], help="构建（按需）后跑一个任务")
     run.add_argument("task", help="任务文件（.yaml 或 .py）")
     run.add_argument("--jobs", type=int, default=1, help="多序列时同时跑几个序列")
-    run.add_argument("--overwrite", action="store_true", help="档案目录已有内容时照样写")
+    run.add_argument("--overwrite", action="store_true", help="任务记录目录已有内容时照样写")
     run.set_defaults(func=_run_command, overrides=[])
+
+    evaluate = subparsers.add_parser(
+        "evaluate", parents=[build],
+        help="单独评测一份任务记录（入口的 evaluate：写结论、过门禁；覆盖项只改评测一节）")
+    evaluate.add_argument("run_dir", metavar="任务记录")
+    evaluate.set_defaults(func=_evaluate_command, overrides=[])
 
     demo = subparsers.add_parser("demo", parents=[build], help="合成夹具，跑通整条链路")
     demo.set_defaults(func=_demo_command)
@@ -236,16 +259,22 @@ def _parser() -> argparse.ArgumentParser:
     sweep = subparsers.add_parser("sweep", parents=[build], help="跑 .py 任务里 sweep() 的变体")
     sweep.add_argument("task", help="定义了 sweep() 的 .py 任务")
     sweep.add_argument("--jobs", type=int, default=1, help="同时跑几个变体")
-    sweep.add_argument("--overwrite", action="store_true", help="变体的档案目录已有内容时照样写")
-    sweep.add_argument("--out", help="变体档案的上层目录（默认 runs/<文件名>）")
+    sweep.add_argument("--overwrite", action="store_true",
+                       help="变体的任务记录目录已有内容时照样写")
+    sweep.add_argument("--out", help="变体任务记录的上层目录（默认 runs/<文件名>）")
     sweep.set_defaults(func=_sweep_command, overrides=[])
 
-    show = subparsers.add_parser("show", help="一个档案的摘要")
-    show.add_argument("archive")
+    metrics = argparse.ArgumentParser(add_help=False)
+    metrics.add_argument("--metrics", metavar="全名,…",
+                         help="按全名挑列，如 ate.translation.rmse,rpe.translation.rmse"
+                         "（默认取评测函数标了短名的那几项）")
+
+    show = subparsers.add_parser("show", parents=[metrics], help="一份任务记录的摘要")
+    show.add_argument("run_dir", metavar="任务记录")
     show.set_defaults(func=_show_command)
 
-    compare = subparsers.add_parser("compare", help="几个档案的对比表")
-    compare.add_argument("archives", nargs="+")
+    compare = subparsers.add_parser("compare", parents=[metrics], help="几份任务记录的对比表")
+    compare.add_argument("run_dirs", metavar="任务记录", nargs="+")
     compare.add_argument("--csv", metavar="文件", help="把对比表写成 CSV")
     compare.set_defaults(func=_compare_command)
 
@@ -263,7 +292,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     config_parser.set_defaults(func=_config_command)
 
-    eval_parser = subparsers.add_parser("eval", help="轨迹精度速查")
+    eval_parser = subparsers.add_parser("eval", help="轨迹精度速查（只打印，不写结论）")
     eval_parser.add_argument("estimate")
     eval_parser.add_argument("reference")
     eval_parser.add_argument("--format", choices=["tum", "kitti"], default=None)
@@ -328,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args, extra = parser.parse_known_args(argv)
     # 跑任务的命令里，形如 路径=值 的参数是覆盖项，原样交给 C++ 入口
-    if args.command in ("run", "sweep"):
+    if args.command in ("run", "sweep", "evaluate"):
         args.overrides = [item for item in extra if "=" in item and not item.startswith("-")]
         extra = [item for item in extra if item not in args.overrides]
     if extra:

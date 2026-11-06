@@ -217,12 +217,28 @@ void assign(PluginSpec& target, const YAML::Node& node, const std::string& path,
     target = parsePlugin(node, path, origin);
 }
 
+/// 一组带名字的插件节点：映射里每一项是一个插件节点；空映射表示一个都没有。
+void assign(PluginMap& target, const YAML::Node& node, const std::string& path,
+            const std::string& origin) {
+    if (node.IsNull()) {
+        target.clear();
+        return;
+    }
+    if (!node.IsMap()) throw ConfigError(origin + ": " + path + " 要写成映射：名字 → 插件节点");
+    target.clear();
+    for (const auto& item : node) {
+        const std::string name = item.first.as<std::string>();
+        target.emplace(name, parsePlugin(item.second, joinPath(path, name), origin));
+    }
+}
+
 const char* typeName(const bool&) { return "bool"; }
 const char* typeName(const std::int64_t&) { return "int"; }
 const char* typeName(const double&) { return "double"; }
 const char* typeName(const std::string&) { return "string"; }
 const char* typeName(const std::vector<std::string>&) { return "list"; }
 const char* typeName(const PluginSpec&) { return "slot"; }
+const char* typeName(const PluginMap&) { return "slots"; }
 
 std::string listText(const std::vector<std::string>& items) {
     std::string out = "[";
@@ -238,6 +254,13 @@ std::string defaultText(const double& v) { return formatDouble(v); }
 std::string defaultText(const std::string& v) { return v; }
 std::string defaultText(const std::vector<std::string>& v) { return listText(v); }
 std::string defaultText(const PluginSpec& v) { return v.type; }
+std::string defaultText(const PluginMap& v) {
+    std::string out = "{";
+    for (const auto& [name, spec] : v) {
+        out += (out.size() == 1 ? "" : ", ") + name + ": " + spec.type;
+    }
+    return out + "}";
+}
 
 /// 规范化导出用的文本：数值同上，字符串加引号。
 std::string canonicalText(const bool& v) { return defaultText(v); }
@@ -300,8 +323,8 @@ void requireDuration(const std::string& path, double seconds) {
 }
 
 template <class T>
-inline constexpr bool kOpaque =
-    std::is_same_v<T, PluginSpec> || std::is_same_v<T, std::vector<std::string>>;
+inline constexpr bool kOpaque = std::is_same_v<T, PluginSpec> || std::is_same_v<T, PluginMap>
+                                || std::is_same_v<T, std::vector<std::string>>;
 
 /// 字段路径，以及其中不往下展开的那些（插件节点、列表）。
 struct FieldPaths {
@@ -419,6 +442,12 @@ void applyAssignment(TaskConfig& config, const std::string& assignment) {
                                       + path + "={type: …}");
                 }
                 field = parsePlugin(value, path, "覆盖项");
+            } else if constexpr (std::is_same_v<T, PluginMap>) {
+                if (!value.IsMap()) {
+                    throw ConfigError("覆盖项 " + path + " 是一组插件节点：写 " + path
+                                      + "={名字: {type: …}}，或 " + path + ".<名字>.type=…");
+                }
+                assign(field, value, path, "覆盖项");
             } else if constexpr (std::is_same_v<T, std::string>) {
                 field = value.IsScalar() ? value.Scalar() : text;
             } else {
@@ -426,11 +455,26 @@ void applyAssignment(TaskConfig& config, const std::string& assignment) {
             }
             return;
         }
+        const bool below = path.size() > name.size() && path.compare(0, name.size(), name) == 0
+                           && path[name.size()] == '.';
         if constexpr (std::is_same_v<T, PluginSpec>) {
-            if (path.size() > name.size() && path.compare(0, name.size(), name) == 0
-                && path[name.size()] == '.') {
+            if (below) {
                 found = true;
                 applyToPlugin(field, splitPath(path.substr(name.size() + 1)), value, path);
+            }
+        } else if constexpr (std::is_same_v<T, PluginMap>) {
+            if (below) {
+                // `<字段>.<名字>=…` 写整个条目，`<字段>.<名字>.…` 往条目里写；没有的条目新建
+                found = true;
+                auto rest = splitPath(path.substr(name.size() + 1));
+                const std::string entry = rest.front();
+                rest.erase(rest.begin());
+                if (rest.empty()) {
+                    if (!value.IsMap()) throw ConfigError("覆盖项 " + path + " 要写成 {type: …}");
+                    field[entry] = parsePlugin(value, path, "覆盖项");
+                } else {
+                    applyToPlugin(field[entry], rest, value, path);
+                }
             }
         }
     });
@@ -463,6 +507,17 @@ std::string dump(const TaskConfig& config, Keep&& keep) {
         if constexpr (std::is_same_v<std::decay_t<decltype(value)>, PluginSpec>) {
             out << pad << key << ":\n";
             emitPlugin(out, value, pad.size() + 2);
+        } else if constexpr (std::is_same_v<std::decay_t<decltype(value)>, PluginMap>) {
+            // 一组插件节点按名字排序；一个都没有写成 {}
+            if (value.empty()) {
+                out << pad << key << ": {}\n";
+            } else {
+                out << pad << key << ":\n";
+                for (const auto& [name, spec] : value) {
+                    out << pad << "  " << name << ":\n";
+                    emitPlugin(out, spec, pad.size() + 4);
+                }
+            }
         } else {
             out << pad << key << ": " << canonicalText(value) << '\n';
         }
@@ -558,8 +613,9 @@ void validateConfig(const TaskConfig& config) {
             if (!std::isfinite(value)) throw ConfigError(std::string(path) + " 必须是有限实数");
         }
     });
-    if (config.task.name.empty()) throw ConfigError("task.name 不能为空：档案目录与报告都用它");
-    requireOneOf("task.purpose", config.task.purpose, {"experiment", "run"});
+    if (config.task.name.empty()) {
+        throw ConfigError("task.name 不能为空：任务记录的目录与结论都用它");
+    }
     requireOneOf("task.mode", config.task.mode, {"offline", "online"});
 
     const auto& system = config.system;
@@ -582,7 +638,7 @@ void validateConfig(const TaskConfig& config) {
         throw ConfigError("system.modules.graph_optimizer.odometry_rotation_weight 必须为正");
     }
 
-    // 序列名是子档案的目录名，也写进子进程的覆盖项：只收不用转义、不会越出档案目录的名字
+    // 序列名是子任务记录的目录名，也写进子进程的覆盖项：只收不用转义、不会越出任务记录目录的名字
     const auto safe = [](char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
                || c == '.' || c == '_' || c == '-';
@@ -600,15 +656,19 @@ void validateConfig(const TaskConfig& config) {
         }
     }
 
-    const auto& evaluation = config.evaluation;
-    requireOneOf("evaluation.format", evaluation.format, {"tum", "kitti"});
-    requireOneOf("evaluation.association", evaluation.association, {"nearest", "interpolate"});
-    requireOneOf("evaluation.alignment", evaluation.alignment,
-                 {"none", "first_pose", "se3", "sim3"});
-    requireDuration("evaluation.association_tolerance_s", evaluation.association_tolerance_s);
-    requireDuration("evaluation.max_interpolation_gap_s", evaluation.max_interpolation_gap_s);
-    requireNonNegative("evaluation.rpe_delta_m", evaluation.rpe_delta_m);
-    requireDuration("evaluation.rpe_delta_s", evaluation.rpe_delta_s);
+    // 评测函数的名字是指标名的第一段与表格的文件名：只收字母、数字与 _
+    for (const auto& [name, spec] : config.evaluation.evaluators) {
+        const bool valid = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+        });
+        if (!valid) {
+            throw ConfigError("evaluation.evaluators 里的名字 " + name
+                              + " 只能用字母、数字与 _：它是指标名的第一段，也是表格的文件名");
+        }
+        if (spec.type.empty()) {
+            throw ConfigError("evaluation.evaluators." + name + " 要写 type，选一个评测函数");
+        }
+    }
 
     const auto& log = config.outputs.log;
     requireOneOf("outputs.log.console", log.console, {"debug", "info", "warn", "error"});
@@ -662,7 +722,7 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
     }
     for (const auto& item : overrides) loaded.source.overrides.push_back(item);
 
-    // system 写的是路径：读那份系统文件，挂到 system 下。写成映射的是还原后的档案，原样用
+    // system 写的是路径：读那份系统文件，挂到 system 下。写成映射的是任务记录里还原后的任务，原样用
     if (const YAML::Node system = view["system"]; system && system.IsScalar()) {
         std::filesystem::path file(system.Scalar());
         if (file.is_relative()) file = std::filesystem::path(base_dir) / file;
@@ -724,8 +784,10 @@ void writeConfigFile(const std::string& path, const TaskConfig& config) {
 std::string digestHex(const std::string& text) { return fw::digestHex(text); }
 
 std::string configHash(const TaskConfig& config) {
-    // 产出放在哪里不影响结果：换个档案目录重跑，仍是同一个任务
-    const auto keep = [](std::string_view path) { return !path.starts_with("outputs."); };
+    // 产出放在哪里、怎么评测都不影响运行：换个目录重跑、加一个评测函数，仍是同一个任务
+    const auto keep = [](std::string_view path) {
+        return !path.starts_with("outputs.") && !path.starts_with("evaluation.");
+    };
     return digestHex(dump(config, keep));
 }
 

@@ -4,6 +4,7 @@
 #include <SimpleSLAM/algo/builtins.hpp>
 #include <SimpleSLAM/app/catalogs.hpp>
 #include <SimpleSLAM/app/replay_reader.hpp>
+#include <SimpleSLAM/eval/evaluators.hpp>
 #include <SimpleSLAM/plugins/dataset.hpp>
 #include <SimpleSLAM/plugins/graph_optimizer.hpp>
 #include <SimpleSLAM/plugins/odometry.hpp>
@@ -25,6 +26,10 @@ config::Catalogs builtinCatalogs() {
 
     catalogs.of<plugin::PlaceRecognizerBase>().add<plugin::NoPlaceRecognizer>();
     catalogs.of<plugin::GraphOptimizerBase>().add<plugin::NoGraphOptimizer>();
+
+    auto& evaluators = catalogs.of<eval::EvaluatorBase>();
+    evaluators.add<eval::AteEvaluator>();
+    evaluators.add<eval::RpeEvaluator>();
     // 空目录：方案没有内置实现，用户在入口追加
     (void)catalogs.of<plugin::OdometryBase>();
     return catalogs;
@@ -33,6 +38,7 @@ config::Catalogs builtinCatalogs() {
 std::map<std::string, std::string> slotInterfaces() {
     return {
         {"data.source", std::string(plugin::DatasetReader::kInterfaceName)},
+        {"evaluation.evaluators", std::string(eval::EvaluatorBase::kInterfaceName)},
         {"system.modules.graph_optimizer.plugin",
          std::string(plugin::GraphOptimizerBase::kInterfaceName)},
         {"system.modules.odometry.plugin", std::string(plugin::OdometryBase::kInterfaceName)},

@@ -1,6 +1,6 @@
 """任务配置：用 Python 写任务，渲染成 C++ 能加载的 YAML。
 
-一个任务是"用哪个 SLAM 系统、在线还是离线、处理哪份数据、做实验还是只出结果"。
+一个任务是"用哪个 SLAM 系统、在线还是离线、处理哪份数据、评测不评测、怎么评测"。
 ``Config`` 对应一份任务文件，键是点分路径，和 YAML 一一对应::
 
     from simpleslam import Config
@@ -12,7 +12,9 @@
     )
     config.override("system.modules.odometry.plugin.keyframe_distance_m", 2.0)
 
-带 ``type`` 的映射是插件节点（选一个实现，其余键是它的参数）。系统写在文件里时，
+带 ``type`` 的映射是插件节点（选一个实现，其余键是它的参数）。评测函数是一张带名字的
+插件节点表（``evaluation.evaluators``），整张写或按 ``evaluation.evaluators.<名字>``
+一项一项写都行。系统写在文件里时，
 改系统参数只能用覆盖项，和命令行同一写法。渲染：
 ``python -m simpleslam config render task.py -o task.yaml``。
 
@@ -124,8 +126,18 @@ def _require_int64(value: int, path: str) -> int:
     return value
 
 
+_ENTRY_NAME = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _check_entry_name(table: str, name: str) -> None:
+    """表里的名字只收字母、数字与 _，与 C++ 的 validateConfig 一致。"""
+    if not _ENTRY_NAME.fullmatch(name):
+        raise ConfigError(f"{table} 里的名字 {name} 只能用字母、数字与 _："
+                          "它是指标名的第一段，也是表格的文件名")
+
+
 def _coerce_kind(kind: str, value: Any, path: str) -> Any:
-    """配置字段的值（bool / int / double / string / list / slot）。"""
+    """配置字段的值（bool / int / double / string / list / slot / slots）。"""
     if kind == "bool":
         if not isinstance(value, bool):
             raise ConfigError(f"{path} 需要 bool，得到 {value!r}")
@@ -148,6 +160,14 @@ def _coerce_kind(kind: str, value: Any, path: str) -> Any:
         if not isinstance(value, Mapping):
             raise ConfigError(f"{path} 是插件节点，要写成映射，至少写出 type")
         return _copy_plugin(value, path)
+    if kind == "slots":
+        if not isinstance(value, Mapping):
+            raise ConfigError(f"{path} 是带名字的插件节点表，要写成 {{名字: 插件节点}}")
+        out: dict[str, Any] = {}
+        for name, node in value.items():
+            _check_entry_name(path, name)
+            out[name] = _coerce_kind("slot", node, f"{path}.{name}")
+        return out
     if not isinstance(value, str):
         raise ConfigError(f"{path} 需要字符串，得到 {value!r}")
     return value
@@ -289,6 +309,12 @@ def _emit(values: Mapping[str, Any], fields: list[Field]) -> str:
         if field.type == "slot":
             lines.append(f"{pad}{key}:")
             _emit_plugin(lines, value, len(pad) + 2)
+        elif field.type == "slots":
+            # 空表写成 {}；否则按名字排序，每项一个插件节点（与 C++ 的 dump 一致）
+            lines.append(f"{pad}{key}:" + ("" if value else " {}"))
+            for name in sorted(value):
+                lines.append(f"{pad}  {name}:")
+                _emit_plugin(lines, value[name], len(pad) + 4)
         else:
             lines.append(f"{pad}{key}: {_format_value(value)}")
     return "\n".join(lines) + "\n" if lines else ""
@@ -316,9 +342,35 @@ def _flatten(prefix: str, values: Mapping[str, Any], out: dict[str, Any]) -> Non
 def _slot_containing(path: str, schema: Schema) -> str | None:
     """路径落在哪个插件字段里面（不含插件字段本身）。"""
     for field in schema:
-        if field.type == "slot" and path.startswith(field.path + "."):
+        if field.type in ("slot", "slots") and path.startswith(field.path + "."):
             return field.path
     return None
+
+
+def _table_of(path: str, schema: Schema) -> str | None:
+    """路径是不是插件节点表里的一项（``<表>.<名字>``），是就返回表的路径。"""
+    table, dot, _ = path.rpartition(".")
+    if dot and table in schema and schema.field(table).type == "slots":
+        return table
+    return None
+
+
+def _merged_tables(values: Mapping[str, Any], schema: Schema) -> dict[str, Any]:
+    """插件节点表的单项（``<表>.<名字>``）并进整张表：先整张表，再逐项，后写的覆盖先写的，
+    与 C++ 应用覆盖项的顺序一致。按节写的 ``evaluation={"evaluators": {...}}`` 展开后
+    就是单项，所以两种写法得到同一张表。"""
+    out: dict[str, Any] = {}
+    for path, value in values.items():
+        table = _table_of(path, schema) if path not in schema else None
+        if table is None:
+            out[path] = value
+    for path, value in values.items():
+        table = _table_of(path, schema) if path not in schema else None
+        if table is not None:
+            entries = dict(out.get(table) or {})
+            entries[path[len(table) + 1:]] = value
+            out[table] = entries
+    return out
 
 
 class Config:
@@ -424,6 +476,11 @@ class Config:
             if system_file is not None and path.startswith("system."):
                 raise ConfigError(f"{path}：system 引用了系统文件 {system_file}，"
                                   "改系统参数要写成覆盖项（config.override）")
+            table = _table_of(path, schema) if path not in schema else None
+            if table is not None:  # 表里的一项：名字合规，值是插件节点
+                _check_entry_name(table, path[len(table) + 1:])
+                _coerce_kind("slot", value, path)
+                continue
             if path not in schema:
                 slot = _slot_containing(path, schema)
                 if slot is not None:
@@ -441,17 +498,23 @@ class Config:
                 "先用 through_cpp() 得到完整的任务"
             )
         self.validate(schema)
+        values = _merged_tables(self._values, schema)
         out: dict[str, Any] = {}
         for field in schema:
-            given = field.path in self._values
-            value = self._values[field.path] if given else field.default_value()
+            given = field.path in values
+            value = values[field.path] if given else field.default_value()
             value = _coerce_kind(field.type, value, field.path)
-            if field.type == "slot":
+            if field.type in ("slot", "slots"):
                 try:
                     interface = schema.slot_interface(field.path)
                 except SchemaError as exc:
                     raise ConfigError(str(exc)) from exc
-                value = _resolve_plugin(value, interface, schema, field.path)
+                if field.type == "slot":
+                    value = _resolve_plugin(value, interface, schema, field.path)
+                else:
+                    value = {name: _resolve_plugin(node, interface, schema,
+                                                   f"{field.path}.{name}")
+                             for name, node in sorted(value.items())}
             out[field.path] = value
         return out
 
@@ -464,8 +527,10 @@ class Config:
         return self._canonical(schema, lambda path: True)
 
     def hash(self, schema: Schema) -> str:
-        """任务哈希，不含 outputs：产出放在哪里不影响结果。与 C++ 的 configHash 相同。"""
-        return _fnv1a64(self._canonical(schema, lambda path: not path.startswith("outputs.")))
+        """任务哈希，不含 outputs 与 evaluation：产出放在哪里、怎么评测都不影响运行。
+        与 C++ 的 configHash 相同。"""
+        return _fnv1a64(self._canonical(
+            schema, lambda path: not path.startswith(("outputs.", "evaluation."))))
 
     def system_hash(self, schema: Schema) -> str:
         """系统哈希：只覆盖 system 子树，标识算法的配置。与 C++ 的 systemHash 相同。"""
@@ -484,7 +549,9 @@ class Config:
             if schema is None:
                 raise ConfigError("输出完整任务需要 schema")
             return self.canonical(schema)
-        return _emit(self._values, self._render_order(schema))
+        order = self._render_order(schema)
+        values = self._values if schema is None else _merged_tables(self._values, schema)
+        return _emit(values, order)
 
     def _render_order(self, schema: Schema | None) -> list[Field]:
         def pseudo(path: str, value: Any) -> Field:
@@ -511,7 +578,7 @@ class Config:
     @classmethod
     def from_yaml(cls, text: str, schema: Schema) -> "Config":
         """解析任务 YAML 的受限子集：两格缩进的块映射、双引号或不加引号的标量、
-        行内列表、``#`` 注释。
+        行内列表、空映射 ``{}``、``#`` 注释。
 
         规范化导出（:meth:`canonical` 与 C++ 的 dump）和 :meth:`to_yaml` 都在这个子集里。
         别的写法交给 C++：见 :meth:`load`。插件节点从哪一层开始只有 schema 知道，
@@ -520,6 +587,7 @@ class Config:
         if schema is None:
             raise ConfigError("读任务 YAML 需要 schema：插件节点从哪一层开始只有 schema 知道")
         slot_paths = {field.path for field in schema if field.type == "slot"}
+        table_paths = {field.path for field in schema if field.type == "slots"}
         config = cls()
 
         def walk(node: Mapping[str, Any], prefix: str) -> None:
@@ -533,6 +601,11 @@ class Config:
                     if not isinstance(value, Mapping):
                         raise ConfigError(f"{path} 是插件节点，要写成映射")
                     config[path] = _plugin_values(value)
+                elif path in table_paths:
+                    if not isinstance(value, Mapping) or not all(
+                            isinstance(node, Mapping) for node in value.values()):
+                        raise ConfigError(f"{path} 是带名字的插件节点表，每项要写成映射")
+                    config[path] = {name: _plugin_values(node) for name, node in value.items()}
                 elif isinstance(value, Mapping) and path not in schema:
                     walk(value, path)
                 else:
@@ -633,7 +706,7 @@ def _unquote_scalar(text: str) -> str:
 
 
 def _parse_block_yaml(text: str) -> dict[str, Any]:
-    """两格一层的块映射。值是原样的标量文本，或行内列表的文本。"""
+    """两格一层的块映射。值是原样的标量文本、行内列表的文本，或空映射。"""
     root: dict[str, Any] = {}
     stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
     for number, raw in enumerate(text.splitlines(), start=1):
@@ -661,6 +734,8 @@ def _parse_block_yaml(text: str) -> dict[str, Any]:
             child: dict[str, Any] = {}
             parent[key] = child
             stack.append((indent, child))
+        elif value == "{}":
+            parent[key] = {}  # 空映射：规范化导出里的空插件节点表
         elif value.startswith("{"):
             raise ConfigError(f"第 {number} 行：行内映射不在受限子集里，交给 Config.load")
         elif value.startswith("'"):

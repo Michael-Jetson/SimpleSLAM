@@ -11,7 +11,7 @@ target_link_libraries(simpleslam_config_tool PRIVATE simpleslam_app)
 
 add_executable(simpleslam_eval_tool eval_tool.cpp)
 set_target_properties(simpleslam_eval_tool PROPERTIES OUTPUT_NAME simpleslam-eval)
-target_link_libraries(simpleslam_eval_tool PRIVATE simpleslam_eval)
+target_link_libraries(simpleslam_eval_tool PRIVATE simpleslam_app)
 
 if(TARGET simpleslam_compiler_options)
     target_link_libraries(simpleslam_run_tool PRIVATE simpleslam_compiler_options)

@@ -9,7 +9,7 @@
 2. 平移与旋转分开统计，不加权成一个标量。
 
 **支持范围比 C++ 窄，而且是刻意的**：这里只有最近邻关联，没有插值关联，也不接收
-评测目标窗口（没有 ``ate.target_coverage``）。协议为 ``interpolate`` 的报告不由这里复算，
+评测目标窗口（没有 ``ate.target_coverage``）。协议为 ``interpolate`` 的评测不由这里复算，
 严格评测与门禁一律走 C++。补一份暂时没人用的第二实现，只会多一份要维护、要比对的代码；
 真需要时再加，并同时补上对照测试。
 """
@@ -200,14 +200,14 @@ def umeyama(source: Sequence[Vec3], target: Sequence[Vec3], with_scale: bool) ->
     smat: Mat3 = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, d))
     rotation = _mat_mul(_mat_mul(umat, smat), _mat_transpose(vmat))
 
-    scale = 1.0
-    if with_scale and variance > 1e-12:
-        scale = (singular[0] + singular[1] + d * singular[2]) / variance
+    # 估计的位置挤在一点时尺度定不出来：退化成刚体对齐并如实记下，与 C++ 同口径
+    scaled = with_scale and variance > 1e-12
+    scale = (singular[0] + singular[1] + d * singular[2]) / variance if scaled else 1.0
 
     rotated = _mat_vec(rotation, mean_s)  # type: ignore[arg-type]
     translation = tuple(mean_t[i] - scale * rotated[i] for i in range(3))
     return Alignment(
-        kind="sim3" if with_scale else "se3",
+        kind="sim3" if scaled else "se3",
         transform=Pose(translation, matrix_to_quat(rotation)),  # type: ignore[arg-type]
         scale=scale,
     )
@@ -406,25 +406,29 @@ def relative_pose_error(
     return result
 
 
+def _add_statistics(out: dict[str, float], prefix: str, stats: Statistics) -> None:
+    out.update({f"{prefix}.rmse": stats.rmse, f"{prefix}.mean": stats.mean,
+                f"{prefix}.median": stats.median, f"{prefix}.std": stats.stddev,
+                f"{prefix}.min": stats.min, f"{prefix}.max": stats.max})
+
+
 def flatten(ate: AteResult, rpe: RpeResult) -> dict[str, float]:
-    """与 C++ 的 eval::flatten 同名同键，便于两边比对与共用基线文件。"""
-    return {
-        "ate.translation.rmse": ate.translation.rmse,
-        "ate.translation.mean": ate.translation.mean,
-        "ate.translation.median": ate.translation.median,
-        "ate.translation.max": ate.translation.max,
-        "ate.rotation_deg.rmse": ate.rotation_deg.rmse,
-        "ate.rotation_deg.mean": ate.rotation_deg.mean,
-        "ate.pairs": float(ate.pairs),
-        "ate.coverage": ate.coverage,
-        "ate.reference_coverage": ate.reference_coverage,
-        "ate.matched_reference_samples": float(ate.matched_reference_samples),
-        "ate.span_ratio": ate.span_ratio,
-        "ate.max_reference_gap_s": ate.max_reference_gap,
-        "ate.scale": ate.alignment.scale,
-        "rpe.translation.rmse": rpe.translation.rmse,
-        "rpe.translation.mean": rpe.translation.mean,
-        "rpe.rotation_deg.rmse": rpe.rotation_deg.rmse,
-        "rpe.rotation_deg.mean": rpe.rotation_deg.mean,
-        "rpe.pairs": float(rpe.pairs),
-    }
+    """与 C++ 内置评测函数 ate、rpe 的结果同名同键（按类型名给评测函数起名时结论里的全名），
+    便于两边比对与共用基线文件。样本数是 ``<名字>.samples``；没有结果的量不给，与 C++ 一致，
+    所以零样本时只有样本数。"""
+    out: dict[str, float] = {"ate.samples": float(ate.pairs), "rpe.samples": float(rpe.pairs)}
+    if ate.pairs:
+        _add_statistics(out, "ate.translation", ate.translation)
+        _add_statistics(out, "ate.rotation", ate.rotation_deg)
+        out.update({
+            "ate.scale": ate.alignment.scale,
+            "ate.coverage": ate.coverage,
+            "ate.reference_coverage": ate.reference_coverage,
+            "ate.matched_reference_samples": float(ate.matched_reference_samples),
+            "ate.span_ratio": ate.span_ratio,
+            "ate.max_reference_gap": ate.max_reference_gap,
+        })
+    if rpe.pairs:
+        _add_statistics(out, "rpe.translation", rpe.translation)
+        _add_statistics(out, "rpe.rotation", rpe.rotation_deg)
+    return out

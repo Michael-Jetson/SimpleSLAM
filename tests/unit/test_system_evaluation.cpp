@@ -292,7 +292,8 @@ TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][re
         bundle.inputs.push_back(record::InputDigest{
             "recording", record_path.string(), record::fileDigest(record_path.string(), &bytes),
             bytes});
-        bundle.metrics = eval::toMetricMap(ate, eval::RpeResult{});
+        bundle.metrics = {{"ate.translation.rmse", ate.translation.rmse},
+                          {"ate.samples", static_cast<double>(ate.pairs)}};
         record::writeBundle(tempFile("simpleslam_bundle_run.yaml").string(), bundle);
     }
 

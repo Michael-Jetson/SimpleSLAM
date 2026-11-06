@@ -13,6 +13,7 @@ my_lio，就用它。需要先构建：
 找不到工具时整组跳过（而不是假装通过）。
 """
 
+import json
 import math
 import os
 import shutil
@@ -22,8 +23,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from simpleslam.config import Config
-from simpleslam.metrics import absolute_trajectory_error, relative_pose_error
+from simpleslam.config import Config, ConfigError
+from simpleslam.metrics import absolute_trajectory_error, flatten, relative_pose_error
 from simpleslam.schema import Schema
 from simpleslam.trajectory import Pose, Trajectory, write_trajectory
 
@@ -119,7 +120,7 @@ class ConfigParityTest(unittest.TestCase):
         raw[SOURCE] = {"type": "kitti_raw", "path": nasty, "repair_scan_timing": True}
         cases = {
             "最小任务": self.base(),
-            "任务节": self.base(task={"name": "demo", "seed": 17, "purpose": "run"}),
+            "任务节": self.base(task={"name": "demo", "seed": 17, "mode": "online"}),
             "系统节": self.base(system={
                 "pipeline": "mapping",
                 "runtime": {"spin_budget": 1024, "online_max_in_flight": 0},
@@ -136,16 +137,39 @@ class ConfigParityTest(unittest.TestCase):
             "难缠的字符串": raw,
             "评测与产出": self.base(
                 task={"name": nasty},
-                evaluation={"alignment": "sim3", "association": "interpolate",
-                            "rpe_delta_m": 0, "rpe_delta_s": 1.5, "baselines": "b.yaml"},
-                outputs={"dir": "/tmp/elsewhere", "record": True},
+                evaluation={"evaluators": {"ate": {"type": "ate", "alignment": "sim3",
+                                                   "association": "interpolate"},
+                                           "rpe_1s": {"type": "rpe", "delta_s": 1.5}},
+                            "baselines": "b.yaml", "allow_incomplete": True},
+                outputs={"dir": "/tmp/elsewhere", "record": True, "kitti_trajectories": True},
             ),
         }
+        # 评测函数整张表写与一项一项写是同一张表，后写的覆盖先写的
+        by_entry = self.base()
+        by_entry["evaluation.evaluators"] = {"ate": {"type": "ate"}, "z9": {"type": "ate"}}
+        by_entry["evaluation.evaluators.ate"] = {"type": "ate", "alignment": "none"}
+        by_entry["evaluation.evaluators.rpe"] = {"type": "rpe"}
+        cases["评测函数按项写"] = by_entry
         for label, config in cases.items():
             self.assertSameAsCpp(config, label)
+        resolved = by_entry.resolved(self.schema)["evaluation.evaluators"]
+        self.assertEqual(sorted(resolved), ["ate", "rpe", "z9"])
+        self.assertEqual(resolved["ate"]["alignment"], "none")
+
+    def test_evaluator_names_follow_cpp_rules(self):
+        for name in ("ate.v2", "ate-2", ""):
+            config = self.base(evaluation={"evaluators": {name: {"type": "ate"}}})
+            with self.assertRaises(ConfigError, msg=name):
+                config.canonical(self.schema)
+        with self.assertRaises(ConfigError):
+            self.base(evaluation={"evaluators": {"ate": {"alignment": "se3"}}}).canonical(
+                self.schema)  # 没写 type
 
     def test_outputs_do_not_change_the_task_hash(self):
-        a, b = self.base(), self.base(outputs={"dir": "/tmp/elsewhere"})
+        # 产出放在哪里、怎么评测都不影响运行：任务哈希不变
+        a = self.base()
+        b = self.base(outputs={"dir": "/tmp/elsewhere"},
+                      evaluation={"evaluators": {"ate": {"type": "ate", "alignment": "sim3"}}})
         self.assertEqual(a.hash(self.schema), b.hash(self.schema))
         with tempfile.TemporaryDirectory() as directory:
             hashes = []
@@ -197,29 +221,25 @@ class ConfigParityTest(unittest.TestCase):
             self.assertEqual(len(system_hashes), 3)
 
 
+def metrics_of(result: dict) -> dict[str, float]:
+    """结论 result.json 里的指标：全名是 ``<评测函数的名字>.<量>``，样本数是 ``<名字>.samples``，
+    与门禁用的指标同名。"""
+    metrics: dict[str, float] = {}
+    for name, evaluation in result["evaluations"].items():
+        metrics[f"{name}.samples"] = float(evaluation["samples"])
+        for scalar, entry in evaluation["scalars"].items():
+            metrics[f"{name}.{scalar}"] = float(entry["value"])
+    return metrics
+
+
 @unittest.skipIf(EVAL_TOOL is None, "没有 simpleslam-eval，跳过指标比对")
 class MetricsParityTest(unittest.TestCase):
-    def parse(self, output: str) -> dict[str, float]:
-        """从报告 YAML 里取指标。用 --report 拿结构化输出，不解析人读表格。"""
-        metrics: dict[str, float] = {}
-        inside = False
-        for line in output.splitlines():
-            if line.startswith("metrics:"):
-                inside = True
-                continue
-            if inside:
-                if not line.startswith("  "):
-                    break
-                key, _, value = line.strip().partition(":")
-                metrics[key] = float(value)
-        return metrics
-
     def run_case(self, estimate: Trajectory, reference: Trajectory, align: str,
                  expect_exit: int = 0, rpe_distance: float | None = None):
         with tempfile.TemporaryDirectory() as directory:
             est_path = str(Path(directory) / "est.tum")
             ref_path = str(Path(directory) / "ref.tum")
-            report_path = str(Path(directory) / "report.yaml")
+            out = Path(directory) / "evaluated"
             # 写文件时精度有限，所以两边读的是同一份文件，比的是同一组输入
             write_trajectory(est_path, estimate, "tum", precision=12)
             write_trajectory(ref_path, reference, "tum", precision=12)
@@ -228,15 +248,16 @@ class MetricsParityTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     EVAL_TOOL, est_path, ref_path,
+                    "--out", str(out),
                     "--align", align,
                     "--tolerance", "0.02",
                     *rpe_args,
-                    "--report", report_path,
                 ],
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(completed.returncode, expect_exit, completed.stderr)
-            cpp = self.parse(Path(report_path).read_text(encoding="utf-8"))
+            # 用结论里的结构化数据，不解析给人看的输出
+            cpp = metrics_of(json.loads((out / "result.json").read_text(encoding="utf-8")))
 
             from simpleslam.trajectory import read_trajectory
 
@@ -247,8 +268,6 @@ class MetricsParityTest(unittest.TestCase):
                 rpe = relative_pose_error(est, ref, delta_distance=rpe_distance, tolerance=0.02)
             else:
                 rpe = relative_pose_error(est, ref, delta_time=0.5, tolerance=0.02)
-            from simpleslam.metrics import flatten
-
             python = flatten(ate, rpe)
         return cpp, python
 
@@ -266,8 +285,8 @@ class MetricsParityTest(unittest.TestCase):
         self.assertMetricsClose(
             cpp, python,
             ["ate.translation.rmse", "ate.translation.mean", "ate.translation.max",
-             "ate.rotation_deg.rmse", "ate.pairs", "ate.coverage",
-             "rpe.translation.rmse", "rpe.rotation_deg.rmse", "rpe.pairs"],
+             "ate.rotation.rmse", "ate.samples", "ate.coverage",
+             "rpe.translation.rmse", "rpe.rotation.rmse", "rpe.samples"],
         )
 
     def test_se3_alignment(self):
@@ -276,14 +295,14 @@ class MetricsParityTest(unittest.TestCase):
         cpp, python = self.run_case(curved(30, transform=offset), truth, "se3")
         self.assertMetricsClose(
             cpp, python,
-            ["ate.translation.rmse", "ate.rotation_deg.rmse", "ate.scale", "ate.pairs"],
+            ["ate.translation.rmse", "ate.rotation.rmse", "ate.scale", "ate.samples"],
         )
 
     def test_sim3_alignment(self):
         truth = curved(30)
         cpp, python = self.run_case(curved(30, scale=1.7), truth, "sim3")
         self.assertMetricsClose(
-            cpp, python, ["ate.translation.rmse", "ate.rotation_deg.rmse", "ate.scale"]
+            cpp, python, ["ate.translation.rmse", "ate.rotation.rmse", "ate.scale"]
         )
 
     def test_metric_sets_are_identical(self):
@@ -306,8 +325,8 @@ class MetricsParityTest(unittest.TestCase):
         self.assertEqual(python["ate.matched_reference_samples"], 2.0)
         self.assertMetricsClose(
             cpp, python,
-            ["ate.reference_coverage", "ate.matched_reference_samples", "ate.pairs",
-             "ate.max_reference_gap_s"],
+            ["ate.reference_coverage", "ate.matched_reference_samples", "ate.samples",
+             "ate.max_reference_gap"],
         )
 
     def test_zero_association_is_not_a_result(self):
@@ -317,8 +336,8 @@ class MetricsParityTest(unittest.TestCase):
         for i in range(10):
             reference.push(100.0 + i, Pose((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)))
         cpp, python = self.run_case(estimate, reference, "none", expect_exit=4)
-        self.assertEqual(cpp["ate.pairs"], 0.0)
-        self.assertEqual(python["ate.pairs"], 0.0)
+        self.assertEqual(cpp["ate.samples"], 0.0)
+        self.assertEqual(python["ate.samples"], 0.0)
 
     def test_rpe_distance_follows_the_reference_path(self):
         # 稀疏估计配密集真值：走过的路沿真值自身的采样量（20 米），不是两次估计之间的弦长
@@ -332,14 +351,14 @@ class MetricsParityTest(unittest.TestCase):
         estimate.push(2.0, Pose((11.0, 10.0, 0.0), identity))
         cpp, python = self.run_case(estimate, reference, "none", rpe_distance=10.0)
         self.assertAlmostEqual(python["rpe.translation.rmse"], 1.0 / 20.0)
-        self.assertMetricsClose(cpp, python, ["rpe.translation.rmse", "rpe.pairs"])
+        self.assertMetricsClose(cpp, python, ["rpe.translation.rmse", "rpe.samples"])
 
     def test_short_trajectory_has_no_rpe(self):
         # 不足一个 RPE 间隔：两边都给出零段，而不是凑出一个数
         truth = curved(4)
         cpp, python = self.run_case(curved(4), truth, "none")
-        self.assertEqual(cpp["rpe.pairs"], 0.0)
-        self.assertEqual(python["rpe.pairs"], 0.0)
+        self.assertEqual(cpp["rpe.samples"], 0.0)
+        self.assertEqual(python["rpe.samples"], 0.0)
 
 
 if __name__ == "__main__":

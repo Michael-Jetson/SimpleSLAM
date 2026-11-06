@@ -5,11 +5,13 @@
 #include <SimpleSLAM/framework/digest.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <format>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 
 namespace simpleslam::eval {
 
@@ -67,12 +69,63 @@ std::vector<double> readTimesFile(const std::string& path) {
     return times;
 }
 
+constexpr std::string_view kSemanticsPrefix = "# simpleslam ";
+
+std::string_view frameName(fw::TrajectoryFrame frame) {
+    switch (frame) {
+        case fw::TrajectoryFrame::kWorld: return "world";
+        case fw::TrajectoryFrame::kOdom: return "odom";
+        case fw::TrajectoryFrame::kUnknown: return "unknown";
+    }
+    return "unknown";
+}
+
+/// 读回写轨迹时记下的语义：`# simpleslam frame=odom tracked=body clock=0`。evo 等工具把它
+/// 当注释跳过；认不出的键与值报错，免得一条写坏的语义被悄悄当成"未声明"。
+void readSemantics(const std::string& line, Trajectory& trajectory, const std::string& where) {
+    std::istringstream stream(line.substr(kSemanticsPrefix.size()));
+    std::string token;
+    while (stream >> token) {
+        const auto equals = token.find('=');
+        if (equals == std::string::npos) throw TrajectoryIoError(where + " 语义行写坏了: " + token);
+        const std::string key = token.substr(0, equals);
+        const std::string value = token.substr(equals + 1);
+        if (key == "frame") {
+            if (value == "world") {
+                trajectory.setFrame(fw::TrajectoryFrame::kWorld);
+            } else if (value == "odom") {
+                trajectory.setFrame(fw::TrajectoryFrame::kOdom);
+            } else if (value == "unknown") {
+                trajectory.setFrame(fw::TrajectoryFrame::kUnknown);
+            } else {
+                throw TrajectoryIoError(where + " 认不出的参考系: " + value);
+            }
+        } else if (key == "tracked") {
+            trajectory.setTracked(value);
+        } else if (key == "clock") {
+            std::uint32_t clock = 0;
+            const char* last = value.data() + value.size();
+            const auto [end, error] = std::from_chars(value.data(), last, clock);
+            if (error != std::errc{} || end != last) {
+                throw TrajectoryIoError(where + " 时钟域要是非负整数: " + value);
+            }
+            trajectory.setClock(fw::ClockDomainId{clock});
+        } else {
+            throw TrajectoryIoError(where + " 语义行里有未知键: " + key);
+        }
+    }
+}
+
 Trajectory readTum(std::istream& input, const std::string& path) {
     Trajectory trajectory;
     std::string line;
     std::size_t line_number = 0;
     while (std::getline(input, line)) {
         ++line_number;
+        if (line.starts_with(kSemanticsPrefix)) {
+            readSemantics(line, trajectory, path + ":" + std::to_string(line_number));
+            continue;
+        }
         if (isBlankOrComment(line)) continue;
         const auto n = parseNumbers(line);
         if (n.size() < 8) {
@@ -194,6 +247,10 @@ void writeTrajectory(const std::string& path, const Trajectory& trajectory,
     file << std::fixed << std::setprecision(options.precision);
 
     if (format == TrajectoryFormat::kTum) {
+        // TUM 只有数，参考系、跟踪的传感器与时钟域写在注释里，读回来轨迹的语义不丢
+        file << kSemanticsPrefix << "frame=" << frameName(trajectory.frame())
+             << " tracked=" << trajectory.tracked() << " clock=" << trajectory.clock().value
+             << '\n';
         file << "# timestamp tx ty tz qx qy qz qw\n";
         for (const auto& sample : trajectory) {
             const Eigen::Quaterniond q = sample.pose.quat().normalized();

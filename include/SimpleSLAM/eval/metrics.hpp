@@ -9,7 +9,7 @@
 /// 两条纪律：
 /// 1. **对齐方式是结果的一部分**。同一条轨迹按 SE3 对齐与按 Sim3 对齐，
 ///    ATE 可以差一个量级。所以 AteResult 里带着用了哪种对齐、解出的尺度是多少，
-///    报告里不会只剩一个孤零零的数字。
+///    结论里不会只剩一个孤零零的数字。
 /// 2. **平移与旋转分开统计**。把它们加权成一个标量需要一个长度尺度，
 ///    那个尺度是任意的；框架不替使用者选。
 
@@ -37,7 +37,7 @@ struct Statistics {
 
 [[nodiscard]] Statistics statisticsOf(std::vector<double> values);
 
-/// 对齐方式。评测报告必须写明用了哪一种。
+/// 对齐方式。评测结论必须写明用了哪一种。
 enum class AlignmentKind : std::uint8_t {
     kNone,       ///< 不对齐：两条轨迹已在同一系同一 gauge
     kFirstPose,  ///< 用首帧对齐：估计的首帧搬到参考的首帧
@@ -46,7 +46,7 @@ enum class AlignmentKind : std::uint8_t {
 };
 
 [[nodiscard]] std::string toString(AlignmentKind kind);
-/// 解析对齐方式。认不出来返回空——默认成某一种会让报告说谎。
+/// 解析对齐方式。认不出来返回空——默认成某一种会让结论说谎。
 [[nodiscard]] std::optional<AlignmentKind> parseAlignmentKind(std::string_view text);
 
 struct Alignment {
@@ -83,9 +83,18 @@ struct AteOptions {
     std::optional<fw::TimeRange> target_window;
 };
 
+/// 一个样本的误差：ATE 是一对关联上的位姿，RPE 是一段。
+struct ErrorSample {
+    fw::Timestamp time{0};      ///< ATE 取估计的时刻，RPE 取段起点在参考侧的时刻
+    double translation = 0.0;   ///< 米；RPE 归一化时是 米/米
+    double rotation_deg = 0.0;  ///< 度；RPE 归一化时是 度/米
+};
+
 struct AteResult {
     Statistics translation;      ///< 米
     Statistics rotation_deg;     ///< 度
+    /// 逐对的误差，按估计的时刻排列。统计量由它算出，评测结果的逐样本表也是它。
+    std::vector<ErrorSample> errors;
     Alignment alignment;
     std::size_t pairs = 0;
     std::size_t estimate_samples = 0;
@@ -181,6 +190,8 @@ struct RpeOptions {
 struct RpeResult {
     Statistics translation;   ///< 米，或 normalize 时为 米/米
     Statistics rotation_deg;  ///< 度，或 normalize 时为 度/米
+    /// 逐段的误差，按段起点排列。
+    std::vector<ErrorSample> errors;
     std::size_t pairs = 0;
     RpeDelta delta_kind = RpeDelta::kTime;
     bool normalized = false;
@@ -188,9 +199,5 @@ struct RpeResult {
 
 [[nodiscard]] RpeResult relativePoseError(const Trajectory& estimate, const Trajectory& reference,
                                           const RpeOptions& options = {});
-
-/// 把一次评测的全部数字摊平成"指标名 → 值"，供基线比对与报表使用。
-[[nodiscard]] std::vector<std::pair<std::string, double>> flatten(const AteResult& ate,
-                                                                  const RpeResult& rpe);
 
 }  // namespace simpleslam::eval

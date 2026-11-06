@@ -58,7 +58,7 @@ TEST_CASE("缺省即默认值", "[config]") {
     CHECK(config.system.runtime.online_max_in_flight == 200);  // 没写的保持默认
     CHECK(config.system.pipeline == "odometry");
     CHECK(config.task.name == "default");
-    CHECK(config.task.purpose == "experiment");
+    CHECK(config.evaluation.evaluators.empty());  // 默认不评测
     CHECK(config.system.modules.place_recognizer.plugin.type == "none");
 }
 
@@ -104,7 +104,8 @@ system:
 data:
   sequences: ["00", "01"]
 )");
-    config.evaluation.rpe_delta_m = 50.0;
+    config.evaluation.evaluators["ate"] =
+        PluginSpec{.type = "ate", .params = {{"alignment", std::string("sim3")}}, .children = {}};
     const auto again = load(dumpConfig(config));
     CHECK(again.task.name == "demo");
     const auto& plugin = again.system.modules.odometry.plugin;
@@ -115,7 +116,9 @@ data:
     CHECK(std::get<std::string>(plugin.params.at("tag")) == "00");  // 带引号的是字符串
     CHECK(plugin.children.at("map").type == "voxel_point_map");
     CHECK(again.data.sequences == std::vector<std::string>{"00", "01"});
-    CHECK(again.evaluation.rpe_delta_m == Approx(50.0));
+    REQUIRE(again.evaluation.evaluators.size() == 1);
+    CHECK(std::get<std::string>(again.evaluation.evaluators.at("ate").params.at("alignment"))
+          == "sim3");
     CHECK(configHash(again) == configHash(config));
 }
 
@@ -150,7 +153,9 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: nan\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: 1e400\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  pipeline: slam\n"), ConfigError);
-    CHECK_THROWS_AS(load("task:\n  purpose: benchmark\n"), ConfigError);
+    CHECK_THROWS_AS(load("task:\n  purpose: experiment\n"), ConfigError);  // 评不评看评测函数
+    CHECK_THROWS_AS(load("evaluation:\n  evaluators:\n    ate.v2: {type: ate}\n"), ConfigError);
+    CHECK_THROWS_AS(load("evaluation:\n  evaluators:\n    ate: {alignment: se3}\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  mode: realtime\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  name: \"\"\n"), ConfigError);
     CHECK_THROWS_AS(load("evaluation:\n  alignment: umeyama\n"), ConfigError);
@@ -158,7 +163,7 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
         load("system:\n  modules:\n    graph_optimizer:\n      odometry_rotation_weight: 0\n"),
         ConfigError);
     CHECK_THROWS_AS(load("data:\n  sequences: [\"00\", \"00\"]\n"), ConfigError);
-    // 序列名是子档案的目录名：越出档案目录、要转义的都不收
+    // 序列名是子任务记录的目录名：越出任务记录目录、要转义的都不收
     for (const char* name : {"a/b", "..", ".", "a b", "\"q\"", ""}) {
         CHECK_THROWS_AS(load(std::string("data:\n  sequences: [\"") + name + "\"]\n"),
                         ConfigError);
@@ -274,14 +279,16 @@ TEST_CASE("系统哈希只看 system 子树：换数据、评测、产出不变�
     const auto base = load("system:\n  modules:\n    odometry:\n      plugin: {type: lo, a: 1}\n");
     auto other_data = base;
     applyOverrides(other_data, {"data.source={type: kitti_odometry, path: /x}",
-                                "evaluation.alignment=sim3", "outputs.dir=/tmp/y",
+                                "evaluation.evaluators.ate.type=ate", "outputs.dir=/tmp/y",
                                 "task.name=another"});
     CHECK(systemHash(other_data) == systemHash(base));
     CHECK(configHash(other_data) != configHash(base));
 
-    // 产出放在哪里不影响结果：只改档案目录，任务哈希不变
+    // 产出放在哪里、怎么评测都不影响运行：只改这两节，任务哈希不变
     auto other_outputs = base;
-    applyOverrides(other_outputs, {"outputs.dir=/tmp/elsewhere", "outputs.record=true"});
+    applyOverrides(other_outputs, {"outputs.dir=/tmp/elsewhere", "outputs.record=true",
+                                   "evaluation.evaluators.ate.type=ate",
+                                   "evaluation.evaluators.ate.alignment=sim3"});
     CHECK(configHash(other_outputs) == configHash(base));
     CHECK(dumpConfig(other_outputs) != dumpConfig(base));  // 导出照样完整
 

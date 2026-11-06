@@ -91,7 +91,7 @@ protected:
         }
         if (!imu.empty()) angular_velocity /= static_cast<double>(imu.size());
         // 写日志用成员 log_：来源（/slam/odometry › my_lio）、帧序号与时刻是自动的。
-        // debug 默认只进档案里的 run.log，终端上不显示
+        // debug 默认只进任务记录里的 run.log，终端上不显示
         log_.debug("{} 个 IMU 样本，帧间隔 {:.3f} s", imu.size(), dt);
 
         // TODO(你): 这里换成真正的 IMU 预积分 / ESIKF 预测。

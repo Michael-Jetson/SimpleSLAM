@@ -1,4 +1,5 @@
-"""操作台：命令行归一化、构建目录里找入口、档案摘要与对比表、扫参变体、端到端跑任务。
+"""操作台：命令行归一化、构建目录里找入口、任务记录的摘要与对比表、扫参变体、
+端到端跑任务与单独评测。
 
 不构建：要 C++ 入口的用例用 SIMPLESLAM_BUILD_DIR 下已经构建好的示例入口（--entry <路径>），
 找不到就跳过。
@@ -35,18 +36,23 @@ def find_entry() -> str | None:
 ENTRY = find_entry()
 
 
-def write_result(archive: Path, data: dict) -> Path:
-    archive.mkdir(parents=True, exist_ok=True)
-    (archive / "result.json").write_text(json.dumps({"schema": RESULT_SCHEMA, **data}),
+def write_result(run_dir: Path, data: dict) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "result.json").write_text(json.dumps({"schema": RESULT_SCHEMA, **data}),
                                          encoding="utf-8")
-    return archive
+    return run_dir
 
 
-def run_result(task: str, status: str = "pass", exit_code: int = 0, **summary) -> dict:
-    return {"kind": "run", "task": task, "mode": "offline", "purpose": "experiment",
-            "software_version": "2.3", "task_hash": "a" * 16, "system_hash": "b" * 16,
-            "complete": True, "exit_code": exit_code, "status": status, "detail": "",
-            "summary": summary, "metrics": summary}
+def scalar(value: float | None, unit: str = "m", label: str = "") -> dict:
+    return {"value": value, "unit": unit, "label": label}
+
+
+def run_result(task: str, evaluations: dict, status: str = "pass", exit_code: int = 0) -> dict:
+    return {"kind": "run", "task": task, "mode": "offline", "software_version": "3.0",
+            "task_hash": "a" * 16, "system_hash": "b" * 16, "complete": True,
+            "completeness": "complete", "completeness_source": "本次运行", "declaration": "",
+            "status": status, "detail": "", "exit_code": exit_code, "trajectories": {},
+            "evaluations": evaluations, "gate": None}
 
 
 class NormalizeTest(unittest.TestCase):
@@ -110,40 +116,62 @@ class WorkspaceTest(unittest.TestCase):
 class ResultsTest(unittest.TestCase):
     def test_rows_table_and_csv(self):
         with tempfile.TemporaryDirectory() as directory:
-            single = write_result(Path(directory) / "a", run_result(
-                "kitti-00", **{"ate.translation.rmse": 1.5, "ate.rotation_deg.rmse": 0.25}))
+            single = write_result(Path(directory) / "a", run_result("kitti-00", {"ate": {
+                "type": "ate", "samples": 4, "notes": ["关联（nearest）：4 对，估计 4 个"],
+                "scalars": {"translation.rmse": scalar(1.5, "m", "ATE_t"),
+                            "rotation.rmse": scalar(0.25, "deg", "ATE_r"),
+                            "translation.max": scalar(None)}}}))  # null：没有结果
             suite = write_result(Path(directory) / "b", {
                 "kind": "sequences", "task": "suite", "mode": "online",
-                "purpose": "experiment", "software_version": "2.3", "task_hash": "c" * 16,
+                "software_version": "3.0", "task_hash": "c" * 16,
                 "system_hash": "d" * 16, "exit_code": 1,
                 "sequences": [
-                    {"name": "00", "archive": "x", "log": "y", "exit_code": 0, "status": "pass",
-                     "complete": True, "problem": "", "metrics": {"ate.translation.rmse": 2.0}},
-                    {"name": "05", "archive": "x", "log": "y", "exit_code": 1, "status": "error",
-                     "complete": None, "problem": "目录不存在", "metrics": {}}],
+                    {"name": "00", "dir": "x", "log": "y", "exit_code": 0, "status": "pass",
+                     "complete": True, "problem": "",
+                     "scalars": {"ate.translation.rmse": scalar(2.0, "m", "ATE_t")}},
+                    {"name": "05", "dir": "x", "log": "y", "exit_code": 1, "status": "error",
+                     "complete": None, "problem": "目录不存在", "scalars": {}}],
                 "mean": {}})
             items = rows(single) + rows(suite)
             self.assertEqual([row.name for row in items], ["kitti-00", "suite/00", "suite/05"])
+            self.assertNotIn("ate.translation.max", items[0].scalars)  # null 不当零
+            # 表头取评测函数标了短名的那几项，Python 里不抄列名
             text = table(items)
             self.assertIn("ATE_t", text)
             self.assertIn("1.5000", text)
             self.assertIn("bbbbbbbb", text)  # 系统哈希的前八位
             lines = csv_table(items).splitlines()
             self.assertEqual(lines[0], "name,status,exit_code,complete,ate.translation.rmse,"
-                                       "ate.rotation_deg.rmse,system_hash")
+                                       "ate.rotation.rmse,system_hash")
             self.assertEqual(lines[1], "kitti-00,pass,0,true,1.5,0.25," + "b" * 16)
             self.assertEqual(lines[3], "suite/05,error,1,,,," + "d" * 16)  # 没有结果就留空
+            # 按全名挑列
+            picked = csv_table(items, ["ate.rotation.rmse"]).splitlines()
+            self.assertEqual(picked[0], "name,status,exit_code,complete,ate.rotation.rmse,"
+                                        "system_hash")
+            self.assertIn("ate.rotation.rmse", table(items, metrics=["ate.rotation.rmse"]))
             self.assertIn("suite/05: 目录不存在", describe(suite))
+            self.assertIn("评测说明:\n  ate: 关联（nearest）：4 对", describe(single))
+
+    def test_same_label_is_qualified_by_the_evaluator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            both = write_result(Path(directory) / "a", run_result("kitti-00", {
+                "ate": {"samples": 4, "scalars": {"translation.rmse": scalar(1.5, "m", "ATE_t")}},
+                "ate_sim3": {"samples": 4,
+                             "scalars": {"translation.rmse": scalar(1.2, "m", "ATE_t")}}}))
+            header = table(rows(both)).splitlines()[0]
+            self.assertIn("ate:ATE_t", header)
+            self.assertIn("ate_sim3:ATE_t", header)
 
     def test_missing_or_foreign_results_are_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ResultError, "没有 result.json"):
                 rows(Path(directory))
-            archive = Path(directory) / "new"
-            archive.mkdir()
-            (archive / "result.json").write_text(json.dumps({"schema": RESULT_SCHEMA + 1}))
+            run_dir = Path(directory) / "new"
+            run_dir.mkdir()
+            (run_dir / "result.json").write_text(json.dumps({"schema": RESULT_SCHEMA + 1}))
             with self.assertRaisesRegex(ResultError, "格式版本"):
-                rows(archive)
+                rows(run_dir)
 
     def test_worst_exit_code(self):
         self.assertEqual(worst_exit_code([0, 3, 5]), 5)
@@ -197,20 +225,33 @@ class EndToEndTest(unittest.TestCase):
             code = main(argv)
         return code, out.getvalue()
 
-    def test_run_show_and_compare(self):
-        archive = self.base / "run"
+    def test_run_evaluate_show_and_compare(self):
+        run_dir = self.base / "run"
         code, _ = self.quiet([str(REPO / "configs" / "tasks" / "kitti_odometry.yaml"),
-                              f"data.source.path={self.sequence}", f"outputs.dir={archive}",
+                              f"data.source.path={self.sequence}", f"outputs.dir={run_dir}",
                               "--entry", ENTRY])
         self.assertEqual(code, 0)
-        code, text = self.quiet(["show", str(archive)])
+        code, text = self.quiet(["show", str(run_dir)])
         self.assertEqual(code, 0)
         self.assertIn("kitti-00", text)
         self.assertIn("pass", text)
-        code, text = self.quiet(["compare", str(archive), str(archive), "--csv",
-                                 str(self.base / "cmp.csv")])
+        self.assertIn("ATE_t", text)
+
+        # 单独评测交给入口：加一个评测函数重评，结论随之更新
+        code, _ = self.quiet(["evaluate", str(run_dir), "evaluation.evaluators.ate_sim3.type=ate",
+                              "evaluation.evaluators.ate_sim3.alignment=sim3", "--entry", ENTRY])
         self.assertEqual(code, 0)
-        self.assertEqual(len((self.base / "cmp.csv").read_text().splitlines()), 3)
+        code, text = self.quiet(["show", str(run_dir)])
+        self.assertIn("ate_sim3:ATE_t", text)
+
+        code, text = self.quiet(["compare", str(run_dir), str(run_dir), "--csv",
+                                 str(self.base / "cmp.csv"),
+                                 "--metrics", "ate.translation.rmse,ate_sim3.scale"])
+        self.assertEqual(code, 0)
+        lines = (self.base / "cmp.csv").read_text().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0], "name,status,exit_code,complete,ate.translation.rmse,"
+                                   "ate_sim3.scale,system_hash")
 
     def test_sweep_runs_every_variant(self):
         task = self.base / "sweep_task.py"

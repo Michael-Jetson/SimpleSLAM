@@ -7,7 +7,7 @@
 /// 配置聚合体：配置的真源在 C++，不在 YAML。
 ///
 /// 一个任务是一次完整的实验或部署：用一个 SLAM 系统，在线或离线地处理一份数据，
-/// 做实验或者只出结果。任务 YAML 引用一份系统 YAML，系统 YAML 写管线、模块与插件；
+/// 列了评测函数就评测，没列就只跑。任务 YAML 引用一份系统 YAML，系统 YAML 写管线、模块与插件；
 /// 加载后两者合成一棵 `TaskConfig`。
 ///
 /// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、哈希、schema 导出、
@@ -35,8 +35,6 @@ enum class Tunable : std::uint8_t { kNo, kYes };
 /// 任务本身。
 struct TaskSection {
     std::string name = "default";
-    /// experiment：带真值评测；run：只出结果（轨迹、地图、录制）。
-    std::string purpose = "experiment";
     /// offline：单线程步进、虚拟时钟、可逐位复现；online：一个模块一个线程、单调时钟。
     std::string mode = "offline";
     /// 随机种子。写进实验回放包，因此"当时那一次"可以重来。
@@ -110,39 +108,34 @@ struct DataSection {
 };
 
 struct EvaluationSection {
+    /// 这次跑哪些评测函数：名字 → 插件节点。空表示只跑不评测。名字只用字母、数字与
+    /// `_`：它是结果里指标名的前缀，也是逐样本表格的文件名。
+    PluginMap evaluators;
     /// 真值轨迹文件。空表示用数据集自带的真值。
     std::string groundtruth;
-    std::string format = "tum";
-    std::string alignment = "se3";
-    /// nearest：最近邻，只在两边采样同步时成立；interpolate：把真值插值到估计时刻。
-    std::string association = "nearest";
-    double association_tolerance_s = 0.02;
-    /// 插值关联时括点的最大间隔（秒）。超过它的帧不参与比较。
-    double max_interpolation_gap_s = 0.15;
     /// 允许拿不完整的运行下结论（前缀分析）。默认不允许：严格模式判为无效。
     bool allow_incomplete = false;
-    /// RPE 的间隔。按距离是 KITTI 的口径（100..800 米），按时间是 TUM 的口径。
-    /// 两个都给时以时间为准；都为 0 则不算 RPE。
-    double rpe_delta_m = 100.0;
-    double rpe_delta_s = 0.0;
+    /// 精度基线文件。空表示不过基线门禁，只判有效性。
     std::string baselines;
 };
 
 /// 日志的等级。只决定记下哪些、显示哪些，不影响结果，不进任务哈希。
 struct LogOutputs {
     std::string console = "info";  ///< 终端显示的最低等级
-    std::string file = "debug";    ///< 档案里 run.log 记录的最低等级
+    std::string file = "debug";    ///< 任务记录里 run.log 记录的最低等级
     /// 按来源单独设，终端与 run.log 都照它：每条写成 `<来源的键>=<等级>`，键与配置路径
     /// 同一种写法，按段前缀匹配，最长的生效。如 `odometry.plugin.map=debug`。
     std::vector<std::string> levels;
 };
 
 struct OutputsSection {
-    /// 任务档案目录。空表示 runs/<task.name>。
+    /// 任务记录目录。空表示 runs/<task.name>。
     std::string dir;
-    /// 是否录制原始数据流（录到档案里）。
+    /// 是否录制原始数据流（录到任务记录里）。
     bool record = false;
     bool record_diagnostics = true;
+    /// 另写一份 KITTI 格式的轨迹（给 KITTI 官方评测程序用）。TUM 格式的总会写。
+    bool kitti_trajectories = false;
     LogOutputs log;
 };
 
@@ -157,12 +150,12 @@ struct TaskConfig {
 
 /// 唯一的字段清单。visit 的签名：visit(路径, 值引用, 说明, 可调性)。
 ///
-/// 值的类型有六种：bool、int64、double、string、字符串列表、插件节点（PluginSpec）。
+/// 值的类型有七种：bool、int64、double、string、字符串列表、插件节点（PluginSpec）、
+/// 插件节点的映射（PluginMap）。
 /// Config 既可以是 TaskConfig 也可以是 const TaskConfig——值引用随之带上 const。
 template <class Config, class Visitor>
 void visitConfig(Config& c, Visitor&& visit) {
-    visit("task.name", c.task.name, "任务名，进档案与报告", Tunable::kNo);
-    visit("task.purpose", c.task.purpose, "目的：experiment 实验 / run 运行", Tunable::kNo);
+    visit("task.name", c.task.name, "任务名，是任务记录的目录名，也进结果", Tunable::kNo);
     visit("task.mode", c.task.mode, "运行方式：offline 离线 / online 在线", Tunable::kNo);
     visit("task.seed", c.task.seed, "随机种子", Tunable::kNo);
 
@@ -208,30 +201,21 @@ void visitConfig(Config& c, Visitor&& visit) {
           Tunable::kNo);
     visit("data.sequences", c.data.sequences, "多序列：每个序列一个子进程", Tunable::kNo);
 
+    visit("evaluation.evaluators", c.evaluation.evaluators,
+          "这次跑哪些评测函数：名字 → 插件节点；没有就不评测", Tunable::kNo);
     visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）",
           Tunable::kNo);
-    visit("evaluation.format", c.evaluation.format, "轨迹格式：tum / kitti", Tunable::kNo);
-    visit("evaluation.alignment", c.evaluation.alignment,
-          "对齐方式：none / first_pose / se3 / sim3", Tunable::kNo);
-    visit("evaluation.association", c.evaluation.association,
-          "关联方式：nearest / interpolate（两边采样不同步时用插值）", Tunable::kNo);
-    visit("evaluation.association_tolerance_s", c.evaluation.association_tolerance_s,
-          "最近邻关联容差（秒）", Tunable::kNo);
-    visit("evaluation.max_interpolation_gap_s", c.evaluation.max_interpolation_gap_s,
-          "插值关联的最大括点间隔（秒）", Tunable::kNo);
     visit("evaluation.allow_incomplete", c.evaluation.allow_incomplete,
-          "允许拿不完整的运行下结论（前缀分析，只能与前缀基线比较）", Tunable::kNo);
-    visit("evaluation.rpe_delta_m", c.evaluation.rpe_delta_m,
-          "RPE 的距离间隔（米，KITTI 口径）", Tunable::kNo);
-    visit("evaluation.rpe_delta_s", c.evaluation.rpe_delta_s,
-          "RPE 的时间间隔（秒，TUM 口径；>0 时优先）", Tunable::kNo);
+          "允许拿不完整的运行下结论（前缀分析）", Tunable::kNo);
     visit("evaluation.baselines", c.evaluation.baselines, "精度基线文件路径", Tunable::kNo);
 
-    visit("outputs.dir", c.outputs.dir, "任务档案目录（留空为 runs/<task.name>）",
+    visit("outputs.dir", c.outputs.dir, "任务记录目录（留空为 runs/<task.name>）",
           Tunable::kNo);
     visit("outputs.record", c.outputs.record, "是否录制原始数据流", Tunable::kNo);
     visit("outputs.record_diagnostics", c.outputs.record_diagnostics, "是否同时录制诊断流",
           Tunable::kNo);
+    visit("outputs.kitti_trajectories", c.outputs.kitti_trajectories,
+          "另写一份 KITTI 格式的轨迹（TUM 格式的总会写）", Tunable::kNo);
     visit("outputs.log.console", c.outputs.log.console,
           "终端显示的最低等级：debug / info / warn / error", Tunable::kNo);
     visit("outputs.log.file", c.outputs.log.file, "run.log 记录的最低等级", Tunable::kNo);

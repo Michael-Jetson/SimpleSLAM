@@ -6,14 +6,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <fstream>
-#include <iomanip>
 #include <set>
-#include <sstream>
-#include <type_traits>
-#include <variant>
 
 namespace simpleslam::eval {
 
@@ -23,15 +18,44 @@ double nodeAs(const YAML::Node& node, double fallback) {
     return node && node.IsScalar() ? node.as<double>() : fallback;
 }
 
+/// 门限用到了哪些评测函数：指标名的第一段。只有它们才必须有样本。
+std::vector<std::string> referencedEvaluators(const DatasetBaseline& baseline) {
+    std::vector<std::string> names;
+    for (const auto& bound : baseline.bounds) {
+        const std::string name = bound.metric.substr(0, bound.metric.find('.'));
+        if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+    }
+    return names;
+}
+
+std::string protocolText(const Protocol& protocol) {
+    std::string text;
+    for (const auto& [key, value] : protocol) {
+        text += (text.empty() ? "" : ", ") + key + "=" + value;
+    }
+    return text;
+}
+
 }  // namespace
+
+std::vector<BaselineCheck> BaselineVerdict::failures() const {
+    std::vector<BaselineCheck> out;
+    for (const auto& check : checks) {
+        if (!check.passed) out.push_back(check);
+    }
+    return out;
+}
 
 std::string validateBaseline(const DatasetBaseline& baseline) {
     if (baseline.bounds.empty()) return "基线没有任何门限，比较不出结论";
-    if (!std::isfinite(baseline.min_pairs) || baseline.min_pairs < 1.0) {
-        return "min_pairs 必须是不小于 1 的有限数";
+    if (!std::isfinite(baseline.min_samples) || baseline.min_samples < 1.0) {
+        return "min_samples 必须是不小于 1 的有限数";
     }
     for (const auto& bound : baseline.bounds) {
         if (bound.metric.empty()) return "门限缺少指标名";
+        if (bound.metric.find('.') == std::string::npos) {
+            return "门限 " + bound.metric + " 要写完整的指标名：<评测函数>.<量>.<统计>";
+        }
         if (std::isnan(bound.max_value) || std::isnan(bound.min_value)) {
             // NaN 门限的任何比较都是假，会静静地放行一切
             return "门限 " + bound.metric + " 含 NaN";
@@ -46,81 +70,9 @@ std::string validateBaseline(const DatasetBaseline& baseline) {
     return {};
 }
 
-namespace {
-
-/// 评测协议的字段表：报告与基线的读写都走它，往返覆盖每一个正式字段。
-///
-/// 读写两边各写一遍字段名，迟早会有一边漏掉一个——写出去的字段读不回来，
-/// 带着真实协议的基线就成了一份读不了的文件。
-using ProtocolMember =
-    std::variant<std::string EvaluationProtocol::*, double EvaluationProtocol::*,
-                 bool EvaluationProtocol::*>;
-
-struct ProtocolField {
-    const char* key;
-    ProtocolMember member;
-};
-
-const std::array<ProtocolField, 10>& protocolFields() {
-    static const std::array<ProtocolField, 10> fields{{
-        {"alignment", &EvaluationProtocol::alignment},
-        {"alignment_requested", &EvaluationProtocol::alignment_requested},
-        {"association", &EvaluationProtocol::association},
-        {"association_tolerance_s", &EvaluationProtocol::association_tolerance_s},
-        {"max_interpolation_gap_s", &EvaluationProtocol::max_interpolation_gap_s},
-        {"rpe_delta_kind", &EvaluationProtocol::rpe_delta_kind},
-        {"rpe_delta", &EvaluationProtocol::rpe_delta},
-        {"rpe_normalized", &EvaluationProtocol::rpe_normalized},
-        {"window_begin_s", &EvaluationProtocol::window_begin_s},
-        {"window_end_s", &EvaluationProtocol::window_end_s},
-    }};
-    return fields;
-}
-
-void emitProtocol(YAML::Emitter& out, const EvaluationProtocol& protocol) {
-    out << YAML::BeginMap;
-    for (const auto& field : protocolFields()) {
-        out << YAML::Key << field.key << YAML::Value;
-        std::visit(
-            [&](auto member) {
-                using Value = std::remove_cvref_t<decltype(protocol.*member)>;
-                if constexpr (std::is_same_v<Value, double>) {
-                    // 时间窗是绝对秒数，默认精度会丢掉小数位，读回来就与原值不等
-                    out << YAML::DoublePrecision(17) << protocol.*member;
-                } else {
-                    out << protocol.*member;
-                }
-            },
-            field.member);
-    }
-    out << YAML::EndMap;
-}
-
-EvaluationProtocol parseProtocol(const YAML::Node& node, const std::string& where) {
-    if (!node.IsMap()) throw BaselineError("评测协议必须是映射: " + where);
-    EvaluationProtocol parsed;
-    for (const auto& item : node) {
-        const auto key = item.first.as<std::string>();
-        const auto& fields = protocolFields();
-        const auto field = std::find_if(fields.begin(), fields.end(), [&](const ProtocolField& f) {
-            return key == f.key;
-        });
-        if (field == fields.end()) throw BaselineError("评测协议里有未知键 " + key + ": " + where);
-        std::visit(
-            [&](auto member) {
-                using Value = std::remove_cvref_t<decltype(parsed.*member)>;
-                parsed.*member = item.second.as<Value>();
-            },
-            field->member);
-    }
-    return parsed;
-}
-
-}  // namespace
-
 BaselineVerdict checkMeasurementValidity(const std::map<std::string, double>& measured,
-                                         double min_pairs,
-                                         const std::vector<std::string>& required_families) {
+                                         double min_samples,
+                                         const std::vector<std::string>& required) {
     BaselineVerdict verdict;
     for (const auto& [key, value] : measured) {
         if (!std::isfinite(value)) verdict.invalid_metrics.push_back(key);
@@ -130,48 +82,37 @@ BaselineVerdict checkMeasurementValidity(const std::map<std::string, double>& me
         verdict.detail = "存在非有限指标";
         return verdict;
     }
-    // 样本数按指标族分别核验：一族有样本不能替另一族作数
-    for (const auto& family : required_families) {
-        const auto it = measured.find(family + ".pairs");
-        const double pairs = it == measured.end() ? 0.0 : it->second;
-        if (pairs >= min_pairs) continue;
+    // 样本数按评测函数分别核验：一个有样本不能替另一个作数
+    for (const auto& name : required) {
+        const auto it = measured.find(name + ".samples");
+        const double samples = it == measured.end() ? 0.0 : it->second;
+        if (samples >= min_samples) continue;
         verdict.outcome = BaselineOutcome::kInvalid;
-        verdict.detail = family + " 的有效关联只有 "
-                         + std::to_string(static_cast<long long>(pairs)) + " 对，低于 "
-                         + std::to_string(static_cast<long long>(min_pairs));
+        verdict.detail = name + " 的有效样本只有 "
+                         + std::to_string(static_cast<long long>(samples)) + " 个，低于 "
+                         + std::to_string(static_cast<long long>(min_samples));
         return verdict;
     }
     return verdict;
 }
 
-namespace {
-
-/// 基线实际用到了哪些指标族。只有它们才必须有样本。
-std::vector<std::string> requiredFamilies(const DatasetBaseline& baseline) {
-    std::vector<std::string> families;
-    for (const auto& bound : baseline.bounds) {
-        const auto dot = bound.metric.find('.');
-        if (dot == std::string::npos) continue;
-        const std::string family = bound.metric.substr(0, dot);
-        if (family != "ate" && family != "rpe") continue;
-        if (std::find(families.begin(), families.end(), family) == families.end()) {
-            families.push_back(family);
-        }
-    }
-    return families;
-}
-
-}  // namespace
-
 BaselineVerdict checkBaseline(const DatasetBaseline& baseline,
                               const std::map<std::string, double>& measured,
                               const std::string& config_hash,
-                              const EvaluationProtocol* protocol) {
+                              const std::map<std::string, Protocol>* evaluators,
+                              const std::string& groundtruth_digest) {
     if (const auto problem = validateBaseline(baseline); !problem.empty()) {
         BaselineVerdict broken;
         broken.outcome = BaselineOutcome::kInvalid;
         broken.detail = "基线本身不合法：" + problem;
         return broken;
+    }
+
+    // ── 先判有效性。无法评价不能当成通过，也不能当成失败 ──
+    const auto required = referencedEvaluators(baseline);
+    if (auto validity = checkMeasurementValidity(measured, baseline.min_samples, required);
+        validity.outcome != BaselineOutcome::kPass) {
+        return validity;
     }
 
     BaselineVerdict verdict;
@@ -183,28 +124,25 @@ BaselineVerdict checkBaseline(const DatasetBaseline& baseline,
         }
     }
 
-    // ── 先判有效性。无法评价不能当成通过，也不能当成失败 ──
-    // 基线用到哪些指标族，哪些族就必须真的有样本：ATE 有三对、RPE 一对都没有时，
-    // 一条 RPE 门限不能凭 rpe=0 过线。
-    if (auto validity =
-            checkMeasurementValidity(measured, baseline.min_pairs, requiredFamilies(baseline));
-        validity.outcome != BaselineOutcome::kPass) {
-        return validity;
-    }
-
     for (const auto& bound : baseline.bounds) {
         const auto it = measured.find(bound.metric);
         if (it == measured.end()) {
             verdict.missing_metrics.push_back(bound.metric);
             continue;
         }
-        if (bound.hasUpper() && it->second > bound.max_value) {
-            verdict.failures.push_back(BaselineFailure{bound.metric, it->second, bound.max_value,
-                                                       true});
+        if (bound.hasUpper()) {
+            verdict.checks.push_back(BaselineCheck{.metric = bound.metric,
+                                                   .measured = it->second,
+                                                   .limit = bound.max_value,
+                                                   .upper = true,
+                                                   .passed = it->second <= bound.max_value});
         }
-        if (bound.hasLower() && it->second < bound.min_value) {
-            verdict.failures.push_back(BaselineFailure{bound.metric, it->second, bound.min_value,
-                                                       false});
+        if (bound.hasLower()) {
+            verdict.checks.push_back(BaselineCheck{.metric = bound.metric,
+                                                   .measured = it->second,
+                                                   .limit = bound.min_value,
+                                                   .upper = false,
+                                                   .passed = it->second >= bound.min_value});
         }
     }
 
@@ -214,26 +152,42 @@ BaselineVerdict checkBaseline(const DatasetBaseline& baseline,
         return verdict;
     }
 
-    // 可比性先于门限：Fail 的含义是"有效、可比较、没过线"。不可比较时照样附上数值
-    // 比较的结果（failures），但主结论只能是 Incomparable。
-    if (baseline.protocol && (protocol == nullptr || !baseline.protocol->sameMeasurement(*protocol))) {
+    // 可比性先于门限：Fail 的含义是"有效、可比较、没过线"
+    for (const auto& name : required) {
+        const auto recorded = baseline.evaluators.find(name);
+        if (recorded == baseline.evaluators.end()) continue;  // 基线没钉这一个的协议
+        const Protocol* current = nullptr;
+        if (evaluators != nullptr) {
+            if (const auto it = evaluators->find(name); it != evaluators->end()) {
+                current = &it->second;
+            }
+        }
+        if (current == nullptr || *current != recorded->second) {
+            verdict.outcome = BaselineOutcome::kIncomparable;
+            verdict.detail = name + " 的评测协议与基线不同（基线：" + protocolText(recorded->second)
+                             + "；本次：" + (current == nullptr ? "没有" : protocolText(*current))
+                             + "）";
+            return verdict;
+        }
+    }
+    if (!baseline.groundtruth_digest.empty() && baseline.groundtruth_digest != groundtruth_digest) {
         verdict.outcome = BaselineOutcome::kIncomparable;
-        verdict.detail = "评测协议与基线不同（对齐、关联、RPE 间隔或时间窗）";
+        verdict.detail = groundtruth_digest.empty() ? "基线绑定了真值，本次没有提供真值摘要"
+                                                    : "真值与基线录制时不同";
         return verdict;
     }
     if (verdict.config_mismatch) {
         verdict.outcome = BaselineOutcome::kIncomparable;
-        verdict.detail = config_hash.empty() ? "基线绑定了配置哈希，本次没有提供"
-                                             : "配置哈希与基线不符";
+        verdict.detail = config_hash.empty() ? "基线绑定了有效身份，本次没有提供"
+                                             : "有效身份与基线不符";
         return verdict;
     }
-    verdict.outcome = verdict.failures.empty() ? BaselineOutcome::kPass : BaselineOutcome::kFail;
+    verdict.outcome =
+        verdict.failures().empty() ? BaselineOutcome::kPass : BaselineOutcome::kFail;
     return verdict;
 }
 
 BaselineVerdict gate(const GateRequest& request) {
-    // 有效性：零关联、非有限值都是"这次没测出东西"。基线用到的指标族必须有样本。
-    std::vector<std::string> families{"ate"};
     const DatasetBaseline* matched = nullptr;
     if (request.baselines != nullptr && !request.dataset.empty()) {
         for (const auto& baseline : *request.baselines) {
@@ -243,20 +197,24 @@ BaselineVerdict gate(const GateRequest& request) {
             }
         }
     }
+
+    // 有效性：非有限值是"这次没测出东西"；有匹配的基线时，门限用到的评测函数都要有样本，
+    // 没有时至少要有一个评测函数测出了东西
+    BaselineVerdict verdict;
     if (matched != nullptr) {
-        for (const auto& bound : matched->bounds) {
-            const auto dot = bound.metric.find('.');
-            if (dot == std::string::npos) continue;
-            const std::string family = bound.metric.substr(0, dot);
-            if ((family == "ate" || family == "rpe")
-                && std::find(families.begin(), families.end(), family) == families.end()) {
-                families.push_back(family);
-            }
+        verdict = checkMeasurementValidity(request.metrics, matched->min_samples,
+                                           referencedEvaluators(*matched));
+    } else {
+        verdict = checkMeasurementValidity(request.metrics, 1.0, {});
+        const bool measured_any =
+            std::any_of(request.metrics.begin(), request.metrics.end(), [](const auto& metric) {
+                return metric.first.ends_with(".samples") && metric.second >= 1.0;
+            });
+        if (verdict.outcome == BaselineOutcome::kPass && !measured_any) {
+            verdict.outcome = BaselineOutcome::kInvalid;
+            verdict.detail = "没有一个评测函数测出东西";
         }
     }
-    auto verdict = checkMeasurementValidity(request.metrics,
-                                            matched != nullptr ? matched->min_pairs : 1.0,
-                                            families);
     if (verdict.outcome != BaselineOutcome::kPass) return verdict;
 
     // 完整性：不完整的运行默认不下结论
@@ -289,7 +247,7 @@ BaselineVerdict gate(const GateRequest& request) {
     if (completeness == RunCompleteness::kUnknown) {
         verdict.outcome = BaselineOutcome::kIncomparable;
         verdict.detail =
-            "运行完整性未知，不能与基线比较（需要绑定了这条轨迹的运行报告，或人工声明完整）";
+            "运行完整性未知，不能与基线比较（需要绑定了这条轨迹的运行结果，或人工声明完整）";
         return verdict;
     }
 
@@ -312,7 +270,8 @@ BaselineVerdict gate(const GateRequest& request) {
                                     : "完整运行不能与前缀基线比较";
         return verdict;
     }
-    auto compared = checkBaseline(*matched, request.metrics, request.config_hash, &request.protocol);
+    auto compared = checkBaseline(*matched, request.metrics, request.config_hash,
+                                  &request.evaluators, request.groundtruth_digest);
     if (completeness == RunCompleteness::kDeclaredComplete) {
         compared.detail += compared.detail.empty() ? "" : "；";
         compared.detail += "运行完整性为人工声明，不是运行结局给出的证据";
@@ -360,11 +319,11 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
     std::set<std::string> seen;
     for (const auto& entry : list) {
         if (!entry.IsMap()) throw BaselineError("基线条目必须是映射: " + path);
-        // 未知键一律拒绝：拼错的 "min_pair" 静静地被忽略，门限就松了
+        // 未知键一律拒绝：拼错的 "min_sample" 静静地被忽略，门限就松了
         for (const auto& item : entry) {
-            static const std::set<std::string> known{"dataset",   "config_hash", "recorded_at",
-                                                     "note",      "min_pairs",   "bounds",
-                                                     "protocol",  "prefix"};
+            static const std::set<std::string> known{
+                "dataset", "config_hash", "groundtruth_digest", "recorded_at", "note",
+                "min_samples", "bounds", "evaluators", "prefix"};
             const auto key = item.first.as<std::string>();
             if (known.count(key) == 0) throw BaselineError("基线条目里有未知键 " + key + ": " + path);
         }
@@ -375,13 +334,30 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
             throw BaselineError("基线文件里 " + baseline.dataset + " 出现了两次: " + path);
         }
         if (entry["prefix"]) baseline.prefix = entry["prefix"].as<bool>();
-        if (const YAML::Node protocol = entry["protocol"]) {
-            baseline.protocol = parseProtocol(protocol, path);
-        }
         if (entry["config_hash"]) baseline.config_hash = entry["config_hash"].as<std::string>();
+        if (entry["groundtruth_digest"]) {
+            baseline.groundtruth_digest = entry["groundtruth_digest"].as<std::string>();
+        }
         if (entry["recorded_at"]) baseline.recorded_at = entry["recorded_at"].as<std::string>();
         if (entry["note"]) baseline.note = entry["note"].as<std::string>();
-        if (entry["min_pairs"]) baseline.min_pairs = entry["min_pairs"].as<double>();
+        if (entry["min_samples"]) baseline.min_samples = entry["min_samples"].as<double>();
+        if (const YAML::Node evaluators = entry["evaluators"]) {
+            if (!evaluators.IsMap()) {
+                throw BaselineError("基线 " + baseline.dataset + " 的 evaluators 必须是映射: "
+                                    + path);
+            }
+            for (const auto& item : evaluators) {
+                if (!item.second.IsMap()) {
+                    throw BaselineError("基线里评测函数 " + item.first.as<std::string>()
+                                        + " 的协议必须是映射: " + path);
+                }
+                Protocol protocol;
+                for (const auto& field : item.second) {
+                    protocol[field.first.as<std::string>()] = field.second.as<std::string>();
+                }
+                baseline.evaluators[item.first.as<std::string>()] = std::move(protocol);
+            }
+        }
 
         const YAML::Node bounds = entry["bounds"];
         if (!bounds || !bounds.IsMap()) {
@@ -418,6 +394,7 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
 
 void writeBaselines(const std::string& path, const std::vector<DatasetBaseline>& baselines) {
     YAML::Emitter out;
+    out.SetDoublePrecision(17);
     out << YAML::BeginMap << YAML::Key << "baselines" << YAML::Value << YAML::BeginSeq;
     for (const auto& baseline : baselines) {
         out << YAML::BeginMap;
@@ -425,15 +402,26 @@ void writeBaselines(const std::string& path, const std::vector<DatasetBaseline>&
         if (!baseline.config_hash.empty()) {
             out << YAML::Key << "config_hash" << YAML::Value << baseline.config_hash;
         }
+        if (!baseline.groundtruth_digest.empty()) {
+            out << YAML::Key << "groundtruth_digest" << YAML::Value
+                << baseline.groundtruth_digest;
+        }
         if (!baseline.recorded_at.empty()) {
             out << YAML::Key << "recorded_at" << YAML::Value << baseline.recorded_at;
         }
         if (!baseline.note.empty()) out << YAML::Key << "note" << YAML::Value << baseline.note;
-        out << YAML::Key << "min_pairs" << YAML::Value << baseline.min_pairs;
+        out << YAML::Key << "min_samples" << YAML::Value << baseline.min_samples;
         if (baseline.prefix) out << YAML::Key << "prefix" << YAML::Value << true;
-        if (baseline.protocol) {
-            out << YAML::Key << "protocol" << YAML::Value;
-            emitProtocol(out, *baseline.protocol);
+        if (!baseline.evaluators.empty()) {
+            out << YAML::Key << "evaluators" << YAML::Value << YAML::BeginMap;
+            for (const auto& [name, protocol] : baseline.evaluators) {
+                out << YAML::Key << name << YAML::Value << YAML::BeginMap;
+                for (const auto& [key, value] : protocol) {
+                    out << YAML::Key << key << YAML::Value << YAML::DoubleQuoted << value;
+                }
+                out << YAML::EndMap;
+            }
+            out << YAML::EndMap;
         }
         out << YAML::Key << "bounds" << YAML::Value << YAML::BeginMap;
         for (const auto& bound : baseline.bounds) {
@@ -455,148 +443,6 @@ void writeBaselines(const std::string& path, const std::vector<DatasetBaseline>&
     if (!file) throw BaselineError("打不开基线输出文件: " + path);
     file << out.c_str() << '\n';
     if (!file) throw BaselineError("写基线文件失败: " + path);
-}
-
-std::map<std::string, double> toMetricMap(const AteResult& ate, const RpeResult& rpe) {
-    std::map<std::string, double> metrics;
-    for (const auto& [key, value] : flatten(ate, rpe)) metrics.emplace(key, value);
-    return metrics;
-}
-
-std::string renderReport(const EvaluationReport& report) {
-    YAML::Emitter out;
-    out << YAML::BeginMap;
-    out << YAML::Key << "dataset" << YAML::Value << report.dataset;
-    out << YAML::Key << "config_hash" << YAML::Value << report.config_hash;
-    out << YAML::Key << "code_revision" << YAML::Value << report.code_revision;
-    out << YAML::Key << "created_at" << YAML::Value << report.created_at;
-    out << YAML::Key << "alignment" << YAML::Value << report.alignment;
-    out << YAML::Key << "input_complete" << YAML::Value << report.input_complete;
-    // 完整性三态与出处；人工声明的原话留在这里
-    out << YAML::Key << "run_completeness" << YAML::Value << toString(report.completeness);
-    if (!report.completeness_source.empty()) {
-        out << YAML::Key << "completeness_source" << YAML::Value << report.completeness_source;
-    }
-    if (!report.completeness_declaration.empty()) {
-        out << YAML::Key << "completeness_declaration" << YAML::Value
-            << report.completeness_declaration;
-    }
-    // 这份报告为哪条轨迹作证：别处拿它当运行凭据时核对内容摘要
-    if (!report.trajectory_digest.empty()) {
-        out << YAML::Key << "trajectory_file" << YAML::Value << report.trajectory_file;
-        out << YAML::Key << "trajectory_digest" << YAML::Value << report.trajectory_digest;
-    }
-    // 评测协议随结果保存：同一份配置换个容差或 RPE 间隔，结论就不可直接互比
-    out << YAML::Key << "protocol" << YAML::Value;
-    emitProtocol(out, report.protocol);
-    if (!report.run_problems.empty()) {
-        out << YAML::Key << "run_problems" << YAML::Value << YAML::BeginSeq;
-        for (const auto& problem : report.run_problems) out << problem;
-        out << YAML::EndSeq;
-    }
-    if (!report.notes.empty()) {
-        out << YAML::Key << "notes" << YAML::Value << YAML::BeginSeq;
-        for (const auto& note : report.notes) out << note;
-        out << YAML::EndSeq;
-    }
-    if (!report.effective.empty()) {
-        out << YAML::Key << "effective" << YAML::Value << YAML::BeginMap;
-        for (const auto& [key, value] : report.effective) out << YAML::Key << key << YAML::Value << value;
-        out << YAML::EndMap;
-    }
-    out << YAML::Key << "metrics" << YAML::Value << YAML::BeginMap;
-    for (const auto& [key, value] : report.metrics) {
-        out << YAML::Key << key << YAML::Value << value;
-    }
-    out << YAML::EndMap;
-    out << YAML::Key << "verdict" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "outcome" << YAML::Value << toString(report.verdict.outcome);
-    out << YAML::Key << "passed" << YAML::Value << report.verdict.passed();
-    out << YAML::Key << "config_mismatch" << YAML::Value << report.verdict.config_mismatch;
-    if (!report.verdict.detail.empty()) {
-        out << YAML::Key << "detail" << YAML::Value << report.verdict.detail;
-    }
-    out << YAML::Key << "invalid_metrics" << YAML::Value << YAML::BeginSeq;
-    for (const auto& metric : report.verdict.invalid_metrics) out << metric;
-    out << YAML::EndSeq;
-    out << YAML::Key << "failures" << YAML::Value << YAML::BeginSeq;
-    for (const auto& failure : report.verdict.failures) {
-        out << YAML::BeginMap;
-        out << YAML::Key << "metric" << YAML::Value << failure.metric;
-        out << YAML::Key << "measured" << YAML::Value << failure.measured;
-        out << YAML::Key << (failure.upper ? "max" : "min") << YAML::Value << failure.bound;
-        out << YAML::EndMap;
-    }
-    out << YAML::EndSeq;
-    out << YAML::Key << "missing_metrics" << YAML::Value << YAML::BeginSeq;
-    for (const auto& metric : report.verdict.missing_metrics) out << metric;
-    out << YAML::EndSeq;
-    out << YAML::EndMap << YAML::EndMap;
-    return out.c_str();
-}
-
-void writeReport(const std::string& path, const EvaluationReport& report) {
-    std::ofstream file(path);
-    if (!file) throw BaselineError("打不开报告输出文件: " + path);
-    file << renderReport(report) << '\n';
-    if (!file) throw BaselineError("写报告文件失败: " + path);
-}
-
-RunManifest readRunManifest(const std::string& path) {
-    YAML::Node root;
-    try {
-        root = YAML::LoadFile(path);
-    } catch (const YAML::Exception& e) {
-        throw BaselineError("读取运行报告失败 " + path + ": " + e.what());
-    }
-    if (!root.IsMap()) throw BaselineError("运行报告的顶层必须是映射: " + path);
-    RunManifest manifest;
-    const YAML::Node completeness = root["run_completeness"];
-    if (!completeness) throw BaselineError("运行报告里没有 run_completeness: " + path);
-    const auto parsed = parseRunCompleteness(completeness.as<std::string>());
-    if (!parsed) {
-        throw BaselineError("运行报告里的 run_completeness 认不出来: "
-                            + completeness.as<std::string>());
-    }
-    manifest.completeness = *parsed;
-    if (root["trajectory_file"]) manifest.trajectory_file = root["trajectory_file"].as<std::string>();
-    if (root["trajectory_digest"]) {
-        manifest.trajectory_digest = root["trajectory_digest"].as<std::string>();
-    }
-    if (const YAML::Node problems = root["run_problems"]) {
-        for (const auto& problem : problems) manifest.run_problems.push_back(problem.as<std::string>());
-    }
-    if (const YAML::Node protocol = root["protocol"]) manifest.protocol = parseProtocol(protocol, path);
-    return manifest;
-}
-
-ReportResult readReportResult(const std::string& path) {
-    YAML::Node root;
-    try {
-        root = YAML::LoadFile(path);
-    } catch (const YAML::Exception& e) {
-        throw BaselineError("读取运行报告失败 " + path + ": " + e.what());
-    }
-    const YAML::Node verdict = root.IsMap() ? root["verdict"] : YAML::Node();
-    const YAML::Node outcome = verdict ? verdict["outcome"] : YAML::Node();
-    if (!outcome) throw BaselineError("运行报告里没有 verdict.outcome: " + path);
-    const auto parsed = parseBaselineOutcome(outcome.as<std::string>());
-    if (!parsed) {
-        throw BaselineError("运行报告里的 verdict.outcome 认不出来: " + outcome.as<std::string>());
-    }
-    ReportResult result;
-    result.outcome = *parsed;
-    if (const YAML::Node detail = verdict["detail"]) result.detail = detail.as<std::string>();
-    if (const YAML::Node metrics = root["metrics"]) {
-        try {
-            for (const auto& item : metrics) {
-                result.metrics.emplace(item.first.as<std::string>(), item.second.as<double>());
-            }
-        } catch (const YAML::Exception& e) {
-            throw BaselineError("运行报告里的 metrics 读不懂 " + path + ": " + e.what());
-        }
-    }
-    return result;
 }
 
 }  // namespace simpleslam::eval

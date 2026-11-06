@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-#include "archive.hpp"
+#include "run_dir.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -10,7 +10,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace simpleslam::app::archive {
+namespace simpleslam::app::run_dir {
 
 fs::path directory(const config::TaskConfig& config) {
     return config.outputs.dir.empty() ? fs::path("runs") / config.task.name
@@ -20,7 +20,7 @@ fs::path directory(const config::TaskConfig& config) {
 void refuseOccupied(const fs::path& dir, bool overwrite) {
     if (!overwrite && fs::exists(dir) && !fs::is_empty(dir)) {
         throw std::runtime_error(std::format(
-            "任务档案目录 {} 已有内容：换一个 outputs.dir，或加 --overwrite", dir.string()));
+            "任务记录目录 {} 已有内容：换一个 outputs.dir，或加 --overwrite", dir.string()));
     }
 }
 
@@ -31,9 +31,9 @@ void prepare(const fs::path& dir, std::span<const char* const> own_files) {
 
 void writeText(const fs::path& path, const std::string& text) {
     std::ofstream file(path);
-    if (!file) throw std::runtime_error("打不开档案文件: " + path.string());
+    if (!file) throw std::runtime_error("打不开任务记录里的文件: " + path.string());
     file << text;
-    if (!file) throw std::runtime_error("写档案文件失败: " + path.string());
+    if (!file) throw std::runtime_error("写任务记录里的文件失败: " + path.string());
 }
 
 std::string quoted(const std::string& text) {
@@ -57,21 +57,6 @@ std::string quotedList(const std::vector<std::string>& items) {
     return out + "]";
 }
 
-std::map<std::string, double> summaryMetrics(eval::BaselineOutcome outcome,
-                                             const std::map<std::string, double>& metrics) {
-    std::map<std::string, double> out;
-    if (outcome == eval::BaselineOutcome::kInvalid) return out;
-    for (const auto& [header, key] : kSummaryColumns) {
-        const std::string name(key);
-        const auto pairs = metrics.find(name.substr(0, name.find('.')) + ".pairs");
-        const auto value = metrics.find(name);
-        if (pairs != metrics.end() && pairs->second > 0.0 && value != metrics.end()) {
-            out.emplace(name, value->second);
-        }
-    }
-    return out;
-}
-
 std::string jsonString(const std::string& text) {
     std::string out = "\"";
     for (const char c : text) {
@@ -92,13 +77,8 @@ std::string jsonString(const std::string& text) {
     return out + '"';
 }
 
-std::string jsonMetrics(const std::map<std::string, double>& metrics) {
-    std::string out = "{";
-    for (const auto& [key, value] : metrics) {
-        out += (out.size() == 1 ? "" : ", ") + jsonString(key) + ": "
-               + (std::isfinite(value) ? std::format("{}", value) : std::string("null"));
-    }
-    return out + "}";
+std::string jsonNumber(double value) {
+    return std::isfinite(value) ? std::format("{}", value) : std::string("null");
 }
 
 void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome,
@@ -125,4 +105,38 @@ bool readComplete(const fs::path& dir) {
     }
 }
 
-}  // namespace simpleslam::app::archive
+ResultSummary readResult(const fs::path& dir) {
+    const fs::path path = dir / "result.json";
+    if (!fs::exists(path)) throw std::runtime_error("没有结论: " + path.string());
+    YAML::Node root;
+    try {
+        root = YAML::LoadFile(path.string());  // JSON 是 YAML 的子集
+    } catch (const YAML::Exception& e) {
+        throw std::runtime_error("读不懂结论 " + path.string() + ": " + e.what());
+    }
+    if (!root["schema"] || root["schema"].as<int>() != kResultSchema) {
+        throw std::runtime_error(std::format("结论 {} 的格式版本不是 {}", path.string(),
+                                             kResultSchema));
+    }
+    ResultSummary summary;
+    summary.status = root["status"].as<std::string>();
+    summary.exit_code = root["exit_code"].as<int>();
+    if (root["complete"] && !root["complete"].IsNull()) {
+        summary.complete = root["complete"].as<bool>();
+    }
+    for (const auto& evaluation : root["evaluations"]) {
+        const auto name = evaluation.first.as<std::string>();
+        for (const auto& scalar : evaluation.second["scalars"]) {
+            const YAML::Node& value = scalar.second["value"];
+            if (!value || value.IsNull()) continue;  // 没有结果的量不当零
+            summary.scalars.emplace_back(
+                name + "." + scalar.first.as<std::string>(),
+                ScalarValue{.value = value.as<double>(),
+                            .unit = scalar.second["unit"].as<std::string>(),
+                            .label = scalar.second["label"].as<std::string>()});
+        }
+    }
+    return summary;
+}
+
+}  // namespace simpleslam::app::run_dir

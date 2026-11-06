@@ -1,11 +1,12 @@
-"""评测门禁走真实入口：调用构建出来的 simpleslam-eval，核对退出码与报告内容一致。
+"""评测门禁走真实入口：调用构建出来的 simpleslam-eval，核对退出码与结论内容一致。
 
 只测库函数不够：库的判定正确，不代表入口把它原样接上了。这里直接跑可执行文件，
-看它在零关联、缺数据集、缺基线条目时写进报告的结论与退出码是不是同一个；
+看它在零关联、缺数据集、缺基线条目时写进结论（``result.json``）的门禁与退出码是不是同一个；
 以及独立评测时"运行完整性未知"如何处理：没有基线照常测量并注明，有基线不可比较，
-运行报告必须绑定这条轨迹的内容，人工声明原样留在报告里。
+运行结论必须列着这条轨迹的内容摘要，人工声明原样留在结论里。
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -26,41 +27,12 @@ def find_tool(name: str) -> str | None:
 EVAL_TOOL = find_tool("simpleslam-eval")
 
 
-def outcome_of(report: Path) -> str:
-    for line in report.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("outcome:"):
-            return stripped.split(":", 1)[1].strip()
-    return ""
-
-
-def field_of(report: Path, key: str) -> str:
-    for line in report.read_text(encoding="utf-8").splitlines():
-        if line.startswith(key + ":"):
-            return line.split(":", 1)[1].strip().strip('"')
-    return ""
-
-
-def protocol_of(report: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    inside = False
-    for line in report.read_text(encoding="utf-8").splitlines():
-        if line.startswith("protocol:"):
-            inside = True
-            continue
-        if inside:
-            if not line.startswith("  "):
-                break
-            key, _, value = line.strip().partition(":")
-            values[key] = value.strip().strip('"')
-    return values
-
-
 @unittest.skipIf(EVAL_TOOL is None, "没有 simpleslam-eval，跳过入口门禁测试")
 class EvalCliGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
+        self.out = self.root / "evaluated"
         self.estimate = self.root / "est.tum"
         self.same = self.root / "same.tum"
         self.far = self.root / "far.tum"
@@ -78,138 +50,158 @@ class EvalCliGateTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.directory.cleanup()
 
-    def run_tool(self, *args: str) -> tuple[int, Path]:
-        report = self.root / "report.yaml"
-        if report.exists():
-            report.unlink()
+    def run_tool(self, *args: str) -> tuple[int, dict | None, str]:
+        """跑一次，返回退出码、写出的结论（没写出时为 None）与标准错误。"""
+        result = self.out / "result.json"
+        if result.exists():
+            result.unlink()
         completed = subprocess.run(
-            [EVAL_TOOL, *args, "--report", str(report)],
+            [EVAL_TOOL, *args, "--out", str(self.out), "--overwrite"],
             capture_output=True, text=True, check=False,
         )
-        return completed.returncode, report
+        data = json.loads(result.read_text(encoding="utf-8")) if result.exists() else None
+        return completed.returncode, data, completed.stderr
 
-    def run_report_for(self, completeness: str) -> Path:
-        """写一份绑定了当前估计轨迹内容的运行报告。摘要由入口自己算出来。"""
-        code, report = self.run_tool(str(self.estimate), str(self.same))
+    def produced_by_run(self, complete: bool) -> tuple[Path, Path]:
+        """一条"某次运行产出的"估计轨迹，和那次运行的结论：结论里列着这条轨迹的内容摘要，
+        摘要由入口自己算出来。"""
+        code, data, _ = self.run_tool(str(self.estimate), str(self.same))
         self.assertEqual(code, 0)
-        digest = field_of(report, "trajectory_digest")
-        self.assertTrue(digest)
-        run_report = self.root / f"run_{completeness}.yaml"
-        run_report.write_text(
-            f"run_completeness: {completeness}\n"
-            f"trajectory_file: {self.estimate}\n"
-            f"trajectory_digest: {digest}\n",
-            encoding="utf-8",
-        )
-        return run_report
+        produced = self.root / "produced.tum"
+        shutil.copyfile(self.out / "trajectory" / "odometry.tum", produced)
+        run_result = self.root / "run" / "result.json"
+        run_result.parent.mkdir()
+        run_result.write_text(json.dumps({
+            "schema": 2, "kind": "run", "complete": complete,
+            "trajectories": {"odometry": {"file": "trajectory/odometry.tum",
+                                          "digest": data["trajectories"]["odometry"]["digest"]}},
+        }), encoding="utf-8")
+        return produced, run_result
 
     def test_zero_association_without_baseline_is_invalid(self):
-        code, report = self.run_tool(str(self.estimate), str(self.far))
+        code, data, _ = self.run_tool(str(self.estimate), str(self.far))
         self.assertEqual(code, 4)
-        self.assertEqual(outcome_of(report), "invalid")
+        self.assertEqual(data["gate"]["outcome"], "invalid")
+        self.assertEqual(data["evaluations"]["ate"]["status"], "no_result")
+        self.assertEqual(data["evaluations"]["ate"]["scalars"], {})  # 无结果不写成零误差
 
     def test_missing_dataset_entry_is_incomparable_in_both_places(self):
-        code, report = self.run_tool(
+        code, data, _ = self.run_tool(
             str(self.estimate), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/05",
         )
         self.assertEqual(code, 5)
-        self.assertEqual(outcome_of(report), "incomparable")
+        self.assertEqual(data["gate"]["outcome"], "incomparable")
+        self.assertEqual(data["status"], "incomparable")
 
     def test_baseline_without_dataset_is_incomparable(self):
-        code, report = self.run_tool(
+        code, data, _ = self.run_tool(
             str(self.estimate), str(self.same), "--baselines", str(self.baselines)
         )
         self.assertEqual(code, 5)
-        self.assertEqual(outcome_of(report), "incomparable")
+        self.assertEqual(data["gate"]["outcome"], "incomparable")
 
     def test_unknown_completeness_with_baseline_is_incomparable(self):
         # 一条轨迹文件说不出产生它的运行有没有跑完：不能拿去和全程基线比高低
-        code, report = self.run_tool(
+        code, data, stderr = self.run_tool(
             str(self.estimate), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/00",
         )
         self.assertEqual(code, 5)
-        self.assertEqual(outcome_of(report), "incomparable")
-        self.assertEqual(field_of(report, "run_completeness"), "unknown")
+        self.assertEqual(data["gate"]["outcome"], "incomparable")
+        self.assertIsNone(data["complete"])
+        self.assertEqual(data["completeness"], "unknown")
+        self.assertIn("--run-report", stderr)  # 告诉人怎么补上证据
 
     def test_unknown_completeness_without_baseline_is_measured_but_marked(self):
-        code, report = self.run_tool(str(self.estimate), str(self.same))
+        code, data, _ = self.run_tool(str(self.estimate), str(self.same))
         self.assertEqual(code, 0)
-        self.assertEqual(outcome_of(report), "pass")
-        self.assertEqual(field_of(report, "run_completeness"), "unknown")
-        self.assertIn("未知", report.read_text(encoding="utf-8"))
+        self.assertEqual(data["gate"]["outcome"], "pass")
+        self.assertEqual(data["completeness"], "unknown")
+        self.assertIn("未知", data["gate"]["detail"])
+        # 测量照常：标量进结论，逐样本进表格
+        ate = data["evaluations"]["ate"]
+        self.assertEqual(ate["samples"], 4)
+        self.assertAlmostEqual(ate["scalars"]["translation.rmse"]["value"], 0.0)
+        self.assertEqual(ate["scalars"]["translation.rmse"]["label"], "ATE_t")
+        self.assertTrue((self.out / ate["tables"]["errors"]["file"]).is_file())
 
     def test_declared_completeness_is_recorded(self):
-        code, report = self.run_tool(
+        code, data, _ = self.run_tool(
             str(self.estimate), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/00",
             "--assume-complete", "测试夹具：四帧全程已知",
         )
         self.assertEqual(code, 0)
-        self.assertEqual(outcome_of(report), "pass")
-        self.assertEqual(field_of(report, "run_completeness"), "declared_complete")
-        self.assertEqual(field_of(report, "completeness_declaration"), "测试夹具：四帧全程已知")
+        self.assertEqual(data["gate"]["outcome"], "pass")
+        self.assertEqual(data["completeness"], "declared_complete")
+        self.assertEqual(data["declaration"], "测试夹具：四帧全程已知")
 
     def test_run_report_must_describe_this_trajectory(self):
-        run_report = self.run_report_for("complete")
-        code, report = self.run_tool(
-            str(self.estimate), str(self.same),
+        produced, run_result = self.produced_by_run(complete=True)
+        code, data, _ = self.run_tool(
+            str(produced), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/00",
-            "--run-report", str(run_report),
+            "--run-report", str(run_result),
         )
         self.assertEqual(code, 0)
-        self.assertEqual(field_of(report, "run_completeness"), "complete")
-        self.assertEqual(field_of(report, "completeness_source"), str(run_report))
+        self.assertTrue(data["complete"])
+        self.assertEqual(data["completeness_source"], str(run_result))
 
-        # 换一条轨迹，运行报告就不再为它作证
-        self.estimate.write_text("1.0 1.0 0 0 0 0 0 1\n2.0 2.5 0 0 0 0 0 1\n", encoding="utf-8")
-        code, _ = self.run_tool(
-            str(self.estimate), str(self.same),
+        # 换一条轨迹，那份结论就不再为它作证
+        produced.write_text("1.0 1.0 0 0 0 0 0 1\n2.0 2.5 0 0 0 0 0 1\n", encoding="utf-8")
+        code, _, stderr = self.run_tool(
+            str(produced), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/00",
-            "--run-report", str(run_report),
+            "--run-report", str(run_result),
         )
         self.assertEqual(code, 1)
+        self.assertIn("内容摘要不符", stderr)
 
     def test_incomplete_run_report_is_invalid(self):
-        run_report = self.run_report_for("incomplete")
-        code, report = self.run_tool(
-            str(self.estimate), str(self.same),
+        produced, run_result = self.produced_by_run(complete=False)
+        code, data, _ = self.run_tool(
+            str(produced), str(self.same),
             "--baselines", str(self.baselines), "--dataset", "kitti/00",
-            "--run-report", str(run_report),
+            "--run-report", str(run_result),
         )
         self.assertEqual(code, 4)
-        self.assertEqual(outcome_of(report), "invalid")
+        self.assertEqual(data["gate"]["outcome"], "invalid")
+        self.assertFalse(data["complete"])
 
     def test_non_finite_or_out_of_range_numbers_are_rejected(self):
         # nan、负的间隔、带单位的数：不能原样进入协议
         for args in (["--interpolate", "nan"], ["--rpe-delta", "-1"], ["--tolerance", "0.1s"],
                      ["--window", "5", "1"]):
-            code, _ = self.run_tool(str(self.estimate), str(self.same), *args)
+            code, data, _ = self.run_tool(str(self.estimate), str(self.same), *args)
             self.assertEqual(code, 2, args)
+            self.assertIsNone(data, args)
 
     def test_evidence_and_declaration_are_exclusive(self):
-        run_report = self.run_report_for("complete")
-        code, _ = self.run_tool(
-            str(self.estimate), str(self.same),
-            "--run-report", str(run_report), "--assume-complete", "两样都给",
+        produced, run_result = self.produced_by_run(complete=True)
+        code, _, _ = self.run_tool(
+            str(produced), str(self.same),
+            "--run-report", str(run_result), "--assume-complete", "两样都给",
         )
         self.assertEqual(code, 2)
-        code, _ = self.run_tool(str(self.estimate), str(self.same), "--assume-complete", "")
+        code, _, _ = self.run_tool(str(self.estimate), str(self.same), "--assume-complete", "")
         self.assertEqual(code, 2)
 
     def test_protocol_records_what_was_actually_used(self):
-        code, report = self.run_tool(
+        code, data, _ = self.run_tool(
             str(self.estimate), str(self.same),
             "--align", "first_pose", "--tolerance", "0.03", "--rpe-delta", "0.1",
         )
         self.assertEqual(code, 0)
-        protocol = protocol_of(report)
-        self.assertEqual(protocol["alignment"], "first_pose")
-        self.assertEqual(protocol["association"], "nearest")
-        self.assertAlmostEqual(float(protocol["association_tolerance_s"]), 0.03)
-        self.assertAlmostEqual(float(protocol["rpe_delta"]), 0.1)
-        self.assertEqual(protocol["rpe_delta_kind"], "time")
+        # 协议是评测函数还原后的全部参数，随结论保存
+        ate = data["evaluations"]["ate"]
+        self.assertEqual(ate["type"], "ate")
+        self.assertEqual(ate["params"]["alignment"], "first_pose")
+        self.assertEqual(ate["params"]["association"], "nearest")
+        self.assertAlmostEqual(ate["params"]["tolerance_s"], 0.03)
+        rpe = data["evaluations"]["rpe"]
+        self.assertAlmostEqual(rpe["params"]["delta_s"], 0.1)
+        self.assertIn("按时间取段，每段 0.1 秒", rpe["notes"])
 
 
 if __name__ == "__main__":

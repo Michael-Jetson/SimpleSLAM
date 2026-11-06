@@ -1,4 +1,4 @@
-# 评测层：轨迹的关联与重采样、TUM/KITTI 读写、ATE/RPE、精度基线与报告。
+# 评测层：轨迹的关联与重采样、TUM/KITTI 读写、ATE/RPE、评测函数、精度基线与门禁。
 #
 # 轨迹本身是框架的数据类型（framework/trajectory.hpp），模块层和插件不依赖本库；
 # 需要读写文件、算指标、比基线时才链接 simpleslam_eval。
@@ -7,6 +7,7 @@ add_library(simpleslam_eval STATIC
     src/trajectory_io.cpp
     src/metrics.cpp
     src/baseline.cpp
+    src/evaluators.cpp
 )
 target_include_directories(simpleslam_eval PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_compile_features(simpleslam_eval PUBLIC cxx_std_20)

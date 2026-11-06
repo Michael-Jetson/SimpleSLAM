@@ -33,6 +33,11 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
         modules.place_recognizer.plugin, "system.modules.place_recognizer.plugin", catalogs);
     task.graph_optimizer = resolveField<plugin::GraphOptimizerBase>(
         modules.graph_optimizer.plugin, "system.modules.graph_optimizer.plugin", catalogs);
+    for (auto& [name, spec] : task.config.evaluation.evaluators) {
+        const std::string path = "evaluation.evaluators." + name;
+        task.evaluators.emplace(name,
+                                resolveField<eval::EvaluatorBase>(spec, path.c_str(), catalogs));
+    }
     return task;
 }
 

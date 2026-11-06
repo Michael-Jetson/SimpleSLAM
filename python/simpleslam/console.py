@@ -3,9 +3,10 @@
 C++ 入口是加载、校验、执行与评测判定的唯一实现，这里只编排与展示：
 
 * ``run``：按需构建入口，YAML 任务直接交给它，``.py`` 任务先渲染；
+* ``evaluate``：单独评测一份任务记录，交给入口的 ``evaluate``（补评、换评测函数重评）；
 * ``demo``：合成一份最小 KITTI 夹具，用示例入口跑通整条链路；
-* ``sweep``：跑 ``.py`` 任务里 ``sweep()`` 生成的一组变体，每个变体一个档案，最后汇总；
-* ``show``、``compare``：读档案的 ``result.json``，给出摘要与对比表；
+* ``sweep``：跑 ``.py`` 任务里 ``sweep()`` 生成的一组变体，每个变体一份任务记录，最后汇总；
+* ``show``、``compare``：读任务记录的 ``result.json``，给出摘要与对比表；
 * ``impls``：入口里登记了哪些实现、各有哪些参数。
 """
 
@@ -47,7 +48,8 @@ def load_python_task(path: Path) -> Config:
 
 
 def load_python_sweep(path: Path) -> list[Config]:
-    """``.py`` 任务里 ``sweep()`` 给出的一组变体。每个变体要有自己的 ``task.name``：它是档案名。"""
+    """``.py`` 任务里 ``sweep()`` 给出的一组变体。每个变体要有自己的 ``task.name``：
+    它是任务记录的目录名。"""
     namespace = runpy.run_path(str(path))
     make = namespace.get("sweep")
     if not callable(make):
@@ -97,6 +99,13 @@ def run_task(workspace: Workspace, task: Path, overrides: list[str], options: Op
     return subprocess.run(argv).returncode
 
 
+def evaluate(workspace: Workspace, run_dir: Path, overrides: list[str], options: Options) -> int:
+    """单独评测一份任务记录：入口的 ``evaluate`` 读任务记录、写结论，覆盖项只能改评测一节。
+    要用登记了这些评测函数的入口。"""
+    entry = workspace.entry(options.entry, build=options.build)
+    return subprocess.run([str(entry), "evaluate", str(run_dir), *overrides]).returncode
+
+
 def demo(workspace: Workspace, options: Options) -> int:
     entry = workspace.entry(options.entry or DEFAULT_ENTRY, build=options.build)
     fixture = workspace.build_dir / "demo" / "fixture"
@@ -105,13 +114,13 @@ def demo(workspace: Workspace, options: Options) -> int:
         script = workspace.root / "scripts" / "make_kitti_fixture.py"
         subprocess.run([sys.executable, str(script), "--out", str(fixture), "--frames", "40"],
                        check=True)
-    archive = workspace.root / "runs" / "demo"
+    run_dir = workspace.root / "runs" / "demo"
     task = workspace.root / "configs" / "tasks" / "kitti_odometry.yaml"
     argv = [str(entry), str(task), assignment("data.source.path", str(sequence)),
-            assignment("outputs.dir", str(archive)), "--overwrite"]
+            assignment("outputs.dir", str(run_dir)), "--overwrite"]
     code = subprocess.run(argv).returncode
-    if (archive / "result.json").is_file():
-        print(describe(archive))
+    if (run_dir / "result.json").is_file():
+        print(describe(run_dir))
     return code
 
 
@@ -150,7 +159,7 @@ def sweep(workspace: Workspace, task: Path, overrides: list[str], options: Optio
         name = variant["task.name"]
         rendered = render(variant, schema,
                           workspace.build_dir / "rendered" / task.stem / f"{name}.yaml")
-        # 扫参决定档案放在哪：一个变体一个档案，都在 <base> 下
+        # 扫参决定任务记录放在哪：一个变体一份，都在 <base> 下
         argv = [str(entry), str(rendered), *overrides,
                 assignment("outputs.dir", str(base / name)), *_flags(options, jobs=False)]
         commands.append((name, argv, base / "logs" / f"{name}.log"))
@@ -166,20 +175,22 @@ def sweep(workspace: Workspace, task: Path, overrides: list[str], options: Optio
     return worst_exit_code(list(codes.values()))
 
 
-def show(archive: Path) -> str:
-    return describe(archive)
+def show(run_dir: Path, metrics: list[str] | None = None) -> str:
+    return describe(run_dir, metrics)
 
 
-def compare(archives: list[Path], *, as_csv: bool = False) -> str:
-    """几个档案的对比表；多序列的档案每个序列一行。``as_csv`` 时给出 CSV。"""
+def compare(run_dirs: list[Path], *, as_csv: bool = False,
+            metrics: list[str] | None = None) -> str:
+    """几份任务记录的对比表；多序列的每个序列一行。列默认取评测函数标了短名的那几项，
+    ``metrics`` 给出全名时按给的挑。``as_csv`` 时给出 CSV。"""
     items: list[Row] = []
-    for archive in archives:
+    for run_dir in run_dirs:
         try:
-            items.extend(rows(archive))
+            items.extend(rows(run_dir))
         except ResultError as exc:
-            items.append(Row(name=str(archive), status="error", exit_code=1, complete=None,
+            items.append(Row(name=str(run_dir), status="error", exit_code=1, complete=None,
                              problem=str(exc)))
-    return csv_table(items) if as_csv else table(items)
+    return csv_table(items, metrics) if as_csv else table(items, metrics=metrics)
 
 
 def impls(workspace: Workspace, options: Options) -> str:

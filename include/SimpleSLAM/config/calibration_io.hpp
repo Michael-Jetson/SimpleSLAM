@@ -37,7 +37,7 @@ public:
 [[nodiscard]] std::string dumpCalibration(const fw::CalibrationData& calibration);
 void writeCalibrationFile(const std::string& path, const fw::CalibrationData& calibration);
 
-/// 标定哈希（FNV-1a 64，十六进制）。进实验回放包与评测报告。
+/// 标定哈希（FNV-1a 64，十六进制）。进实验回放包与任务记录的身份。
 [[nodiscard]] std::string calibrationHash(const fw::CalibrationData& calibration);
 
 }  // namespace simpleslam::config

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 using namespace simpleslam;
 using namespace simpleslam::eval;
@@ -95,6 +96,36 @@ TEST_CASE("TUM 往返不丢精度", "[eval][trajectory][io]") {
               == Approx(0.0).margin(1e-8));
         const SE3d delta = original.at(i).pose.inverse().compose(loaded.at(i).pose);
         CHECK(std::abs(delta.quat().w()) == Approx(1.0).margin(1e-8));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("TUM 的第一行记下轨迹的语义，读回来一样；写坏的语义行不猜", "[eval][trajectory][io]") {
+    Trajectory original = straightLine(3, 1.0);
+    original.setFrame(fw::TrajectoryFrame::kWorld);
+    original.setTracked("velodyne");
+    original.setClock(fw::ClockDomainId{2});
+    const auto path = tempFile("simpleslam_traj_semantics.tum");
+    writeTrajectory(path.string(), original, TrajectoryFormat::kTum);
+    std::string first;
+    std::getline(std::ifstream(path), first);
+    CHECK(first == "# simpleslam frame=world tracked=velodyne clock=2");
+    const auto loaded = readTrajectory(path.string(), TrajectoryFormat::kTum);
+    CHECK(loaded.frame() == fw::TrajectoryFrame::kWorld);
+    CHECK(loaded.tracked() == "velodyne");
+    CHECK(loaded.clock().value == 2U);
+    CHECK(loaded.size() == 3);
+
+    // 别的工具写的 TUM 没有语义行：照样读，语义未知
+    std::ofstream(path) << "# timestamp tx ty tz qx qy qz qw\n0 0 0 0 0 0 0 1\n";
+    const auto plain = readTrajectory(path.string(), TrajectoryFormat::kTum);
+    CHECK(plain.frame() == fw::TrajectoryFrame::kUnknown);
+    CHECK(plain.tracked().empty());
+
+    for (const char* bad : {"# simpleslam frame=map tracked=x clock=0", "# simpleslam colour=red",
+                            "# simpleslam clock=-1", "# simpleslam frame"}) {
+        std::ofstream(path) << bad << "\n0 0 0 0 0 0 0 1\n";
+        CHECK_THROWS_AS(readTrajectory(path.string(), TrajectoryFormat::kTum), TrajectoryIoError);
     }
     std::filesystem::remove(path);
 }

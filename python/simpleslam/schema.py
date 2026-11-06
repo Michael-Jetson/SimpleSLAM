@@ -27,7 +27,7 @@ class SchemaError(RuntimeError):
 @dataclass(frozen=True)
 class Field:
     path: str
-    type: str  # bool / int / double / string / list / slot
+    type: str  # bool / int / double / string / list / slot / slots（带名字的插件节点表）
     default: str
     doc: str
     tunable: bool
@@ -41,6 +41,8 @@ class Field:
             return json.loads(self.default) if self.default else []
         if self.type == "slot":
             return {"type": self.default}
+        if self.type == "slots":
+            return {}  # 默认是空表：没列就没有
         return self.parse(self.default) if self.type != "string" else self.default
 
 

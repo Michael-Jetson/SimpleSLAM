@@ -574,14 +574,14 @@ eval::DatasetBaseline baselineFor(const std::string& dataset) {
 }
 
 std::map<std::string, double> validMetrics(double rmse) {
-    return {{"ate.pairs", 30.0}, {"ate.translation.rmse", rmse}};
+    return {{"ate.samples", 30.0}, {"ate.translation.rmse", rmse}};
 }
 
 }  // namespace
 
 TEST_CASE("门禁：没有基线也要做有效性检查", "[acceptance][gate]") {
     eval::GateRequest request;
-    request.metrics = {{"ate.pairs", 0.0}, {"ate.translation.rmse", 0.0}};
+    request.metrics = {{"ate.samples", 0.0}, {"ate.translation.rmse", 0.0}};
     CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
     CHECK(eval::exitCodeFor(eval::gate(request)) == 4);
 }
@@ -621,11 +621,11 @@ TEST_CASE("门禁：不可比较先于失败", "[acceptance][gate]") {
 
 TEST_CASE("门禁：评测协议不同就不可比较", "[acceptance][gate]") {
     auto baseline = baselineFor("kitti/00");
-    eval::EvaluationProtocol recorded;
-    recorded.alignment = "se3";
-    recorded.association = "nearest";
-    recorded.association_tolerance_s = 0.02;
-    baseline.protocol = recorded;
+    const eval::Protocol recorded{{"type", "ate"},
+                                  {"alignment", "se3"},
+                                  {"association", "nearest"},
+                                  {"tolerance_s", "0.02"}};
+    baseline.evaluators["ate"] = recorded;
     const std::vector<eval::DatasetBaseline> baselines{baseline};
 
     eval::GateRequest request;
@@ -633,10 +633,10 @@ TEST_CASE("门禁：评测协议不同就不可比较", "[acceptance][gate]") {
     request.dataset = "kitti/00";
     request.completeness = eval::RunCompleteness::kComplete;
     request.baselines = &baselines;
-    request.protocol = recorded;
+    request.evaluators["ate"] = recorded;
     CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
 
-    request.protocol.association_tolerance_s = 0.1;  // 同一份配置，换了容差
+    request.evaluators["ate"]["tolerance_s"] = "0.1";  // 同一份配置，换了容差
     CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
 }
 

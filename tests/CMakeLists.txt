@@ -38,7 +38,7 @@ catch_discover_tests(test_slam_system)
 
 # ── 评测 / 回放 / 配置 ──
 if(SIMPLESLAM_BUILD_TOOLING)
-    foreach(t eval_trajectory eval_metrics eval_baseline)
+    foreach(t eval_trajectory eval_metrics eval_baseline eval_evaluators)
         add_executable(test_${t} unit/test_${t}.cpp)
         target_link_libraries(test_${t} PRIVATE simpleslam_eval Catch2::Catch2WithMain)
         catch_discover_tests(test_${t})
@@ -81,7 +81,7 @@ if(SIMPLESLAM_BUILD_TOOLING)
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_transitions)
 
-    # 任务执行器：从任务文件到任务档案。多序列的子进程要登记同一个测试实现，另有一个入口
+    # 任务执行器：从任务文件到任务记录。多序列的子进程要登记同一个测试实现，另有一个入口
     add_executable(test_task_runner unit/task_runner_main.cpp)
     target_link_libraries(test_task_runner PRIVATE simpleslam_app)
     add_executable(test_app_task unit/test_app_task.cpp)

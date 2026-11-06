@@ -57,6 +57,9 @@ struct PluginSpec {
     friend bool operator==(const PluginSpec&, const PluginSpec&) = default;
 };
 
+/// 一组带名字的插件节点：名字 → 节点。评测函数这样列：同一种可以并排几份不同参数。
+using PluginMap = std::map<std::string, PluginSpec>;
+
 /// schema 里的一个字段：参数或子槽。
 struct PluginField {
     std::string name;

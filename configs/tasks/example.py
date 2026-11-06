@@ -21,7 +21,7 @@ OXTS_HZ = 10.0  # KITTI raw 同步版的真值频率
 SYSTEM = Path(__file__).resolve().parent.parent / "systems" / "my_lio.yaml"
 
 config = Config(
-    task={"name": "kitti-raw-0027", "purpose": "experiment", "mode": "offline"},
+    task={"name": "kitti-raw-0027", "mode": "offline"},
     system=str(SYSTEM),
     data={
         "source": {
@@ -31,16 +31,16 @@ config = Config(
     },
     # 估计在扫描终点、真值在 OXTS 时刻：按插值关联，相邻真值最多隔一个半周期
     evaluation={
-        "format": "tum",
-        "alignment": "se3",
-        "association": "interpolate",
-        "max_interpolation_gap_s": 1.5 / OXTS_HZ,
+        "evaluators": {
+            "ate": {"type": "ate", "alignment": "se3", "association": "interpolate",
+                    "max_interpolation_gap_s": 1.5 / OXTS_HZ},
+        },
     },
 )
 
 
 def sweep(distances=(0.5, 1.0, 2.0)):
-    """扫参：同一份基底生成一组变体，每个变体是一个任务、一个档案目录。
+    """扫参：同一份基底生成一组变体，每个变体是一个任务、一个任务记录目录。
 
     系统写在文件里，改系统参数用覆盖项，写法与命令行相同。
     """
