@@ -90,20 +90,18 @@ evaluation:
 
 版本号分两级 vX.Y：大改动升大版本，小改动升小版本，每个版本都有对应的 git 标签。
 
-仓库里有两套代码，迁移是施工项，两套不得在同一翻译单元混用：
+框架由进程内通信运行时、框架契约、模块层，以及评测、配置、日志三样工程设施组成。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
 
-- **新栈**（2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、配置、日志三样工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
-  - **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，YAML 里按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
-  - **参数服务器**（`comm/param.hpp`、`comm/parameters.hpp`）：要在模块与插件之间共享、或运行中要改的值是参数。用到它的类里把它声明成常量（名字、类型、默认值、说明、范围、运行中改不改），读写都拿这个常量，名字写错编译不过；值写在系统 YAML 的 `params` 里，按名字共享，装配时按声明核对，没人声明的名字、类型不符、超出范围都在运行之前报错。插件在所属模块的回调里读写，一个参数至多一个组件写，运行中的每次修改记进 `run.log`。
-  - **任务与执行器**（`app/`）：一份任务 YAML 引用一份系统 YAML；执行器还原任务、打开数据、按管线装配、离线跑完、写任务记录；任务里列了评测函数就评测。离线是单线程步进、结果逐位可复现；在线是一个模块一个线程，按数据的真实时间节奏回放。一个任务也可以列出一个数据集的多个序列（如 KITTI 00–10），每个序列在一个子进程里跑，最后汇总成一张表。用户的入口只有几行：登记自己的实现，再交给执行器。任务也能用 Python 写，方便按传感器参数计算配置、批量生成扫参任务（`configs/tasks/example.py`）。
-  - **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
+- **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，YAML 里按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
+- **参数服务器**（`comm/param.hpp`、`comm/parameters.hpp`）：要在模块与插件之间共享、或运行中要改的值是参数。用到它的类里把它声明成常量（名字、类型、默认值、说明、范围、运行中改不改），读写都拿这个常量，名字写错编译不过；值写在系统 YAML 的 `params` 里，按名字共享，装配时按声明核对，没人声明的名字、类型不符、超出范围都在运行之前报错。插件在所属模块的回调里读写，一个参数至多一个组件写，运行中的每次修改记进 `run.log`。
+- **任务与执行器**（`app/`）：一份任务 YAML 引用一份系统 YAML；执行器还原任务、打开数据、按管线装配、离线跑完、写任务记录；任务里列了评测函数就评测。离线是单线程步进、结果逐位可复现；在线是一个模块一个线程，按数据的真实时间节奏回放。一个任务也可以列出一个数据集的多个序列（如 KITTI 00–10），每个序列在一个子进程里跑，最后汇总成一张表。用户的入口只有几行：登记自己的实现，再交给执行器。任务也能用 Python 写，方便按传感器参数计算配置、批量生成扫参任务（`configs/tasks/example.py`）。
+- **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
 
-  **目前还没有真实算法跑过**：示例里只有占位的 `MyLio`，第一个方案还在写。
-- **旧栈**：基础设施、点云原语与纯 LO（`configs/lo_kissicp.yaml` 可跑），在 KITTI 上的精度还没量。
+**目前还没有真实算法跑过**：示例里只有占位的 `MyLio`，第一个方案还在写。
 
 接下来：
 
-1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上和旧栈 LO 对比轨迹。
+1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上对照 KISS-ICP。
 2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
 3. LIO：复用同一个地图接口。
 
@@ -139,9 +137,10 @@ evaluation:
 ### Docker 构建
 
 ```bash
-# 1. 构建开发镜像（Ubuntu 24.04；源码依赖由镜像的 deps-builder 阶段自行从 GitHub 拉取，
-#    网络受限时加 --network=host）
+# 1. 构建开发镜像（Ubuntu 24.04；依赖走 apt，manif 从 GitHub 取）
 docker build -t simpleslam-dev .
+#    连不上 GitHub 时，先把 manif 0.0.5 克隆到 docker/deps/manif，再用这份本地副本：
+#    docker build --build-context manif=docker/deps/manif -t simpleslam-dev .
 
 # 2. 编译 + 测试
 docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
@@ -162,43 +161,39 @@ cmake --build build -j
 cd build && ctest --output-on-failure
 ```
 
-依赖不全时可以只构建新栈：`cmake -B build -DSIMPLESLAM_NEW_STACK_ONLY=ON`。
+没有 yaml-cpp 时只构建运行时、框架、算法库、插件与模块层，评测、配置与执行器不构建。
 
 ## 目录结构
 
 ```
 include/SimpleSLAM/   # 公共头文件
-  旧栈： core/（types、concepts、math、infra）、odometry/、backend/、resources/、sensor_io/、runner/、adapters/
-  新栈： logging/（日志：成员 log_、来源与等级、后台落盘）
-         comm/（通信运行时）、framework/（框架契约与资源）
-         algo/（可替换的步骤：扫描滤波、配准地图）
-         plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
-         modules/（模块层：把插件接到总线与资源上）
-         eval/（评测）、config/（配置、插件槽与目录）
-         app/（入口层：目录、任务还原、执行器、任务记录与评测）
+  core/types/geometry.hpp（位姿与矩阵的类型：manif 与 Eigen 的别名）
+  logging/（日志：成员 log_、来源与等级、后台落盘）
+  comm/（通信运行时与参数服务器）、framework/（框架契约与资源）
+  algo/（可替换的步骤：扫描滤波、配准地图）
+  plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
+  modules/（模块层：把插件接到总线与资源上）
+  eval/（评测）、config/（配置、插件槽与目录）
+  app/（入口层：目录、任务还原、执行器、任务记录与评测）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
-apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
 tools/                # simpleslam-eval（评测别的系统跑出来的轨迹）
 examples/lio_skeleton # 用户入口的范例：登记 my_lio，再交给执行器；算法在 my_lio.hpp
 run.py                # 一键入口，等同 python -m simpleslam
 python/simpleslam/    # Python 侧：操作台（构建、跑任务、看结果）、任务渲染与扫参、轨迹读写
 configs/systems/      # 系统 YAML：管线、模块、插件与参数
 configs/tasks/        # 任务 YAML 与 Python 写的任务
-configs/*.yaml        # 旧栈的配置
-tests/  docker/  scripts/
+tests/  scripts/      # 单元测试；依赖安装、合成数据夹具
 ```
 
 ## 依赖
 
-| 库 | 用途 | 类型 | 谁需要 |
-|---|------|------|---------|
-| Eigen 3.4+ | 矩阵运算、四元数 | header-only | 新旧栈 |
-| manif | SE3d/SO3d 李群操作 | header-only | 新旧栈 |
-| yaml-cpp | 配置、任务记录 | 编译库 | 新栈工程设施；旧栈硬依赖 |
-| spdlog、fmt | 日志与格式化 | 编译库 / header-only | 旧栈 |
-| nanoflann | KD-Tree 近邻搜索 | header-only | 旧栈 |
-| tsl::robin_map | 体素哈希 | header-only | 旧栈 |
-| Catch2 3.x | 单元测试 | 编译库 | 测试 |
+| 库 | 用途 | 类型 |
+|---|------|------|
+| Eigen 3.4+ | 矩阵运算、四元数 | header-only |
+| manif 0.0.5 | SE3d/SO3d 李群操作 | header-only |
+| yaml-cpp | 配置、任务记录（没有它就不构建评测、配置与执行器） | 编译库 |
+| Catch2 3.x | 单元测试 | 编译库 |
+| Python 3 | 操作台 `run.py` 与 Python 侧的测试，只用标准库 | 解释器 |
 
 按阶段引入的可选依赖：GTSAM 4.3+（因子图优化）、small_gicp（回环验证 ICP）、Ceres 2.1+（滑窗 BA）、OpenCV 4.5+（视觉前端）。
 
