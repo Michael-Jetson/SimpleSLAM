@@ -101,18 +101,27 @@ evaluation: {alignment: se3}
 2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
 3. LIO：复用同一个地图接口。
 
-手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；不下载数据集也能冒烟测试整条链路：
-
-```bash
-python3 scripts/make_kitti_fixture.py --out /tmp/fx          # 合成最小 KITTI 夹具
-build/examples/simpleslam-lio-skeleton configs/tasks/kitti_odometry.yaml \
-    data.source.path=/tmp/fx/odometry/sequences/00 outputs.dir=/tmp/fx/run
-build/examples/simpleslam-lio-skeleton dump configs/tasks/kitti_odometry.yaml   # 还原后的完整任务
-PYTHONPATH=python python3 -m simpleslam --tool build/examples/simpleslam-lio-skeleton \
-    config render configs/tasks/example.py -o /tmp/fx/example.yaml          # Python 写的任务
-```
+手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始；`./run.py demo` 不下载数据集也能跑通整条链路（见"快速开始"）。
 
 ## 快速开始
+
+### 一键运行
+
+`./run.py` 是操作台：第一次用时自动配置并构建入口（之后只增量构建），跑任务，看结果。C++ 入口仍是执行与校验的唯一实现，操作台只做编排与展示。
+
+```bash
+./run.py demo                       # 合成最小 KITTI 夹具，跑通整条链路，打印摘要
+./run.py configs/tasks/kitti_odometry.yaml data.source.path=/data/kitti/odometry/sequences/00
+./run.py show runs/kitti-00         # 一个档案的摘要
+./run.py compare runs/a runs/b      # 几次运行的对比表，--csv 导出成表格文件
+./run.py configs/tasks/example.py   # Python 写的任务；sweep 子命令跑它的一组扫参变体
+./run.py impls                      # 入口里登记了哪些实现、各有哪些参数
+```
+
+- 默认在本机构建 Release，构建目录是 `build/release`；环境变量 `SIMPLESLAM_BUILD_ROOT` 可以把它放到别处，`--debug` 换成 Debug，`--docker` 在开发镜像里做同样的事。
+- 入口默认是示例 `simpleslam_lio_skeleton`；你的算法用登记了它的入口：`--entry <CMake 目标名或可执行文件>`，或环境变量 `SIMPLESLAM_ENTRY`。
+- 数据集路径用覆盖项给，或者把自己的任务文件放进 `configs/local/`（不入库）。
+- 每次运行的结果是一个档案目录（默认 `runs/<任务名>`），`result.json` 是给程序读的摘要。
 
 ### 环境要求
 
@@ -162,7 +171,8 @@ src/                  # 各模块库实现（纯头模块仅 CMakeLists）
 apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
 tools/                # simpleslam（任务入口，只带内置实现）、simpleslam-config（schema / check / dump / hash）、simpleslam-eval（精度与基线门禁）
 examples/lio_skeleton # 用户入口的范例：登记 my_lio，再交给执行器；算法在 my_lio.hpp
-python/simpleslam/    # Python 侧：任务渲染与扫参、轨迹读写、指标（schema 读自入口，不重写）
+run.py                # 一键入口，等同 python -m simpleslam
+python/simpleslam/    # Python 侧：操作台（构建、跑任务、看结果）、任务渲染与扫参、轨迹读写、指标
 configs/systems/      # 系统 YAML：管线、模块、插件与参数
 configs/tasks/        # 任务 YAML 与 Python 写的任务
 configs/*.yaml        # 旧栈的配置
