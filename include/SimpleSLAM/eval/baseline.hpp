@@ -114,6 +114,7 @@ enum class BaselineOutcome : std::uint8_t {
     }
     return "invalid";
 }
+[[nodiscard]] std::optional<BaselineOutcome> parseBaselineOutcome(std::string_view text);
 
 struct BaselineFailure {
     std::string metric;
@@ -252,6 +253,16 @@ struct RunManifest {
 
 /// 读一份运行报告里的运行凭据。读不懂就抛：凭据含糊不如没有。
 [[nodiscard]] RunManifest readRunManifest(const std::string& path);
+
+/// 运行报告里的结论与指标。汇总几份报告（多序列）时用它，报告格式只在这里解析。
+struct ReportResult {
+    BaselineOutcome outcome = BaselineOutcome::kInvalid;
+    std::string detail;
+    std::map<std::string, double> metrics;
+};
+
+/// 读一份运行报告的结论与指标。读不懂就抛。
+[[nodiscard]] ReportResult readReportResult(const std::string& path);
 
 /// 把指标摊平成 map，供基线比对使用。
 [[nodiscard]] std::map<std::string, double> toMetricMap(const AteResult& ate, const RpeResult& rpe);

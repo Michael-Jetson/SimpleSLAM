@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
+#include "archive.hpp"
+#include "sequences.hpp"
+
 #include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/app/catalogs.hpp>
 #include <SimpleSLAM/app/run.hpp>
@@ -15,6 +18,7 @@
 #include <SimpleSLAM/record/diagnostic_file_sink.hpp>
 #include <SimpleSLAM/record/writer.hpp>
 
+#include <charconv>
 #include <chrono>
 #include <filesystem>
 #include <format>
@@ -27,6 +31,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -69,27 +74,6 @@ void checkCombination(const config::TaskConfig& c) {
     if (c.task.mode == "online") {
         throw std::runtime_error("在线运行还在施工（task.mode = online），先用离线");
     }
-    if (!c.data.sequences.empty()) {
-        throw std::runtime_error("多段序列还在施工（data.sequences），先一段一段跑");
-    }
-}
-
-fs::path archiveDir(const config::TaskConfig& c) {
-    return c.outputs.dir.empty() ? fs::path("runs") / c.task.name : fs::path(c.outputs.dir);
-}
-
-/// 档案目录已有内容时拒绝写入，免得两次任务的结果混在一起。只查，不动目录。
-void refuseOccupied(const fs::path& dir, bool overwrite) {
-    if (!overwrite && fs::exists(dir) && !fs::is_empty(dir)) {
-        throw std::runtime_error(std::format(
-            "任务档案目录 {} 已有内容：换一个 outputs.dir，或加 --overwrite", dir.string()));
-    }
-}
-
-/// 建档案目录。执行器自己写的文件先删掉（覆盖时才有），目录里别的文件不动。
-void prepareArchive(const fs::path& dir) {
-    for (const char* name : kArchiveFiles) fs::remove_all(dir / name);
-    fs::create_directories(dir / "trajectory");
 }
 
 /// 打开数据：外部标定取代自带的标定，外部真值取代自带的真值。
@@ -116,32 +100,6 @@ plugin::Dataset openData(const ResolvedTask& task) {
                                  "只出结果把 task.purpose 改成 run");
     }
     return dataset;
-}
-
-std::string quoted(const std::string& text) {
-    std::string out = "\"";
-    for (const char c : text) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            default: out += c; break;
-        }
-    }
-    return out + '"';
-}
-
-std::string quotedList(const std::vector<std::string>& items) {
-    std::string out = "[";
-    for (std::size_t i = 0; i < items.size(); ++i) out += (i == 0 ? "" : ", ") + quoted(items[i]);
-    return out + "]";
-}
-
-void writeText(const fs::path& path, const std::string& text) {
-    std::ofstream file(path);
-    if (!file) throw std::runtime_error("打不开档案文件: " + path.string());
-    file << text;
-    if (!file) throw std::runtime_error("写档案文件失败: " + path.string());
 }
 
 std::string seconds(fw::Duration d) {
@@ -236,31 +194,20 @@ struct RunFacts {
 };
 
 void writeIdentity(const fs::path& dir, const ResolvedTask& task, const RunFacts& facts) {
+    using archive::quoted;
     const auto& e = facts.effective;
-    writeText(dir / "identity.yaml",
-              std::format("software_version: {}\ntask_hash: {}\nsystem_hash: {}\n"
-                          "calibration_hash: {}\neffective_hash: {}\nseed: {}\n"
-                          "task_file: {}\nsystem_file: {}\noverrides: {}\n",
-                          quoted(SIMPLESLAM_VERSION), quoted(e.at("config_hash")),
-                          quoted(e.at("system_hash")), quoted(e.at("calibration_hash")),
-                          quoted(e.at("effective_hash")), task.config.task.seed,
-                          quoted(task.source.task_file), quoted(task.source.system_file),
-                          quotedList(task.source.overrides)));
+    archive::writeText(
+        dir / "identity.yaml",
+        std::format("software_version: {}\ntask_hash: {}\nsystem_hash: {}\n"
+                    "calibration_hash: {}\neffective_hash: {}\nseed: {}\n"
+                    "task_file: {}\nsystem_file: {}\noverrides: {}\n",
+                    quoted(SIMPLESLAM_VERSION), quoted(e.at("config_hash")),
+                    quoted(e.at("system_hash")), quoted(e.at("calibration_hash")),
+                    quoted(e.at("effective_hash")), task.config.task.seed,
+                    quoted(task.source.task_file), quoted(task.source.system_file),
+                    archive::quotedList(task.source.overrides)));
 }
 
-void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const RunFacts& facts) {
-    const auto flag = [](bool value) { return value ? "true" : "false"; };
-    writeText(dir / "outcome.yaml",
-              std::format("complete: {}\ninput_complete: {}\nprocessing_complete: {}\n"
-                          "output_complete: {}\npackets: {}\nframes: {}\nkeyframes: {}\n"
-                          "reasons: {}\nnotes: {}\n",
-                          flag(outcome.complete()), flag(outcome.inputComplete()),
-                          flag(outcome.processingComplete()), flag(outcome.outputComplete()),
-                          facts.packets, facts.frames, facts.keyframes,
-                          quotedList(outcome.reasons()), quotedList(outcome.notes())));
-}
-
-/// 三条轨迹都写进档案。返回里程计轨迹的文件路径（评测报告记它的摘要）。
 fs::path writeTrajectories(const fs::path& dir, const modules::RunResult& result,
                            const config::TaskConfig& c, std::ostream& out) {
     const auto format =
@@ -398,7 +345,8 @@ int evaluate(const ResolvedTask& task, const fs::path& dir, const fs::path& traj
 
 int usage(std::ostream& err) {
     err << R"(用法:
-  <任务.yaml> [路径=值 …] [--overwrite]   跑任务（也可以写成 run <任务.yaml> …）
+  <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N]
+                                          跑任务（也可以写成 run <任务.yaml> …）
   check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
   dump  <任务.yaml> [路径=值 …]           还原后的完整任务
   hash  <任务.yaml> [路径=值 …]           任务哈希
@@ -406,6 +354,7 @@ int usage(std::ostream& err) {
   default                                 全部默认值
 
 覆盖写成 路径=值，例如 system.modules.odometry.plugin.map.voxel_size_m=0.8
+多序列（data.sequences）时每个序列一个子进程，--jobs=N 同时跑 N 个（默认 1）
 )";
     return 2;
 }
@@ -421,10 +370,12 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
             << "  系统哈希: " << config::systemHash(c) << '\n';
         // 不支持的组合、占用的档案目录、没有真值的实验，都在动档案目录之前报错
         checkCombination(c);
-        const fs::path dir = archiveDir(c);
-        refuseOccupied(dir, options.overwrite);
+        if (!c.data.sequences.empty()) return runSequences(task, options, out);
+        const fs::path dir = archive::directory(c);
+        archive::refuseOccupied(dir, options.overwrite);
         plugin::Dataset dataset = openData(task);
-        prepareArchive(dir);
+        archive::prepare(dir, kArchiveFiles);
+        fs::create_directories(dir / "trajectory");
         config::writeConfigFile((dir / "task.yaml").string(), c);
 
         RunFacts facts;
@@ -499,7 +450,7 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         // ── 任务档案 ──
         const fs::path trajectory_file = writeTrajectories(dir, result, c, out);
         writeIdentity(dir, task, facts);
-        writeOutcome(dir, outcome, facts);
+        archive::writeOutcome(dir, outcome, {facts.packets, facts.frames, facts.keyframes});
         out << "档案: " << dir.string() << '\n';
 
         if (c.task.purpose == "run") return 0;
@@ -554,6 +505,14 @@ int run(int argc, char** argv, const config::Catalogs& catalogs) {
     for (const auto& arg : args) {
         if (arg == "--overwrite") {
             options.overwrite = true;
+        } else if (arg.starts_with("--jobs=")) {
+            const std::string_view text = std::string_view(arg).substr(7);
+            const auto [end, error] =
+                std::from_chars(text.data(), text.data() + text.size(), options.jobs);
+            if (error != std::errc() || end != text.data() + text.size() || options.jobs == 0) {
+                std::cerr << "--jobs 要写成正整数，得到 " << text << '\n';
+                return usage(std::cerr);
+            }
         } else if (arg.find('=') != std::string::npos) {
             options.overrides.push_back(arg);
         } else if (options.task_file.empty()) {

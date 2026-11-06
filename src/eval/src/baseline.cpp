@@ -328,6 +328,14 @@ std::optional<RunCompleteness> parseRunCompleteness(std::string_view text) {
     return std::nullopt;
 }
 
+std::optional<BaselineOutcome> parseBaselineOutcome(std::string_view text) {
+    for (const auto value : {BaselineOutcome::kPass, BaselineOutcome::kFail,
+                             BaselineOutcome::kInvalid, BaselineOutcome::kIncomparable}) {
+        if (text == toString(value)) return value;
+    }
+    return std::nullopt;
+}
+
 int exitCodeFor(const BaselineVerdict& verdict, bool allow_incomparable) {
     switch (verdict.outcome) {
         case BaselineOutcome::kPass: return 0;
@@ -560,6 +568,35 @@ RunManifest readRunManifest(const std::string& path) {
     }
     if (const YAML::Node protocol = root["protocol"]) manifest.protocol = parseProtocol(protocol, path);
     return manifest;
+}
+
+ReportResult readReportResult(const std::string& path) {
+    YAML::Node root;
+    try {
+        root = YAML::LoadFile(path);
+    } catch (const YAML::Exception& e) {
+        throw BaselineError("读取运行报告失败 " + path + ": " + e.what());
+    }
+    const YAML::Node verdict = root.IsMap() ? root["verdict"] : YAML::Node();
+    const YAML::Node outcome = verdict ? verdict["outcome"] : YAML::Node();
+    if (!outcome) throw BaselineError("运行报告里没有 verdict.outcome: " + path);
+    const auto parsed = parseBaselineOutcome(outcome.as<std::string>());
+    if (!parsed) {
+        throw BaselineError("运行报告里的 verdict.outcome 认不出来: " + outcome.as<std::string>());
+    }
+    ReportResult result;
+    result.outcome = *parsed;
+    if (const YAML::Node detail = verdict["detail"]) result.detail = detail.as<std::string>();
+    if (const YAML::Node metrics = root["metrics"]) {
+        try {
+            for (const auto& item : metrics) {
+                result.metrics.emplace(item.first.as<std::string>(), item.second.as<double>());
+            }
+        } catch (const YAML::Exception& e) {
+            throw BaselineError("运行报告里的 metrics 读不懂 " + path + ": " + e.what());
+        }
+    }
+    return result;
 }
 
 }  // namespace simpleslam::eval

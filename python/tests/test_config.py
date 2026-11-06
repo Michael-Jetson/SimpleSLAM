@@ -21,7 +21,7 @@ def fake_schema() -> Schema:
             Field(LIO, "slot", "", "里程计", False),
             Field("system.modules.graph_optimizer.weight", "double", "100", "权重", True),
             Field(SOURCE, "slot", "", "数据来源", False),
-            Field("data.sequences", "list", "[]", "多段序列", False),
+            Field("data.sequences", "list", "[]", "多序列", False),
             Field("outputs.dir", "string", "", "档案目录", False),
         ],
         slots={LIO: "OdometryBase", SOURCE: "DatasetReader"},
@@ -41,7 +41,7 @@ def fake_schema() -> Schema:
             PluginSchema("Map", "sparse", ()),
             PluginSchema("DatasetReader", "kitti", (
                 PluginField("path", "string", "", "路径"),
-                PluginField("sequence", "string", "", "段名"),
+                PluginField("sequence", "string", "", "序列名"),
             )),
         ],
     )
@@ -86,7 +86,7 @@ class RenderTest(unittest.TestCase):
         config = minimal(system="../systems/x.yaml")
         del config[LIO]
         config.override(f"{LIO}.keyframe_distance_m", 2.0)
-        config.override(f"{SOURCE}.sequence", "00")  # 带引号：段名是字符串，不是整数 0
+        config.override(f"{SOURCE}.sequence", "00")  # 带引号：序列名是字符串，不是整数 0
         config.override(LIO, {"type": "lio", "map": {"type": "sparse"}})
         self.assertEqual(
             config.to_yaml(fake_schema()),

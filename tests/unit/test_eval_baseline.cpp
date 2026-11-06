@@ -203,6 +203,25 @@ TEST_CASE("报告可渲染并落盘", "[eval][baseline]") {
     std::filesystem::remove(path);
 }
 
+TEST_CASE("报告的结论与指标读得回来", "[eval][baseline]") {
+    EvaluationReport report;
+    report.dataset = "demo";
+    report.metrics = {{"ate.translation.rmse", 1.0 / 3.0}, {"ate.pairs", 20.0}};
+    report.verdict.outcome = BaselineOutcome::kFail;
+    report.verdict.detail = "ate.translation.rmse 超出上限";
+    const auto path = tempFile("simpleslam_report_result.yaml");
+    writeReport(path.string(), report);
+
+    const ReportResult result = readReportResult(path.string());
+    CHECK(result.outcome == BaselineOutcome::kFail);
+    CHECK(result.detail == report.verdict.detail);
+    CHECK(result.metrics == report.metrics);  // 实数按往返无损的写法落盘
+
+    std::ofstream(path) << "metrics: {}\n";
+    CHECK_THROWS_AS(readReportResult(path.string()), BaselineError);  // 没有结论就不是报告
+    std::filesystem::remove(path);
+}
+
 TEST_CASE("没人要 RPE 时，凑不出 RPE 段不否定 ATE 的结论", "[eval][baseline]") {
     // 一条太短、凑不出一个 RPE 间隔的轨迹，不该连带把 ATE 也判成无效
     const auto verdict = checkMeasurementValidity({{"ate.pairs", 20.0},

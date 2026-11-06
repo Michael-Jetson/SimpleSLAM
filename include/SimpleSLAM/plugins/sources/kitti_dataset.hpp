@@ -7,7 +7,7 @@
 /// KITTI 的两种数据集读取器：odometry 基准序列与 raw 采集。
 ///
 /// 它们把 `OdometrySource` / `RawSource` 连同自带的标定、真值与推荐的打包策略一起交出去。
-/// 支持多段序列：给了 `sequence` 时，`path` 是数据集根目录，读取器自己拼出那一段的目录。
+/// 支持多序列：给了 `sequence` 时，`path` 是数据集根目录，读取器自己拼出那个序列的目录。
 
 #include <SimpleSLAM/plugins/dataset.hpp>
 

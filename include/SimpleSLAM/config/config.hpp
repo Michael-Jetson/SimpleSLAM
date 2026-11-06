@@ -104,7 +104,8 @@ struct DataSection {
     PluginSpec source;
     /// 外部标定文件。给了就取代数据集自带的标定。
     std::string calibration;
-    /// 多段序列。每段一个子进程，覆盖 `data.source.sequence`；读取器要有这个字段。
+    /// 多序列：每个序列一个子进程，覆盖 `data.source.sequence`；读取器要有这个字段。
+    /// 序列名要能当目录名，只用字母、数字与 . _ -。
     std::vector<std::string> sequences;
 };
 
@@ -195,7 +196,7 @@ void visitConfig(Config& c, Visitor&& visit) {
     visit("data.source", c.data.source, "数据集读取器：类型与参数", Tunable::kNo);
     visit("data.calibration", c.data.calibration, "外部标定文件（留空则用数据集自带的标定）",
           Tunable::kNo);
-    visit("data.sequences", c.data.sequences, "多段序列；每段一个子进程", Tunable::kNo);
+    visit("data.sequences", c.data.sequences, "多序列：每个序列一个子进程", Tunable::kNo);
 
     visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）",
           Tunable::kNo);

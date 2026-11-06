@@ -6,6 +6,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -580,11 +581,21 @@ void validateConfig(const TaskConfig& config) {
         throw ConfigError("system.modules.graph_optimizer.odometry_rotation_weight 必须为正");
     }
 
+    // 序列名是子档案的目录名，也写进子进程的覆盖项：只收不用转义、不会越出档案目录的名字
+    const auto safe = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+               || c == '.' || c == '_' || c == '-';
+    };
     std::set<std::string> seen;
     for (const auto& sequence : config.data.sequences) {
-        if (sequence.empty()) throw ConfigError("data.sequences 里有空的段名");
+        if (sequence.empty()) throw ConfigError("data.sequences 里有空的序列名");
+        if (!std::all_of(sequence.begin(), sequence.end(), safe) || sequence == "."
+            || sequence == "..") {
+            throw ConfigError("data.sequences 里的序列名 " + sequence
+                              + " 要能当目录名：只用字母、数字与 . _ -，也不能是 . 或 ..");
+        }
         if (!seen.insert(sequence).second) {
-            throw ConfigError("data.sequences 里的段名重复：" + sequence);
+            throw ConfigError("data.sequences 里的序列名重复：" + sequence);
         }
     }
 

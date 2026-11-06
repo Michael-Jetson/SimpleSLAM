@@ -2,7 +2,9 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 /// 任务执行器：插件节点由目录还原并补齐默认值、参数桥接到模块的私有名、配置命令、
-/// 在一份 KITTI 夹具上从任务文件跑到任务档案、运行之前拒绝还不支持的组合。
+/// 在一份 KITTI 夹具上从任务文件跑到任务档案、录制与回放、多序列、运行之前拒绝还不支持的组合。
+
+#include "still_odometry.hpp"
 
 #include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/app/catalogs.hpp>
@@ -34,44 +36,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// 测试用的里程计：原地不动，每 keyframe_every 帧给一个关键帧建议。
-class StillOdometry final : public plugin::OdometryBase {
-public:
-    static constexpr std::string_view kTypeName = "still";
-
-    struct Config {
-        std::int64_t keyframe_every = 5;
-
-        template <class V>
-        void visit(V& v) {
-            v("keyframe_every", keyframe_every, "每几帧一个关键帧");
-        }
-    };
-
-    explicit StillOdometry(const Config& config) : config_(config) {
-        if (config_.keyframe_every < 1) throw std::invalid_argument("keyframe_every 至少为 1");
-    }
-
-    [[nodiscard]] plugin::SupportGapPolicy supportGapPolicy() const override {
-        return plugin::SupportGapPolicy::kDegrade;
-    }
-    [[nodiscard]] std::string name() const override { return "still"; }
-
-protected:
-    plugin::TrackResult track(const fw::SensorPacket& /*packet*/) override {
-        plugin::TrackResult result;
-        result.suggest_keyframe = frames_++ % config_.keyframe_every == 0;
-        return result;
-    }
-
-private:
-    Config config_;
-    std::int64_t frames_ = 0;
-};
-
 config::Catalogs catalogs() {
     auto result = app::builtinCatalogs();
-    result.of<plugin::OdometryBase>().add<StillOdometry>();
+    result.of<plugin::OdometryBase>().add<test::StillOdometry>();
     return result;
 }
 
@@ -119,9 +86,9 @@ void writeScan(const fs::path& path) {
     }
 }
 
-/// odometry 布局：<root>/sequences/00 与 <root>/poses/00.txt，相机系真值每帧前进 1 米。
-void makeOdometryDataset(const fs::path& root, int frames) {
-    const fs::path sequence = root / "sequences" / "00";
+/// odometry 布局：<root>/sequences/<序列> 与 <root>/poses/<序列>.txt，相机系真值每帧前进 1 米。
+void makeOdometryDataset(const fs::path& root, int frames, const std::string& name = "00") {
+    const fs::path sequence = root / "sequences" / name;
     std::ostringstream times;
     std::ostringstream poses;
     for (int i = 0; i < frames; ++i) {
@@ -131,7 +98,7 @@ void makeOdometryDataset(const fs::path& root, int frames) {
         poses << "1 0 0 " << i << " 0 1 0 0 0 0 1 0\n";
     }
     writeText(sequence / "times.txt", times.str());
-    writeText(root / "poses" / "00.txt", poses.str());
+    writeText(root / "poses" / (name + ".txt"), poses.str());
     writeText(sequence / "calib.txt",
               "P0: 1 0 0 0 0 1 0 0 0 0 1 0\nTr: 1 0 0 0 0 1 0 0 0 0 1 0\n");
 }
@@ -165,6 +132,19 @@ struct Fixture {
         const app::RunOptions options{.task_file = task_file.string(),
                                       .overrides = std::move(overrides),
                                       .overwrite = overwrite};
+        return app::runTask(options, catalogs(), out, err);
+    }
+
+    /// 多序列：子进程由登记了同一个测试实现的入口跑。
+    int runSequences(std::vector<std::string> overrides, std::size_t jobs = 1,
+                     bool overwrite = false) {
+        out.str("");
+        err.str("");
+        const app::RunOptions options{.task_file = task_file.string(),
+                                      .overrides = std::move(overrides),
+                                      .overwrite = overwrite,
+                                      .jobs = jobs,
+                                      .executable = SIMPLESLAM_TEST_TASK_RUNNER};
         return app::runTask(options, catalogs(), out, err);
     }
 
@@ -355,9 +335,80 @@ TEST_CASE("只出结果的任务不评测；还不支持的组合在运行之前
         CHECK(fixture.err.str().find("定位管线") != std::string::npos);
         CHECK(fixture.run({"task.mode=online"}) == 1);
         CHECK(fixture.err.str().find("在线运行") != std::string::npos);
-        CHECK(fixture.run({"data.sequences=[\"00\"]"}) == 1);
-        CHECK(fixture.err.str().find("多段序列") != std::string::npos);
         // 都在运行之前拒绝：没有留下半个档案
         CHECK_FALSE(fs::exists(fixture.archive));
     }
+}
+
+TEST_CASE("多序列：每个序列一个子进程、一份子档案，最后汇总成一张表", "[app][task][sequences]") {
+    Fixture fixture;  // 实验；夹具里已有序列 00
+    makeOdometryDataset(fixture.dir.path() / "kitti", 6, "01");
+    const std::vector<std::string> sequences = {"data.source.sequence=\"\"",
+                                                "data.sequences=[\"00\", \"01\"]"};
+    REQUIRE(fixture.runSequences(sequences, /*jobs=*/2) == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+
+    for (const std::string name : {"00", "01"}) {
+        const fs::path child = fixture.archive / name;
+        CHECK(fs::exists(child / "report.yaml"));
+        CHECK(fs::exists(child / "trajectory" / "odometry.tum"));
+        CHECK(fs::exists(fixture.archive / "logs" / (name + ".log")));
+        // 子档案是一份独立的单序列任务，原样就能重跑
+        const auto task = app::loadTask((child / "task.yaml").string(), {}, catalogs());
+        CHECK(task.config.task.name == "still-" + name);
+        CHECK(task.config.data.sequences.empty());
+        CHECK(std::get<std::string>(task.config.data.source.params.at("sequence")) == name);
+        CHECK(readText(child / "identity.yaml")
+                  .find("task_hash: \"" + config::configHash(task.config) + "\"")
+              != std::string::npos);
+    }
+    const std::string summary = readText(fixture.archive / "summary.yaml");
+    CHECK(summary.find("exit_code: 0\n") != std::string::npos);
+    CHECK(summary.find("name: \"01\"") != std::string::npos);
+    CHECK(summary.find("status: \"pass\"") != std::string::npos);
+    // 每个序列都有结果，才有平均
+    CHECK(summary.find("  ate.translation.rmse:", summary.find("mean:")) != std::string::npos);
+    CHECK(readText(fixture.archive / "identity.yaml").find("sequences: [\"00\", \"01\"]")
+          != std::string::npos);
+    CHECK(fixture.out.str().find("平均") != std::string::npos);
+
+    // 档案已有内容：照样拒绝；显式覆盖时一个一个跑，结果与同时跑相同
+    const std::string parallel = readText(fixture.archive / "01" / "trajectory" / "odometry.tum");
+    CHECK(fixture.runSequences(sequences) == 1);
+    CHECK(fixture.err.str().find("已有内容") != std::string::npos);
+    REQUIRE(fixture.runSequences(sequences, 1, /*overwrite=*/true) == 0);
+    CHECK(readText(fixture.archive / "01" / "trajectory" / "odometry.tum") == parallel);
+}
+
+TEST_CASE("多序列：一个序列出错不影响别的序列，退出码取最严重的", "[app][task][sequences]") {
+    Fixture fixture;  // 夹具里没有序列 07
+    REQUIRE(fixture.runSequences({"data.source.sequence=\"\"", "data.sequences=[\"00\", \"07\"]"},
+                                 /*jobs=*/2)
+            == 1);
+    CHECK(fs::exists(fixture.archive / "00" / "report.yaml"));  // 00 照常跑完
+    CHECK_FALSE(fs::exists(fixture.archive / "07"));             // 07 在建档案之前就出错了
+    CHECK(readText(fixture.archive / "logs" / "07.log").find("错误") != std::string::npos);
+    const std::string summary = readText(fixture.archive / "summary.yaml");
+    CHECK(summary.find("exit_code: 1\nsequences:") != std::string::npos);
+    CHECK(summary.find("status: \"error\"") != std::string::npos);
+    CHECK(summary.find("problem: \"目录不存在") != std::string::npos);  // 原因取自日志
+    CHECK(summary.find("mean: {}") != std::string::npos);  // 有序列没出结果，不算平均
+}
+
+TEST_CASE("多序列：读取器不支持、与 data.source.sequence 同时写，都在运行之前拒绝",
+          "[app][task][sequences]") {
+    Fixture fixture;  // 任务文件里写了 data.source.sequence: "00"
+    CHECK(fixture.runSequences({"data.sequences=[\"00\"]"}) == 1);
+    CHECK(fixture.err.str().find("只能写一个") != std::string::npos);
+    CHECK(fixture.runSequences({"data.sequences=[\"00\"]",
+                                "data.source={type: replay, path: missing.ssrec}"})
+          == 1);
+    CHECK(fixture.err.str().find("不支持多序列") != std::string::npos);
+    CHECK_FALSE(fs::exists(fixture.archive));
+
+    // --jobs 要是正整数
+    std::vector<std::string> words = {"simpleslam", "--jobs=0", fixture.task_file.string()};
+    std::vector<char*> argv;
+    for (auto& word : words) argv.push_back(word.data());
+    CHECK(app::run(static_cast<int>(argv.size()), argv.data(), catalogs()) == 2);
 }

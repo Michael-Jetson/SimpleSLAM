@@ -9,6 +9,8 @@
 /// 一个任务是"用哪个 SLAM 系统、在线还是离线、处理哪份数据、做实验还是只出结果"。
 /// 执行器依次：读并还原任务 → 核对组合规则 → 打开数据、合并外部标定 → 按管线装配 →
 /// 驱动运行 → 终结、写任务档案 → 实验时评测并过基线门禁 → 按结论返回退出码。
+/// 多序列（`data.sequences` 非空）时，每个序列用同一个可执行文件起一个子进程，
+/// 各自写一份任务档案，最后汇总成一张表。
 ///
 /// 入口只有几行：用户的实现先追加到目录，再交给 `run`。
 ///
@@ -20,6 +22,7 @@
 
 #include <SimpleSLAM/config/plugin.hpp>
 
+#include <cstddef>
 #include <iosfwd>
 #include <string>
 #include <vector>
@@ -32,10 +35,16 @@ struct RunOptions {
     std::vector<std::string> overrides;
     /// 档案目录已有内容时照样写：本执行器写的那些文件先删掉，别的文件不动。
     bool overwrite = false;
+    /// 多序列时同时跑几个序列。
+    std::size_t jobs = 1;
+    /// 多序列时为每个序列起子进程的可执行文件。空就用当前的可执行文件，用户登记的实现
+    /// 在子进程里因此同样有。
+    std::string executable{};
 };
 
-/// 跑一个任务。进度与结论写到 out，问题写到 err。
+/// 跑一个任务。进度与结论写到 out，问题写到 err；多序列时每个序列的输出在它的日志里。
 /// 返回退出码：0 完成（实验时门禁通过）；1 出错；门禁不过时返回评测的退出码。
+/// 多序列时返回各序列里最严重的那个：出错 > 无效 > 不可比较 > 失败 > 通过。
 int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::ostream& out,
             std::ostream& err);
 
@@ -46,7 +55,9 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
 
 /// 命令行入口：
 ///
-///     <任务.yaml> [路径=值 …] [--overwrite]   跑任务（也可以写成 run <任务.yaml> …）
+///     <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N]
+///                                             跑任务（也可以写成 run <任务.yaml> …）；
+///                                             多序列时同时跑 N 个序列
 ///     check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
 ///     dump  <任务.yaml> [路径=值 …]           还原后的完整任务
 ///     hash  <任务.yaml> [路径=值 …]           任务哈希

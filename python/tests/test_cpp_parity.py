@@ -115,7 +115,7 @@ class ConfigParityTest(unittest.TestCase):
         tuned = self.base()
         tuned[LIO].update(keyframe_distance_m=1 / 3, keyframe_rotation_deg=20)
         tuned[SOURCE].update(sequence="00", skip_scans=5, groundtruth_frame="camera")
-        raw = self.base(data={"calibration": nasty, "sequences": ["00", nasty]})
+        raw = self.base(data={"calibration": nasty, "sequences": ["00", "true", "1.5"]})
         raw[SOURCE] = {"type": "kitti_raw", "path": nasty, "repair_scan_timing": True}
         cases = {
             "最小任务": self.base(),

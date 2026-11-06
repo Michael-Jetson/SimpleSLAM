@@ -76,9 +76,14 @@ if(SIMPLESLAM_BUILD_TOOLING)
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_transitions)
 
-    # 任务执行器：从任务文件到任务档案
+    # 任务执行器：从任务文件到任务档案。多序列的子进程要登记同一个测试实现，另有一个入口
+    add_executable(test_task_runner unit/task_runner_main.cpp)
+    target_link_libraries(test_task_runner PRIVATE simpleslam_app)
     add_executable(test_app_task unit/test_app_task.cpp)
     target_link_libraries(test_app_task PRIVATE simpleslam_app Catch2::Catch2WithMain)
+    target_compile_definitions(test_app_task PRIVATE
+        SIMPLESLAM_TEST_TASK_RUNNER="$<TARGET_FILE:test_task_runner>")
+    add_dependencies(test_app_task test_task_runner)
     catch_discover_tests(test_app_task)
 
     add_executable(test_contract_boundaries unit/test_contract_boundaries.cpp)

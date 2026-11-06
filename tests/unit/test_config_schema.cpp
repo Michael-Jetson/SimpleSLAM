@@ -126,7 +126,7 @@ TEST_CASE("规范化导出对刁钻字符串也无损", "[config]") {
         TaskConfig config;
         config.task.name = nasty.empty() ? "x" : nasty;  // 任务名不能为空
         config.outputs.dir = nasty;
-        config.data.sequences = {"s", nasty.empty() ? "e" : nasty};
+        config.data.sequences = {"00", "true", "1.5", "-"};  // 不加引号就会读成别的类型
         config.system.modules.odometry.plugin.params["note"] = nasty;
         const auto again = load(dumpConfig(config));
         CHECK(again.task.name == config.task.name);
@@ -158,6 +158,13 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
         load("system:\n  modules:\n    graph_optimizer:\n      odometry_rotation_weight: 0\n"),
         ConfigError);
     CHECK_THROWS_AS(load("data:\n  sequences: [\"00\", \"00\"]\n"), ConfigError);
+    // 序列名是子档案的目录名：越出档案目录、要转义的都不收
+    for (const char* name : {"a/b", "..", ".", "a b", "\"q\"", ""}) {
+        CHECK_THROWS_AS(load(std::string("data:\n  sequences: [\"") + name + "\"]\n"),
+                        ConfigError);
+    }
+    CHECK(load("data:\n  sequences: [\"2011_09_26_drive_0027_sync\", \"MH-01.v2\"]\n")
+              .data.sequences.size() == 2);
     // 覆盖项走同一套校验
     TaskConfig config;
     CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.spin_budget=0"}), ConfigError);
