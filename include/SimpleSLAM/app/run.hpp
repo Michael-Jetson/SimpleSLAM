@@ -64,6 +64,8 @@ struct TrajectoryEvaluation {
     std::string format{};     ///< tum / kitti；空表示按内容判断
     std::string out;          ///< 写出的任务记录目录
     bool overwrite = false;
+    /// false 时只打印结论、不报任务记录的位置：调用方把它写在临时目录里，评测完删掉。
+    bool keep_record = true;
     /// 任务名，也是匹配基线用的数据集名。有基线时必须给：不会默认取第一条。
     std::string name{};
     /// 评测函数，名字 → 插件节点。空表示 ate 与 rpe 都用默认参数。
@@ -71,8 +73,8 @@ struct TrajectoryEvaluation {
     std::string baselines{};
     std::string config_hash{};  ///< 有效身份，与基线核对
     std::optional<fw::TimeRange> window{};
-    /// 产生这条估计的那次运行的 `result.json`：完整性与目标窗口取自它。它必须列着这条
-    /// 估计的内容摘要，不是这条轨迹就拒绝。
+    /// 产生这条估计的那次运行的 `result.json`（也认 v2 的 `report.yaml`）：完整性与目标
+    /// 窗口取自它。它必须列着这条估计的内容摘要，不是这条轨迹就拒绝。
     std::string run_result{};
     /// 没有运行结论时人工声明运行完整；声明的原话写进结论。
     std::optional<std::string> declaration{};

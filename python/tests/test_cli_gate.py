@@ -78,6 +78,37 @@ class EvalCliGateTest(unittest.TestCase):
         }), encoding="utf-8")
         return produced, run_result
 
+    def test_without_out_it_prints_and_keeps_no_record(self):
+        # v2 的速查用法：只打印结论，不报任务记录的位置
+        completed = subprocess.run([EVAL_TOOL, str(self.estimate), str(self.same)],
+                                   capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("评测 ate（ate）: 4 个样本", completed.stdout)
+        self.assertNotIn("结论:", completed.stdout)
+
+    def test_report_flag_is_gone_and_says_what_to_use(self):
+        code, data, stderr = self.run_tool(str(self.estimate), str(self.same),
+                                           "--report", str(self.root / "report.yaml"))
+        self.assertEqual(code, 2)
+        self.assertIsNone(data)
+        self.assertIn("--out", stderr)
+
+    def test_v2_run_report_is_evidence_too(self):
+        produced, run_result = self.produced_by_run(complete=True)
+        recorded = json.loads(run_result.read_text(encoding="utf-8"))
+        digest = recorded["trajectories"]["odometry"]["digest"]
+        report = self.root / "report.yaml"
+        report.write_text(f"dataset: kitti/00\nrun_completeness: complete\n"
+                          f"trajectory_digest: {digest}\n", encoding="utf-8")
+        code, data, _ = self.run_tool(
+            str(produced), str(self.same),
+            "--baselines", str(self.baselines), "--dataset", "kitti/00",
+            "--run-report", str(report),
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(data["complete"])
+        self.assertEqual(data["completeness_source"], str(report))
+
     def test_zero_association_without_baseline_is_invalid(self):
         code, data, _ = self.run_tool(str(self.estimate), str(self.far))
         self.assertEqual(code, 4)

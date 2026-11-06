@@ -34,6 +34,25 @@ eval::TrajectoryFormat formatOf(const std::string& text, const std::string& path
     return *parsed;
 }
 
+/// v2 的运行报告（`report.yaml`）：内容摘要与完整性是平铺的键，摘要的算法与现在相同。
+Completeness fromV2Report(const YAML::Node& root, const std::string& path,
+                          const std::string& estimate_digest) {
+    const YAML::Node digest = root["trajectory_digest"];
+    if (!digest || digest.as<std::string>() != estimate_digest) {
+        throw std::runtime_error("运行报告描述的不是这条估计轨迹（内容摘要不符）: " + path);
+    }
+    const std::string state = root["run_completeness"].as<std::string>();
+    if (state != eval::toString(eval::RunCompleteness::kComplete)
+        && state != eval::toString(eval::RunCompleteness::kIncomplete)) {
+        throw std::runtime_error("运行报告里没有运行完整性的证据（" + state + "）: " + path);
+    }
+    return Completeness{.state = state == eval::toString(eval::RunCompleteness::kComplete)
+                                     ? eval::RunCompleteness::kComplete
+                                     : eval::RunCompleteness::kIncomplete,
+                        .source = path,
+                        .declaration = {}};
+}
+
 /// 产生这条估计的运行的结论：它必须列着这条估计的内容摘要，完整性取自它。
 Completeness fromRunResult(const std::string& path, const std::string& estimate_digest,
                            std::optional<fw::TimeRange>& window) {
@@ -42,6 +61,9 @@ Completeness fromRunResult(const std::string& path, const std::string& estimate_
         root = YAML::LoadFile(path);
     } catch (const YAML::Exception& e) {
         throw std::runtime_error("读不懂运行结论 " + path + ": " + e.what());
+    }
+    if (!root["schema"] && root["run_completeness"]) {
+        return fromV2Report(root, path, estimate_digest);
     }
     if (!root["schema"] || root["schema"].as<int>() != run_dir::kResultSchema) {
         throw std::runtime_error("运行结论 " + path + " 的格式版本不对");
@@ -189,7 +211,7 @@ int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Cata
                 }
                 break;
         }
-        out << "结论: " << (dir / "result.json").string() << '\n';
+        if (request.keep_record) out << "结论: " << (dir / "result.json").string() << '\n';
         return eval::exitCodeFor(verdict, request.allow_incomparable);
     } catch (const std::exception& e) {
         err << "错误: " << e.what() << '\n';

@@ -12,7 +12,7 @@ LIO = "system.modules.odometry.plugin"
 SOURCE = "data.source"
 
 
-def fake_schema() -> Schema:
+def fake_schema(extra_fields=(), legacy=None) -> Schema:
     return Schema(
         [
             Field("task.name", "string", "default", "任务名", False),
@@ -23,8 +23,10 @@ def fake_schema() -> Schema:
             Field(SOURCE, "slot", "", "数据来源", False),
             Field("data.sequences", "list", "[]", "多序列", False),
             Field("outputs.dir", "string", "", "任务记录目录", False),
+            *extra_fields,
         ],
         slots={LIO: "OdometryBase", SOURCE: "DatasetReader"},
+        legacy=legacy,
         plugins=[
             PluginSchema("OdometryBase", "lio", (
                 PluginField("keyframe_distance_m", "double", "1", "关键帧距离"),
@@ -195,6 +197,40 @@ class ResolveTest(unittest.TestCase):
         config.override("task.seed", 1)
         with self.assertRaisesRegex(ConfigError, "through_cpp"):
             config.hash(fake_schema())
+
+
+class LegacyTest(unittest.TestCase):
+    """v2 的写法：Python 认得 schema 换算表里的旧键，原样渲染进所在的节，换算与还原交给 C++。"""
+
+    @staticmethod
+    def schema() -> Schema:
+        return fake_schema(
+            extra_fields=[Field("evaluation.baselines", "string", "", "基线", False)],
+            legacy={"task.purpose": "去掉了", "evaluation.alignment": "evaluators.ate.alignment"})
+
+    def test_old_keys_are_known_and_rendered_in_their_section(self):
+        schema = self.schema()
+        config = minimal(task={"name": "old", "purpose": "experiment"},
+                         evaluation={"baselines": "b.yaml", "alignment": "sim3"})
+        config.validate(schema)
+        self.assertEqual(config.legacy_paths(schema), ["evaluation.alignment", "task.purpose"])
+        text = config.to_yaml(schema)
+        self.assertIn('task:\n  name: "old"\n  purpose: "experiment"\n', text)
+        self.assertIn('evaluation:\n  baselines: "b.yaml"\n  alignment: "sim3"\n', text)
+        with self.assertRaisesRegex(ConfigError, "未知配置项 task.purpose"):
+            config.validate(fake_schema())  # 没有换算表就不认得
+
+    def test_resolution_is_left_to_cpp(self):
+        config = minimal(task={"purpose": "run"})
+        with self.assertRaisesRegex(ConfigError, "v2 的写法.*through_cpp"):
+            config.hash(self.schema())
+
+    def test_old_override_paths_are_known(self):
+        config = minimal()
+        config.override("evaluation.alignment", "sim3")
+        config.validate(self.schema())
+        with self.assertRaisesRegex(ConfigError, "覆盖项里的未知配置项"):
+            config.validate(fake_schema())
 
 
 class HashTest(unittest.TestCase):

@@ -5,10 +5,12 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <charconv>
 #include <cmath>
 #include <format>
 #include <fstream>
 #include <stdexcept>
+#include <system_error>
 
 namespace simpleslam::app::run_dir {
 
@@ -102,6 +104,21 @@ bool readComplete(const fs::path& dir) {
         return complete.as<bool>();
     } catch (const YAML::Exception& e) {
         throw std::runtime_error("读不懂运行结局 " + path.string() + ": " + e.what());
+    }
+}
+
+std::optional<int> writtenByMajor(const fs::path& dir) {
+    try {
+        const YAML::Node identity = YAML::LoadFile((dir / "identity.yaml").string());
+        const YAML::Node version = identity["software_version"];
+        if (!version || !version.IsScalar()) return std::nullopt;
+        const std::string text = version.Scalar();
+        int major = 0;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), major);
+        if (error != std::errc{} || end == text.data()) return std::nullopt;
+        return major;
+    } catch (const YAML::Exception&) {
+        return std::nullopt;
     }
 }
 

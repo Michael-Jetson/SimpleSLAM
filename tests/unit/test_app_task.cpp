@@ -545,6 +545,63 @@ TEST_CASE("评测函数给的名字进文件名与表头：写错了在写任何
     CHECK(app::loadTask((dir / "task.yaml").string(), {}, catalogs()).evaluators.count("bad") == 0);
 }
 
+TEST_CASE("v2 的任务照样能跑：按新写法评测，说明进终端与 run.log；只跑不评测时提示一句",
+          "[app][task][legacy]") {
+    {
+        Fixture fixture("evaluation:\n  alignment: se3\n  format: kitti\n");  // v2 的写法
+        REQUIRE(fixture.run() == 0);
+        INFO(fixture.out.str() << fixture.err.str());
+        CHECK(fixture.err.str().find("用了 v2 的写法") != std::string::npos);
+        CHECK(readText(fixture.run_dir / "run.log").find("用了 v2 的写法") != std::string::npos);
+        const std::string result = readText(fixture.run_dir / "result.json");
+        CHECK(result.find("\"ate\": {\n      \"type\": \"ate\"") != std::string::npos);
+        CHECK(result.find("\"rpe\": {\n      \"type\": \"rpe\"") != std::string::npos);
+        CHECK(fs::exists(fixture.run_dir / "trajectory" / "odometry.txt"));  // format: kitti
+        // 任务记录里存的是新写法：原样重跑不再有说明
+        const auto again = app::loadTask((fixture.run_dir / "task.yaml").string(), {}, catalogs());
+        CHECK(again.notes.empty());
+    }
+    {
+        Fixture fixture("");  // 数据有真值，任务没列评测函数
+        REQUIRE(fixture.run() == 0);
+        CHECK(fixture.out.str().find("提示: 数据有真值，任务里没有评测函数") != std::string::npos);
+    }
+}
+
+TEST_CASE("v2 的基线在门禁里照样比得上；v2 的任务记录补评时说清楚怎么办",
+          "[app][evaluate][legacy]") {
+    Fixture fixture("evaluation:\n  evaluators:\n    ate: {type: ate, alignment: sim3}\n");
+    const fs::path baselines = fixture.dir.path() / "baselines.yaml";
+    const auto write_v2 = [&](const std::string& requested) {
+        writeText(baselines, "baselines:\n  - dataset: still\n    min_pairs: 5\n    protocol:\n"
+                             "      alignment: se3\n      alignment_requested: " + requested + "\n"
+                             "      association: nearest\n      association_tolerance_s: 0.02\n"
+                             "      max_interpolation_gap_s: 0.15\n      rpe_delta_kind: distance\n"
+                             "      rpe_delta: 100\n    bounds:\n      ate.translation.rmse: 100\n"
+                             "      ate.pairs: {min: 5}\n");
+    };
+    const std::string baseline_override = "evaluation.baselines=" + baselines.string();
+    write_v2("sim3");
+    REQUIRE(fixture.run({baseline_override}) == 0);
+    INFO(fixture.out.str() << fixture.err.str());
+    CHECK(fixture.out.str().find("注意: 基线 still 用了 v2 的写法") != std::string::npos);
+    CHECK(fixture.out.str().find("门禁: pass") != std::string::npos);
+    // 协议照样核对：v2 记下的请求是 se3，这次是 sim3，不可比较
+    write_v2("se3");
+    CHECK(fixture.run({baseline_override}, /*overwrite=*/true) == 5);
+    CHECK(fixture.err.str().find("ate 的评测协议与基线不同") != std::string::npos);
+
+    // v2 写的任务记录：缺真值与生效的标定，不补；说清楚还能怎么办
+    const fs::path old = fixture.dir.path() / "runs" / "v2";
+    writeText(old / "task.yaml", readText(fixture.task_file));
+    writeText(old / "identity.yaml", "software_version: \"2.4\"\n");
+    std::ostringstream out;
+    std::ostringstream err;
+    CHECK(app::evaluateTask(old.string(), {}, catalogs(), out, err) == 1);
+    CHECK(err.str().find("是 v2 写的任务记录") != std::string::npos);
+    CHECK(err.str().find("--run-report") != std::string::npos);
+}
+
 TEST_CASE("单独评测外部轨迹：写成一份最小的任务记录，运行完整性要有证据", "[app][evaluate]") {
     Fixture fixture;
     REQUIRE(fixture.run() == 0);

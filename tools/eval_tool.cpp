@@ -5,8 +5,9 @@
 /// simpleslam-eval：单独评测一条轨迹（别的系统跑出来的也行）。
 ///
 /// 两条轨迹放进一份最小的任务记录，用内置的评测函数 ate、rpe 评测，结论写成同一种
-/// `result.json`，操作台能把它和自己的结果放进一张表。门禁与任务的执行器是同一个
-/// `gate()`，退出码分四档：0 通过 / 3 低于基线 / 4 无效 / 5 不可比较。
+/// `result.json`，操作台能把它和自己的结果放进一张表；不给 `--out` 时只打印结论、不留
+/// 记录。门禁与任务的执行器是同一个 `gate()`，退出码分四档：0 通过 / 3 低于基线 /
+/// 4 无效 / 5 不可比较。
 ///
 /// **独立评测不知道运行是否完整**。一条轨迹文件本身说不出产生它的运行有没有跑完，
 /// 所以完整性默认"未知"：没有基线时照常给出误差测量并写明未知，有基线时不可比较。
@@ -18,17 +19,21 @@
 
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <unistd.h>
 
 namespace {
 
 int usage() {
-    std::cerr << R"(用法: simpleslam-eval <估计轨迹> <真值轨迹> --out <目录> [选项]
+    std::cerr << R"(用法: simpleslam-eval <估计轨迹> <真值轨迹> [--out <目录>] [选项]
 
 选项:
-  --out <目录>                写出的任务记录：两条轨迹、结论 result.json、逐样本表格
+  --out <目录>                写出的任务记录：两条轨迹、结论 result.json、逐样本表格；
+                              不给时只打印结论、不留记录
   --overwrite                 目录已有内容时照样写
   --format <tum|kitti>        两条轨迹的格式（默认按内容判定）
   --align <none|first_pose|se3|sim3>   对齐方式（默认 se3）
@@ -37,8 +42,8 @@ int usage() {
   --rpe-delta <秒>            RPE 的时间间隔（默认 1.0）
   --rpe-distance <米>         改用距离间隔，并按每米归一
   --window <起秒> <止秒>      目标窗口：任务完成度按它算（默认取运行结论里的）
-  --run-report <result.json>  产生这条估计的那次运行的结论：从中取运行完整性与目标窗口；
-                              它没列着这条估计的内容摘要就拒绝
+  --run-report <result.json>  产生这条估计的那次运行的结论（也认 v2 的 report.yaml）：
+                              从中取运行完整性与目标窗口；它没列着这条估计的内容摘要就拒绝
   --assume-complete <说明>    没有运行结论时人工声明运行完整；说明原样写进结论
   --baselines <文件>          精度基线；0 通过 / 3 低于基线 / 4 无效 / 5 不可比较
   --dataset <名字>            基线里对应的数据集名（有基线时必填）
@@ -114,6 +119,10 @@ int main(int argc, char** argv) {
             else if (flag == "--dataset") request.name = value();
             else if (flag == "--config-hash") request.config_hash = value();
             else if (flag == "--allow-incomparable") request.allow_incomparable = true;
+            else if (flag == "--report") {
+                throw std::runtime_error("选项 --report 已经不用了：结论写进 --out 目录里的 "
+                                         "result.json；不给 --out 时只打印、不留记录");
+            }
             else return usage();
         } catch (const std::exception& e) {
             std::cerr << "错误: " << e.what() << '\n';
@@ -121,7 +130,6 @@ int main(int argc, char** argv) {
         }
     }
     try {
-        requireRange(!request.out.empty(), "要用 --out 给出写结论的目录");
         requireRange(tolerance_s >= 0.0, "--tolerance 不能为负");
         requireRange(interpolate_gap_s >= 0.0, "--interpolate 不能为负");
         requireRange(rpe_delta_s > 0.0, "--rpe-delta 必须为正");
@@ -154,5 +162,19 @@ int main(int argc, char** argv) {
         rpe.params["delta_s"] = rpe_delta_s;
     }
     request.evaluators = {{"ate", ate}, {"rpe", rpe}};
-    return app::evaluateTrajectories(request, app::builtinCatalogs(), std::cout, std::cerr);
+    if (!request.out.empty()) {
+        return app::evaluateTrajectories(request, app::builtinCatalogs(), std::cout, std::cerr);
+    }
+    // 速查：任务记录写在临时目录里，结论打印出来就删掉
+    const auto scratch = std::filesystem::temp_directory_path()
+                         / ("simpleslam-eval-" + std::to_string(::getpid()));
+    request.out = scratch.string();
+    request.overwrite = true;
+    request.keep_record = false;
+    std::error_code ignored;
+    std::filesystem::remove_all(scratch, ignored);
+    const int code =
+        app::evaluateTrajectories(request, app::builtinCatalogs(), std::cout, std::cerr);
+    std::filesystem::remove_all(scratch, ignored);
+    return code;
 }

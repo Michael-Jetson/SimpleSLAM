@@ -186,7 +186,10 @@ struct GateRequest {
 /// 结论对应的进程退出码：通过 0，失败 3，无效 4，不可比较 5（允许时为 0）。
 [[nodiscard]] int exitCodeFor(const BaselineVerdict& verdict, bool allow_incomparable = false);
 
-[[nodiscard]] std::vector<DatasetBaseline> loadBaselines(const std::string& path);
+/// 读基线文件。v2 的写法（`min_pairs`、平铺的 `protocol`、旧指标名）按新写法理解，
+/// 每条换算过的基线写一条说明进 `notes`（给了的话）。
+[[nodiscard]] std::vector<DatasetBaseline> loadBaselines(const std::string& path,
+                                                         std::vector<std::string>* notes = nullptr);
 void writeBaselines(const std::string& path, const std::vector<DatasetBaseline>& baselines);
 
 }  // namespace simpleslam::eval

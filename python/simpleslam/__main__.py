@@ -66,8 +66,11 @@ def _load_config(path: str, schema: Schema | None, tool: str | None) -> Config:
 
 
 def _complete(config: Config, schema: Schema, tool: str | None) -> Config:
-    """完整、自足的任务：自足的 Python 任务直接用，引用了文件或带覆盖项的交给 C++ 展开。"""
-    return config if config.self_contained else config.through_cpp(tool=tool, schema=schema)
+    """完整、自足的任务：自足的 Python 任务直接用；引用了文件、带覆盖项或用了 v2 写法的
+    交给 C++ 展开。"""
+    if config.self_contained and not config.legacy_paths(schema):
+        return config
+    return config.through_cpp(tool=tool, schema=schema)
 
 
 def _print_schema(schema: Schema) -> None:

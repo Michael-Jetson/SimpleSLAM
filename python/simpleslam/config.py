@@ -21,8 +21,9 @@
 规范化导出（:meth:`Config.canonical`）与哈希在 C++ 与 Python 各有一份实现，插件节点
 按 schema 里各实现的字段清单还原，与 C++ 的目录同一口径。重复是刻意的——扫参时
 Python 侧不该为每个变体起一次子进程——但它只在有自动比对的前提下成立：
-``python/tests/test_cpp_parity.py`` 逐字节比两边的输出。读系统文件、应用覆盖项
-这两件事 Python 不做，交给 C++（:meth:`Config.load`、:meth:`Config.through_cpp`）。
+``python/tests/test_cpp_parity.py`` 逐字节比两边的输出。读系统文件、应用覆盖项、换算
+v2 的旧写法这三件事 Python 不做，交给 C++（:meth:`Config.load`、:meth:`Config.through_cpp`）；
+旧写法的路径由 schema 的换算表给出，Python 认得它们，原样渲染。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -468,11 +470,12 @@ class Config:
             path, equals, _ = item.partition("=")
             if not equals or not path:
                 raise ConfigError(f"覆盖项要写成 路径=值，得到 {item}")
-            if path not in schema and _slot_containing(path, schema) is None:
+            known = path in schema or path in schema.legacy
+            if not known and _slot_containing(path, schema) is None:
                 raise ConfigError(f"覆盖项里的未知配置项 {path}")
         for path, value in self._values.items():
-            if path in (SYSTEM_FILE, OVERRIDES):
-                continue
+            if path in (SYSTEM_FILE, OVERRIDES) or path in schema.legacy:
+                continue  # 旧写法由 C++ 换算并核对
             if system_file is not None and path.startswith("system."):
                 raise ConfigError(f"{path}：system 引用了系统文件 {system_file}，"
                                   "改系统参数要写成覆盖项（config.override）")
@@ -490,12 +493,22 @@ class Config:
             _coerce_kind(schema.field(path).type, value, path)
         return self
 
+    def legacy_paths(self, schema: Schema) -> list[str]:
+        """用了 v2 的哪些旧写法。有的话还原与哈希交给 C++（:meth:`through_cpp`）。"""
+        return sorted(path for path in self._values if path in schema.legacy)
+
     def resolved(self, schema: Schema) -> dict[str, Any]:
         """补齐默认值之后的完整取值，按 schema 的字段顺序；插件节点按各实现的字段清单还原。"""
         if not self.self_contained:
             raise ConfigError(
                 "这份任务引用了系统文件或带覆盖项：读文件、应用覆盖项交给 C++，"
                 "先用 through_cpp() 得到完整的任务"
+            )
+        legacy = self.legacy_paths(schema)
+        if legacy:
+            raise ConfigError(
+                f"这份任务用了 v2 的写法（{_join(legacy)}）：换算交给 C++，"
+                "先用 through_cpp() 得到完整的任务；新写法见 schema 的换算表"
             )
         self.validate(schema)
         values = _merged_tables(self._values, schema)
@@ -569,6 +582,12 @@ class Config:
                     order.append(pseudo(SYSTEM_FILE, ""))
                 continue
             order.append(field)
+        # 旧写法的键放进它所在的节，原样渲染，由 C++ 换算
+        for path in self.legacy_paths(schema):
+            section = path.split(".", 1)[0] + "."
+            at = max((i for i, field in enumerate(order) if field.path.startswith(section)),
+                     default=len(order) - 1)
+            order.insert(at + 1, pseudo(path, self._values[path]))
         if OVERRIDES in self._values:
             order.append(pseudo(OVERRIDES, ""))
         return order
@@ -627,13 +646,16 @@ class Config:
         if schema is None:
             schema = Schema.from_tool(binary)
         try:
-            dumped = subprocess.run([binary, "dump", str(path)], capture_output=True,
-                                    text=True, check=True).stdout
+            result = subprocess.run([binary, "dump", str(path)], capture_output=True,
+                                    text=True, check=True)
         except subprocess.CalledProcessError as exc:
             raise ConfigError(f"{binary} dump {path} 失败: {exc.stderr.strip()}") from exc
         except OSError as exc:
             raise ConfigError(f"调用 {binary} 失败: {exc}") from exc
-        return cls.from_yaml(dumped, schema)
+        # C++ 换算旧写法时的说明（带替换用的新写法）照样给人看
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        return cls.from_yaml(result.stdout, schema)
 
     def through_cpp(self, base_dir: str | os.PathLike[str] = ".", tool: str | None = None,
                     schema: Schema | None = None) -> "Config":

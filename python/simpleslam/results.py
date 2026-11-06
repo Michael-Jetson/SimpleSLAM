@@ -1,8 +1,10 @@
-"""任务记录的结论：读 C++ 写的 ``result.json``（格式版本 2），整理成表。
+"""任务记录的结论：读 C++ 写的 ``result.json``，整理成表。
 
-Python 不解析任务记录里的 YAML，也不重新判定任何东西：结论、哪些量进汇总表（评测函数
-标了短名的那几项）、什么时候算没有结果，都是 C++ 写进 ``result.json`` 的。这里只负责
-显示与对比；逐样本的数据在任务记录的 ``evaluation/`` 里，画图直接读那些 CSV。
+读旧写新：格式版本 2 原样读；v2.x 写的第 1 版在内存里换成第 2 版的样子（指标改名，
+四项汇总标上短名），v2 与 v3 的结果能放进一张表。Python 不解析任务记录里的 YAML，也不
+重新判定任何东西：结论、哪些量进汇总表（评测函数标了短名的那几项）、什么时候算没有结果，
+都是 C++ 写进 ``result.json`` 的。这里只负责显示与对比；逐样本的数据在任务记录的
+``evaluation/`` 里，画图直接读那些 CSV。
 """
 
 from __future__ import annotations
@@ -47,6 +49,11 @@ class Row:
     system_hash: str = ""
     problem: str = ""
 
+    @property
+    def metrics(self) -> dict[str, float]:
+        """只读别名：全名 → 数值，v2.x 的操作台里叫这个名字。"""
+        return {name: scalar.value for name, scalar in self.scalars.items()}
+
 
 def read_result(run_dir: Path) -> dict:
     path = Path(run_dir) / "result.json"
@@ -56,10 +63,73 @@ def read_result(run_dir: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ResultError(f"{path} 读不懂: {exc}") from exc
-    if data.get("schema") != RESULT_SCHEMA:
-        raise ResultError(f"{path} 的格式版本是 {data.get('schema')}，"
-                          f"这里只读得懂 {RESULT_SCHEMA}：换用写出它的那个版本的操作台")
+    schema = data.get("schema")
+    if schema == 1:
+        return _upgrade_v1(data)
+    if schema != RESULT_SCHEMA:
+        raise ResultError(f"{path} 的格式版本是 {schema}，这里读得懂 1 与 {RESULT_SCHEMA}："
+                          "换用写出它的那个版本的操作台")
     return data
+
+
+# 第 1 版的汇总四项与它们的短名
+_V1_LABELS = {"ate.translation.rmse": "ATE_t", "ate.rotation.rmse": "ATE_r",
+              "rpe.translation.rmse": "RPE_t", "rpe.rotation.rmse": "RPE_r"}
+
+
+def _v1_name(name: str) -> str:
+    """第 1 版的指标名换成现在的全名。"""
+    renamed = name.replace(".rotation_deg.", ".rotation.")
+    return "ate.max_reference_gap" if renamed == "ate.max_reference_gap_s" else renamed
+
+
+def _v1_unit(name: str) -> str:
+    if name.startswith("ate.translation."):
+        return "m"
+    if name.startswith("ate.rotation."):
+        return "deg"
+    if name == "ate.max_reference_gap":
+        return "s"
+    return ""  # RPE 是否按每米归一，第 1 版的结论里没写
+
+
+def _v1_entries(metrics: dict) -> dict[str, dict]:
+    """第 1 版的平铺指标换成 ``{全名: {value, unit, label}}``。某一族一对都没关联上时
+    这一族不给数，与第 2 版"没有结果的量不给"同一口径。"""
+    empty = {name.split(".", 1)[0] for name, value in metrics.items()
+             if name.endswith(".pairs") and value == 0}
+    # 第 1 版按键名排序；换成第 2 版的先后（平移在旋转前），混在一张表里列序才一致
+    rank = {"translation": 0, "rotation_deg": 1}
+
+    def order(name: str) -> tuple[str, int]:
+        parts = name.split(".")
+        return parts[0], rank.get(parts[1], 2) if len(parts) > 1 else 2
+
+    out: dict[str, dict] = {}
+    for name in sorted(metrics, key=order):
+        value = metrics[name]
+        if name.endswith(".pairs") or name.split(".", 1)[0] in empty:
+            continue
+        full = _v1_name(name)
+        out[full] = {"value": value, "unit": _v1_unit(full), "label": _V1_LABELS.get(full, "")}
+    return out
+
+
+def _upgrade_v1(data: dict) -> dict:
+    """第 1 版的结论换成第 2 版的样子，只在内存里，不改文件。"""
+    if data.get("kind") == "sequences":
+        sequences = [{**item, "dir": item.get("archive", ""),
+                      "scalars": _v1_entries(item.get("metrics", {}))}
+                     for item in data.get("sequences", [])]
+        return {**data, "schema": RESULT_SCHEMA, "sequences": sequences,
+                "mean": _v1_entries(data.get("mean", {}))}
+    evaluations: dict[str, dict] = {}
+    for full, entry in _v1_entries(data.get("metrics", {})).items():
+        family, scalar = full.split(".", 1)
+        evaluation = evaluations.setdefault(family, {"type": family, "scalars": {}, "notes": []})
+        evaluation["scalars"][scalar] = entry
+    return {**data, "schema": RESULT_SCHEMA, "evaluations": evaluations, "trajectories": {},
+            "gate": None}
 
 
 def _scalars(entries: dict, prefix: str = "") -> dict[str, Scalar]:

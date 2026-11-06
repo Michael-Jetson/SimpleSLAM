@@ -265,11 +265,17 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     try {
         info << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
              << "  系统哈希: " << config::systemHash(c) << '\n';
+        for (const auto& note : task.notes) warn << "注意: " << note << '\n';
         // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
         const fs::path dir = run_dir::directory(c);
         run_dir::refuseOccupied(dir, options.overwrite);
         plugin::Dataset dataset = openData(task, runner);
+        if (task.evaluators.empty() && dataset.ground_truth) {
+            // v2 的任务默认评测，v3 没列评测函数就不评：只靠默认值的旧任务认不出来，提示一句
+            info << "提示: 数据有真值，任务里没有评测函数，只跑不评测；要评测就在 "
+                    "evaluation.evaluators 里列出，如 ate: {type: ate}\n";
+        }
         run_dir::prepare(dir, kRunDirFiles);
         fs::create_directories(dir / "trajectory");
         system.logRouter().openFile(dir / "run.log");
@@ -408,6 +414,7 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         if (c.data.sequences.empty()) return runSingle(task, options, out, err);
         out << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
             << "  系统哈希: " << config::systemHash(c) << '\n';
+        for (const auto& note : task.notes) err << "注意: " << note << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
     } catch (const std::exception& e) {
@@ -422,6 +429,15 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
         const fs::path dir(dir_text);
         if (!fs::exists(dir / "task.yaml")) {
             throw std::runtime_error(dir_text + " 不是任务记录：里面没有 task.yaml");
+        }
+        // v2 写的任务记录缺评测的输入（真值、生效的标定、轨迹的语义），补齐要回头读数据、
+        // 还要假设轨迹跟踪的传感器，所以不补：说清楚还能怎么办
+        if (const auto major = run_dir::writtenByMajor(dir); major && *major < 3) {
+            throw std::runtime_error(
+                dir_text + " 是 v" + std::to_string(*major) + " 写的任务记录，缺评测要的输入"
+                "（真值、生效的标定、轨迹的语义）：用现在的版本重跑这个任务（它的 task.yaml "
+                "照样能用），或用 simpleslam-eval 评测它的轨迹"
+                "（--run-report 指向它的 report.yaml）");
         }
         for (const auto& item : overrides) {
             if (!item.starts_with("evaluation.")) {
@@ -467,6 +483,7 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
     try {
         const auto task =
             loadTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()), catalogs);
+        for (const auto& note : task.notes) err << "注意: " << note << '\n';
         if (command == "check") {
             out << "任务有效: " << args[1] << "\n任务哈希: " << config::configHash(task.config)
                 << "\n系统哈希: " << config::systemHash(task.config) << '\n';

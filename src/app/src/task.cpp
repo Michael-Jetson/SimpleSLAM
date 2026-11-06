@@ -24,6 +24,7 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
     ResolvedTask task;
     task.config = std::move(loaded.config);
     task.source = std::move(loaded.source);
+    task.notes = std::move(loaded.notes);
     auto& modules = task.config.system.modules;
     task.data =
         resolveField<plugin::DatasetReader>(task.config.data.source, "data.source", catalogs);

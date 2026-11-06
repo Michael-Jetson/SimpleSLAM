@@ -156,6 +156,21 @@ class ConfigParityTest(unittest.TestCase):
         self.assertEqual(sorted(resolved), ["ate", "rpe", "z9"])
         self.assertEqual(resolved["ate"]["alignment"], "none")
 
+    def test_v2_spelling_goes_through_cpp_to_the_same_task(self):
+        # 旧写法交给 C++ 换算：与新写法得到同一份规范化导出、同一个哈希
+        old = self.base(task={"name": "py", "purpose": "experiment"},
+                        evaluation={"alignment": "sim3", "rpe_delta_s": 1.0})
+        new = self.base(task={"name": "py"}, evaluation={"evaluators": {
+            "ate": {"type": "ate", "alignment": "sim3"}, "rpe": {"type": "rpe", "delta_s": 1.0}}})
+        self.assertEqual(old.legacy_paths(self.schema),
+                         ["evaluation.alignment", "evaluation.rpe_delta_s", "task.purpose"])
+        complete = old.through_cpp(tool=TASK_TOOL, schema=self.schema)
+        self.assertEqual(complete.canonical(self.schema), new.canonical(self.schema))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.yaml"
+            path.write_text(old.to_yaml(self.schema), encoding="utf-8")
+            self.assertEqual(run(TASK_TOOL, "hash", str(path)).strip(), new.hash(self.schema))
+
     def test_evaluator_names_follow_cpp_rules(self):
         for name in ("ate.v2", "ate-2", ""):
             config = self.base(evaluation={"evaluators": {name: {"type": "ate"}}})

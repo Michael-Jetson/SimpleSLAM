@@ -63,6 +63,9 @@ void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const
 /// 读回 `<dir>/outcome.yaml` 里"运行是否完整"。读不懂就抛。
 [[nodiscard]] bool readComplete(const fs::path& dir);
 
+/// 写这份任务记录的软件的大版本号（`identity.yaml` 的 `software_version`）；读不出来时为空。
+[[nodiscard]] std::optional<int> writtenByMajor(const fs::path& dir);
+
 /// 一个标量在结论里的样子：值、单位、进汇总表时的短名。
 struct ScalarValue {
     double value = 0.0;

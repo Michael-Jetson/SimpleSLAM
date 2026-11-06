@@ -7,8 +7,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <fstream>
+#include <map>
 #include <set>
+#include <string_view>
 
 namespace simpleslam::eval {
 
@@ -305,7 +308,63 @@ int exitCodeFor(const BaselineVerdict& verdict, bool allow_incomparable) {
     return 4;
 }
 
-std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
+namespace {
+
+/// v2 基线里的指标名换成现在的名字。
+std::string upgradeMetric(const std::string& name) {
+    std::string out = name;
+    if (const auto at = out.find(".rotation_deg."); at != std::string::npos) {
+        out.replace(at, std::string_view(".rotation_deg.").size(), ".rotation.");
+    }
+    if (out.ends_with(".pairs")) out.replace(out.size() - 6, 6, ".samples");
+    if (out == "ate.max_reference_gap_s") out = "ate.max_reference_gap";
+    return out;
+}
+
+/// v2 的平铺协议换成按评测函数的协议：对齐给 ate，关联的三项给 ate 与 rpe，RPE 的间隔给
+/// rpe。数值写成与评测函数参数相同的最短往返形式，没写的取 v2 的默认值；v2 比的是实际用的
+/// 对齐方式，现在比请求的，所以先取 alignment_requested。
+std::map<std::string, Protocol> upgradeProtocol(const YAML::Node& old,
+                                                std::vector<std::string>& upgraded) {
+    const auto text = [&](const char* key, const char* fallback) {
+        const YAML::Node node = old[key];
+        const std::string value = node ? node.as<std::string>() : std::string();
+        return value.empty() ? std::string(fallback) : value;
+    };
+    const auto number = [&](const char* key, double fallback) {
+        const YAML::Node node = old[key];
+        return std::format("{}", node ? node.as<double>() : fallback);
+    };
+    Protocol shared{{"association", text("association", "nearest")},
+                    {"tolerance_s", number("association_tolerance_s", 0.02)},
+                    {"max_interpolation_gap_s", number("max_interpolation_gap_s", 0.15)},
+                    {"estimate", "odometry"}};
+    std::map<std::string, Protocol> out;
+    Protocol ate = shared;
+    ate["type"] = "ate";
+    ate["alignment"] = text("alignment_requested", text("alignment", "se3").c_str());
+    out["ate"] = std::move(ate);
+    if (const std::string kind = text("rpe_delta_kind", ""); !kind.empty()) {
+        const double delta = old["rpe_delta"] ? old["rpe_delta"].as<double>() : 0.0;
+        Protocol rpe = shared;
+        rpe["type"] = "rpe";
+        rpe["delta_m"] = std::format("{}", kind == "distance" ? delta : 100.0);
+        rpe["delta_s"] = std::format("{}", kind == "time" ? delta : 0.0);
+        out["rpe"] = std::move(rpe);
+    }
+    upgraded.push_back(std::string("protocol 换成按评测函数的 evaluators（ate")
+                       + (out.count("rpe") != 0 ? "、rpe" : "") + "）");
+    const auto nonzero = [&](const char* key) { return old[key] && old[key].as<double>() != 0.0; };
+    if (nonzero("window_begin_s") || nonzero("window_end_s")) {
+        upgraded.emplace_back("时间窗不再核对：目标窗口现在属于有效输入");
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<DatasetBaseline> loadBaselines(const std::string& path,
+                                           std::vector<std::string>* notes) {
     YAML::Node root;
     try {
         root = YAML::LoadFile(path);
@@ -323,7 +382,8 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
         for (const auto& item : entry) {
             static const std::set<std::string> known{
                 "dataset", "config_hash", "groundtruth_digest", "recorded_at", "note",
-                "min_samples", "bounds", "evaluators", "prefix"};
+                "min_samples", "bounds", "evaluators", "prefix",
+                "min_pairs", "protocol"};  // 后两个是 v2 的写法，下面换算
             const auto key = item.first.as<std::string>();
             if (known.count(key) == 0) throw BaselineError("基线条目里有未知键 " + key + ": " + path);
         }
@@ -341,6 +401,26 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
         if (entry["recorded_at"]) baseline.recorded_at = entry["recorded_at"].as<std::string>();
         if (entry["note"]) baseline.note = entry["note"].as<std::string>();
         if (entry["min_samples"]) baseline.min_samples = entry["min_samples"].as<double>();
+        std::vector<std::string> upgraded;  // 这一条基线换算过的 v2 写法
+        if (entry["min_pairs"]) {
+            if (entry["min_samples"]) {
+                throw BaselineError("基线 " + baseline.dataset
+                                    + " 新旧写法混用：写了 min_samples，又写了 min_pairs: " + path);
+            }
+            baseline.min_samples = entry["min_pairs"].as<double>();
+            upgraded.emplace_back("min_pairs 改叫 min_samples");
+        }
+        if (const YAML::Node protocol = entry["protocol"]) {
+            if (entry["evaluators"]) {
+                throw BaselineError("基线 " + baseline.dataset
+                                    + " 新旧写法混用：写了 evaluators，又写了 protocol: " + path);
+            }
+            if (!protocol.IsMap()) {
+                throw BaselineError("基线 " + baseline.dataset + " 的 protocol 必须是映射: "
+                                    + path);
+            }
+            baseline.evaluators = upgradeProtocol(protocol, upgraded);
+        }
         if (const YAML::Node evaluators = entry["evaluators"]) {
             if (!evaluators.IsMap()) {
                 throw BaselineError("基线 " + baseline.dataset + " 的 evaluators 必须是映射: "
@@ -365,7 +445,9 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
         }
         for (const auto& item : bounds) {
             MetricBound bound;
-            bound.metric = item.first.as<std::string>();
+            const auto written = item.first.as<std::string>();
+            bound.metric = upgradeMetric(written);
+            if (bound.metric != written) upgraded.push_back(written + " 改叫 " + bound.metric);
             const YAML::Node& value = item.second;
             if (value.IsScalar()) {
                 bound.max_value = value.as<double>();  // 标量默认按上限理解
@@ -386,6 +468,17 @@ std::vector<DatasetBaseline> loadBaselines(const std::string& path) {
         // 入仓即校验：写错的基线会静静地放行一切，越早报越好
         if (const auto problem = validateBaseline(baseline); !problem.empty()) {
             throw BaselineError("基线 " + baseline.dataset + " 不合法（" + problem + "）: " + path);
+        }
+        if (!upgraded.empty() && notes != nullptr) {
+            std::string note = "基线 " + baseline.dataset + " 用了 v2 的写法，已按新写法理解：";
+            for (std::size_t i = 0; i < upgraded.size(); ++i) {
+                note += (i == 0 ? "" : "；") + upgraded[i];
+            }
+            if (!baseline.config_hash.empty()) {
+                note += "。它的 config_hash 按 v2 的口径算，与现在的有效身份对不上，"
+                        "门禁会判不可比较：改成任务记录 identity.yaml 里的 effective_hash";
+            }
+            notes->push_back(std::move(note));
         }
         baselines.push_back(std::move(baseline));
     }

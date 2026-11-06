@@ -12,6 +12,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <vector>
 
 using namespace simpleslam::eval;
 
@@ -261,9 +262,49 @@ TEST_CASE("协议与真值摘要随基线文件往返", "[eval][baseline]") {
     CHECK(loaded.front().min_samples == 30.0);
     CHECK(loaded.front().evaluators == baseline.evaluators);
 
-    std::ofstream(path) << "baselines:\n  - dataset: demo\n    min_pairs: 3\n    bounds:\n"
+    std::ofstream(path) << "baselines:\n  - dataset: demo\n    min_sample: 3\n    bounds:\n"
                            "      ate.translation.rmse: 0.5\n";
     CHECK_THROWS_AS(loadBaselines(path.string()), BaselineError);  // 未知键一律拒绝
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("v2 的基线照样能读：min_pairs、平铺的协议、旧指标名按新写法理解", "[eval][baseline]") {
+    const auto path = tempFile("simpleslam_baselines_v2.yaml");
+    std::ofstream(path) << "baselines:\n  - dataset: kitti/00\n    config_hash: 0123456789abcdef\n"
+                           "    min_pairs: 30\n    protocol:\n      alignment: se3\n"
+                           "      alignment_requested: sim3\n      association: nearest\n"
+                           "      association_tolerance_s: 0.02\n"
+                           "      max_interpolation_gap_s: 0.15\n"
+                           "      rpe_delta_kind: distance\n      rpe_delta: 100\n"
+                           "      rpe_normalized: true\n      window_begin_s: 0\n"
+                           "      window_end_s: 0\n"
+                           "    bounds:\n      ate.translation.rmse: 1.0\n"
+                           "      ate.rotation_deg.rmse: 5.0\n      ate.coverage: {min: 0.9}\n";
+    std::vector<std::string> notes;
+    const auto loaded = loadBaselines(path.string(), &notes);
+    REQUIRE(loaded.size() == 1);
+    const auto& baseline = loaded.front();
+    CHECK(baseline.min_samples == 30.0);
+    // 与执行器按评测函数还原后的参数同一种写法：门禁才比得上
+    CHECK(baseline.evaluators.at("ate")
+          == Protocol{{"type", "ate"}, {"alignment", "sim3"}, {"association", "nearest"},
+                      {"estimate", "odometry"}, {"max_interpolation_gap_s", "0.15"},
+                      {"tolerance_s", "0.02"}});
+    CHECK(baseline.evaluators.at("rpe")
+          == Protocol{{"type", "rpe"}, {"association", "nearest"}, {"delta_m", "100"},
+                      {"delta_s", "0"}, {"estimate", "odometry"},
+                      {"max_interpolation_gap_s", "0.15"}, {"tolerance_s", "0.02"}});
+    REQUIRE(baseline.bounds.size() == 3);
+    CHECK(baseline.bounds[1].metric == "ate.rotation.rmse");
+    REQUIRE(notes.size() == 1);
+    CHECK(notes.front().find("用了 v2 的写法") != std::string::npos);
+    CHECK(notes.front().find("ate.rotation_deg.rmse 改叫 ate.rotation.rmse") != std::string::npos);
+    CHECK(notes.front().find("config_hash 按 v2 的口径算") != std::string::npos);
+
+    // 新旧写法混用报错
+    std::ofstream(path) << "baselines:\n  - dataset: demo\n    min_pairs: 3\n    min_samples: 3\n"
+                           "    bounds:\n      ate.translation.rmse: 0.5\n";
+    CHECK_THROWS_AS(loadBaselines(path.string()), BaselineError);
     std::filesystem::remove(path);
 }
 

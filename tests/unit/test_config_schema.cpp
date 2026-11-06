@@ -15,6 +15,8 @@
 #include <fstream>
 #include <string>
 #include <unistd.h>
+#include <variant>
+#include <vector>
 
 using namespace simpleslam;
 using namespace simpleslam::config;
@@ -147,18 +149,90 @@ TEST_CASE("未知的空映射也是未知键", "[config]") {
     CHECK_THROWS_AS(load("system:\n  nope: {}\n"), ConfigError);
 }
 
+TEST_CASE("v2 的写法照样能用：加载时换算成新写法，哈希相同，说明里给出新写法", "[config][legacy]") {
+    const std::string v2 =
+        "task:\n  name: old\n  purpose: experiment\n"
+        "evaluation:\n  format: kitti\n  alignment: sim3\n  association: interpolate\n"
+        "  association_tolerance_s: 0.03\n  max_interpolation_gap_s: 0.2\n"
+        "  rpe_delta_m: 0\n  rpe_delta_s: 1.5\n  baselines: b.yaml\n";
+    const std::string v3 =
+        "task:\n  name: old\n"
+        "evaluation:\n  baselines: b.yaml\n  evaluators:\n"
+        "    ate: {type: ate, alignment: sim3, association: interpolate, tolerance_s: 0.03,"
+        " max_interpolation_gap_s: 0.2}\n"
+        "    rpe: {type: rpe, association: interpolate, tolerance_s: 0.03,"
+        " max_interpolation_gap_s: 0.2, delta_m: 0, delta_s: 1.5}\n"
+        "outputs:\n  kitti_trajectories: true\n";
+    const auto old = loadTaskString(v2, "<v2>");
+    const auto now = loadTaskString(v3, "<v3>");
+    CHECK(dumpConfig(old.config) == dumpConfig(now.config));
+    CHECK(configHash(old.config) == configHash(now.config));
+    CHECK(now.notes.empty());
+    REQUIRE(old.notes.size() == 1);
+    CHECK(old.notes.front().find("用了 v2 的写法（task.purpose、evaluation.format")
+          != std::string::npos);
+    CHECK(old.notes.front().find("ate: {type: ate, alignment: sim3") != std::string::npos);
+    CHECK(old.notes.front().find("kitti_trajectories: true") != std::string::npos);
+
+    // v2 默认做实验：没写 purpose、只写了旧的评测字段也评测
+    const auto implied = load("evaluation:\n  alignment: se3\n");
+    CHECK(implied.evaluation.evaluators.count("ate") == 1);
+    CHECK(implied.evaluation.evaluators.count("rpe") == 1);
+    // purpose: run 不评测，旧的评测字段一并忽略
+    const auto run_only = load("task:\n  purpose: run\nevaluation:\n  alignment: sim3\n");
+    CHECK(run_only.evaluation.evaluators.empty());
+    // 两个 RPE 间隔都为 0：v2 不算 RPE
+    const auto no_rpe = load("evaluation:\n  rpe_delta_m: 0\n  rpe_delta_s: 0\n");
+    CHECK(no_rpe.evaluation.evaluators.count("rpe") == 0);
+    CHECK(no_rpe.evaluation.evaluators.count("ate") == 1);
+    // 新旧写法混用、旧写法写错了取值，都报错
+    CHECK_THROWS_AS(load("task:\n  purpose: run\nevaluation:\n  evaluators: {}\n"), ConfigError);
+    CHECK_THROWS_AS(load("evaluation:\n  format: kitti\noutputs:\n  kitti_trajectories: true\n"),
+                    ConfigError);
+    CHECK_THROWS_AS(load("evaluation:\n  format: ply\n"), ConfigError);
+}
+
+TEST_CASE("v2 的覆盖项照样能用：按新写法应用，说明里写明", "[config][legacy]") {
+    const std::string v3 =
+        "evaluation:\n  evaluators:\n    ate: {type: ate}\n    rpe: {type: rpe}\n";
+    const auto applied = [&](const std::vector<std::string>& overrides) {
+        return loadTaskString(v3, "<v3>", ".", overrides);
+    };
+    auto run = applied({"task.purpose=run"});
+    CHECK(run.config.evaluation.evaluators.empty());
+    REQUIRE(run.notes.size() == 1);
+    CHECK(run.notes.front().find("task.purpose=run 是 v2 的写法") != std::string::npos);
+
+    const auto aligned = applied({"evaluation.alignment=sim3"});
+    const auto& ate = aligned.config.evaluation.evaluators.at("ate");
+    CHECK(std::get<std::string>(ate.params.at("alignment")) == "sim3");
+    const auto tolerant = applied({"evaluation.association_tolerance_s=0.05"});
+    CHECK(tolerant.config.evaluation.evaluators.at("ate").params.count("tolerance_s") == 1);
+    CHECK(tolerant.config.evaluation.evaluators.at("rpe").params.count("tolerance_s") == 1);
+    // 两个间隔都为 0：按 v2 的意思去掉 rpe
+    const auto dropped = applied({"evaluation.rpe_delta_m=0"});
+    CHECK(dropped.config.evaluation.evaluators.count("rpe") == 0);
+    CHECK(dropped.notes.back().find("不算 RPE") != std::string::npos);
+    CHECK(applied({"evaluation.format=kitti"}).config.outputs.kitti_trajectories);
+    // 没评测函数时，task.purpose=experiment 按 v2 的默认评 ate 与 rpe
+    const auto experiment = loadTaskString("", "<empty>", ".", {"task.purpose=experiment"});
+    CHECK(experiment.config.evaluation.evaluators.size() == 2);
+    // 要改的评测函数不在任务里：说清楚，不悄悄新建
+    CHECK_THROWS_AS(loadTaskString("", "<empty>", ".", {"evaluation.alignment=sim3"}), ConfigError);
+    CHECK_THROWS_AS(applied({"task.purpose=benchmark"}), ConfigError);
+}
+
 TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: 0\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: -0.1\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: nan\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: 1e400\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  pipeline: slam\n"), ConfigError);
-    CHECK_THROWS_AS(load("task:\n  purpose: experiment\n"), ConfigError);  // 评不评看评测函数
+    CHECK_THROWS_AS(load("task:\n  purpose: benchmark\n"), ConfigError);  // 旧写法也查取值
     CHECK_THROWS_AS(load("evaluation:\n  evaluators:\n    ate.v2: {type: ate}\n"), ConfigError);
     CHECK_THROWS_AS(load("evaluation:\n  evaluators:\n    ate: {alignment: se3}\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  mode: realtime\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  name: \"\"\n"), ConfigError);
-    CHECK_THROWS_AS(load("evaluation:\n  alignment: umeyama\n"), ConfigError);
     CHECK_THROWS_AS(
         load("system:\n  modules:\n    graph_optimizer:\n      odometry_rotation_weight: 0\n"),
         ConfigError);

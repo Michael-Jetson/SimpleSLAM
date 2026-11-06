@@ -350,7 +350,11 @@ EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
 
     std::vector<eval::DatasetBaseline> baselines;
     outcome.baselines = c.evaluation.baselines;
-    if (!outcome.baselines.empty()) baselines = eval::loadBaselines(outcome.baselines);
+    if (!outcome.baselines.empty()) {
+        std::vector<std::string> notes;
+        baselines = eval::loadBaselines(outcome.baselines, &notes);
+        for (const auto& note : notes) out << "注意: " << note << '\n';
+    }
     request.dataset = c.task.name;
     request.config_hash = inputs.effectiveHash();
     if (const fs::path truth = dir / "trajectory" / "groundtruth.tum"; fs::exists(truth)) {
