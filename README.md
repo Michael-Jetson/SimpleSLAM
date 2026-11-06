@@ -53,11 +53,11 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 
 | 层级 | 用户画像 | 使用方式 |
 |------|---------|---------|
-| L1 — YAML 驱动 | 算法评测、快速验证 | 写一份任务 YAML：哪个系统、哪份数据、离线还是在线、做实验还是只出结果 |
+| L1 — YAML 驱动 | 算法评测、快速验证 | 写一份任务 YAML：哪个系统、哪份数据、离线还是在线、评测不评测 |
 | L2 — 手工装配 | 系统工程师 | 写 `main.cpp`，直接构造组件、按接口组装 |
 | L3 — 原始组件 | 算法研究者 | 直接 `#include` 单个组件当独立库用，比如 `algo/` 里的滤波与配准地图 |
 
-一次运行是一个**任务**：用哪个 SLAM 系统、处理哪份数据、离线还是在线、做实验还是只出结果。它由两份 YAML 描述，系统写一次，换数据、换运行方式只改任务（简化自 `configs/systems/my_lio.yaml` 与 `configs/tasks/kitti_odometry.yaml`）：
+一次运行是一个**任务**：用哪个 SLAM 系统、处理哪份数据、离线还是在线、评测不评测。它由两份 YAML 描述，系统写一次，换数据、换运行方式只改任务（简化自 `configs/systems/my_lio.yaml` 与 `configs/tasks/kitti_odometry.yaml`）：
 
 ```yaml
 # 系统：管线、模块与插件。带 type 的节点选一个实现，其余键是它的参数，槽可以嵌套
@@ -69,14 +69,19 @@ modules:
 
 ```yaml
 # 任务：在 KITTI 00 上离线跑这个系统，并对真值评测
-task: {name: kitti-00, purpose: experiment, mode: offline}
+task: {name: kitti-00, mode: offline}
 system: ../systems/my_lio.yaml
 data:
   source: {type: kitti_odometry, path: /data/kitti/odometry/sequences/00}
-evaluation: {alignment: se3}
+evaluation:
+  evaluators:                     # 列了评测函数就评，没列就只跑
+    ate: {type: ate, alignment: se3}
+    rpe: {type: rpe, delta_m: 100}
 ```
 
-命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个任务档案目录：还原后的完整任务、身份与哈希、运行结局、三条轨迹、评测报告；同一个任务原样重跑，得到同一个任务哈希。
+命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个**任务记录**目录：还原后的完整任务、身份与哈希、运行结局、轨迹与真值、生效的标定、结论 `result.json` 和逐样本的评测表格；同一个任务原样重跑，得到同一个任务哈希。
+
+评测是可选的，只读任务记录，所以跑完立刻评与事后补评数字一样：`<入口> evaluate <任务记录> [evaluation.…=值]` 补评，或换评测函数、换协议重评，不重跑；`simpleslam-eval <估计> <真值> --out <目录>` 评测别的系统跑出来的轨迹，写成同一种任务记录，能和自己的结果放进一张表。评测函数与算法插件是同一套机制，内置 `ate`、`rpe`，用户写的在入口里登记，一样在任务里选。
 
 写错了在运行之前就报，带完整路径和可选项，例如
 `system.modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
@@ -89,7 +94,7 @@ evaluation: {alignment: se3}
 
 - **新栈**（2026-09 起）：进程内通信运行时、框架契约、模块层，以及评测、录制回放、配置三层工程设施。目标是写算法的人只实现算法接口，其余工程事务由框架承担。
   - **插件槽与目录**（`config/plugin.hpp`）：每个接口一张目录，YAML 里按类型名选实现。未知参数、类型不符、取值不合法都在装配时报错；内置实现由框架登记，用户实现在应用入口追加，不改框架代码。
-  - **任务与执行器**（`app/`）：一份任务 YAML 引用一份系统 YAML；执行器还原任务、打开数据、按管线装配、离线跑完、写任务档案、评测并过基线门禁。离线是单线程步进、结果逐位可复现；在线是一个模块一个线程，按数据的真实时间节奏回放。一个任务也可以列出一个数据集的多个序列（如 KITTI 00–10），每个序列在一个子进程里跑，最后汇总成一张表。用户的入口只有几行：登记自己的实现，再交给执行器。任务也能用 Python 写，方便按传感器参数计算配置、批量生成扫参任务（`configs/tasks/example.py`）。
+  - **任务与执行器**（`app/`）：一份任务 YAML 引用一份系统 YAML；执行器还原任务、打开数据、按管线装配、离线跑完、写任务记录；任务里列了评测函数就评测，并过基线门禁。离线是单线程步进、结果逐位可复现；在线是一个模块一个线程，按数据的真实时间节奏回放。一个任务也可以列出一个数据集的多个序列（如 KITTI 00–10），每个序列在一个子进程里跑，最后汇总成一张表。用户的入口只有几行：登记自己的实现，再交给执行器。任务也能用 Python 写，方便按传感器参数计算配置、批量生成扫参任务（`configs/tasks/example.py`）。
   - **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
 
   **目前还没有真实算法跑过**：示例里只有占位的 `MyLio`，第一个方案还在写。
@@ -112,8 +117,10 @@ evaluation: {alignment: se3}
 ```bash
 ./run.py demo                       # 合成最小 KITTI 夹具，跑通整条链路，打印摘要
 ./run.py configs/tasks/kitti_odometry.yaml data.source.path=/data/kitti/odometry/sequences/00
-./run.py show runs/kitti-00         # 一个档案的摘要
-./run.py compare runs/a runs/b      # 几次运行的对比表，--csv 导出成表格文件
+./run.py show runs/kitti-00         # 一份任务记录的摘要
+./run.py evaluate runs/kitti-00 'evaluation.evaluators.ate_sim3={type: ate, alignment: sim3}'
+                                    # 单独评测：加一个按 Sim3 对齐的 ATE 重评，不重跑
+./run.py compare runs/a runs/b      # 几次运行的对比表，--metrics 挑指标，--csv 导出成表格文件
 ./run.py configs/tasks/example.py   # Python 写的任务；sweep 子命令跑它的一组扫参变体
 ./run.py impls                      # 入口里登记了哪些实现、各有哪些参数
 ```
@@ -121,7 +128,7 @@ evaluation: {alignment: se3}
 - 默认在本机构建 Release，构建目录是 `build/release`；环境变量 `SIMPLESLAM_BUILD_ROOT` 可以把它放到别处，`--debug` 换成 Debug，`--docker` 在开发镜像里做同样的事。
 - 入口默认是示例 `simpleslam_lio_skeleton`；你的算法用登记了它的入口：`--entry <CMake 目标名或可执行文件>`，或环境变量 `SIMPLESLAM_ENTRY`。
 - 数据集路径用覆盖项给，或者把自己的任务文件放进 `configs/local/`（不入库）。
-- 每次运行的结果是一个档案目录（默认 `runs/<任务名>`），`result.json` 是给程序读的摘要，`run.log` 是这次运行的全量日志。
+- 每次运行的结果是一个任务记录目录（默认 `runs/<任务名>`）：`result.json` 是给程序读的结论（各评测函数的结果与门禁），`evaluation/` 里是逐样本的表格（CSV），`run.log` 是这次运行的全量日志。
 
 ### 环境要求
 
@@ -167,10 +174,10 @@ include/SimpleSLAM/   # 公共头文件
          plugins/（算法插件：里程计、位置识别、图优化，数据集读取器）
          modules/（模块层：把插件接到总线与资源上）
          eval/（评测）、record/（录制回放）、config/（配置、插件槽与目录）
-         app/（入口层：目录、任务还原、执行器与任务档案）
+         app/（入口层：目录、任务还原、执行器、任务记录与评测）
 src/                  # 各模块库实现（纯头模块仅 CMakeLists）
 apps/                 # simpleslam_run（旧栈的 L1 入口，YAML 驱动离线回放）
-tools/                # simpleslam（任务入口，只带内置实现）、simpleslam-config（schema / check / dump / hash）、simpleslam-eval（精度与基线门禁）
+tools/                # simpleslam（任务入口，只带内置实现）、simpleslam-config（schema / check / dump / hash）、simpleslam-eval（评测外部轨迹、过基线门禁）
 examples/lio_skeleton # 用户入口的范例：登记 my_lio，再交给执行器；算法在 my_lio.hpp
 run.py                # 一键入口，等同 python -m simpleslam
 python/simpleslam/    # Python 侧：操作台（构建、跑任务、看结果）、任务渲染与扫参、轨迹读写、指标
