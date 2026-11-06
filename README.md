@@ -79,9 +79,9 @@ evaluation:
     rpe: {type: rpe, delta_m: 100}
 ```
 
-命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个**任务记录**目录：还原后的完整任务（原样能重跑）、原始的任务与系统文件（`source/`）、运行结局与实际生效的输入、轨迹与真值、生效的标定、结论 `result.json` 和逐样本的评测表格。任务靠名字区分；两份任务有什么不同，用 `<入口> dump` 导出之后比一比。
+命令行上的 `路径=值` 覆盖任意字段，例如 `system.modules.odometry.plugin.keyframe_distance_m=2`。结果写进一个**任务记录**目录：还原后的完整任务（原样能重跑）、原始的任务与系统文件（`source/`）、运行结局与实际生效的输入、模块与插件记下的度量（`metrics.csv`）与事件（`events.jsonl`）、轨迹与真值、生效的标定、结论 `result.json` 和逐样本的评测表格。任务靠名字区分；两份任务有什么不同，用 `<入口> dump` 导出之后比一比。
 
-评测是可选的，只读任务记录，所以跑完立刻评与事后补评数字一样：`<入口> evaluate <任务记录> [evaluation.…=值]` 补评，或换评测函数、换参数重评，不重跑；`simpleslam-eval <估计> <真值> --out <目录>` 评测别的系统跑出来的轨迹，写成同一种任务记录，能和自己的结果放进一张表（不给 `--out` 时只打印结论）。评测函数与算法插件是同一套机制，内置 `ate`、`rpe`，用户写的在入口里登记，一样在任务里选。评测只算数、写表，不判通过与否；退出码只说运行是否完整（0 完整，4 跑完但不完整，1 出错）。
+评测是可选的，只读任务记录，所以跑完立刻评与事后补评数字一样：`<入口> evaluate <任务记录> [evaluation.…=值]` 补评，或换评测函数、换参数重评，不重跑；`simpleslam-eval <估计> <真值> --out <目录>` 评测别的系统跑出来的轨迹，写成同一种任务记录，能和自己的结果放进一张表（不给 `--out` 时只打印结论）。评测函数与算法插件是同一套机制，内置 `ate`（对齐可选 none、first_pose、se3、sim3，以及给 VIO 的位置加航向 posyaw）、`rpe`、`kitti`（KITTI 官方口径的分段误差）、`timing`（每帧耗时的均值、中位数、p95、最大值），用户写的在入口里登记，一样在任务里选。`evaluation.online` 选其中几个在跑的时候按数据时间定期评，长序列看着跑、跑飞了早发现；在线的数字只记成度量，结论只收跑完之后的评测。多序列汇总时，`kitti` 这类带权重的量按段数加权平均，与官方把各序列的段合在一起平均一致。评测只算数、写表，不判通过与否；退出码只说运行是否完整（0 完整，4 跑完但不完整，1 出错）。
 
 写错了在运行之前就报，带完整路径和可选项，例如
 `system.modules.odometry.plugin.map.type = voxel_downsample：这里要求 LinearizableMap，voxel_downsample 是 ScanFilter 的实现；满足的实现有 voxel_point_map`。
@@ -98,7 +98,7 @@ evaluation:
   - **算法库**（`algo/`）：可替换步骤的接口与第一批实现。扫描滤波有 `voxel_downsample` 和 `none`；配准地图有 `voxel_point_map`（体素哈希、点到点，对标 KISS-ICP）。每个接口带契约测试模板，内置实现逐个自动受测。
 
   **目前还没有真实算法跑过**：示例里只有占位的 `MyLio`，第一个方案还在写。
-- **旧栈**：基础设施、点云原语与纯 LO（`configs/lo_kissicp.yaml` 可跑），精度基线验收待做。
+- **旧栈**：基础设施、点云原语与纯 LO（`configs/lo_kissicp.yaml` 可跑），在 KITTI 上的精度还没量。
 
 接下来：
 
