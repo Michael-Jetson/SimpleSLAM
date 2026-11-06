@@ -7,7 +7,7 @@
 /// 标定：外参、IMU 噪声模型、激光量程。一份设备档案，一个版本号。
 ///
 /// 为什么是资源而不是配置字段：标定被多个模块读（里程计要外参去畸变、后端要它判断
-/// 结果是否兼容、录制要把它写进回放包），而且在线标定会改它——"有状态、多读者、
+/// 结果是否兼容、任务记录要存下这次生效的那份），而且在线标定会改它——"有状态、多读者、
 /// 单写者"正是三分法里资源的定义。
 ///
 /// `revision` 不是装饰：`SolutionIdentity::compatibleWith` 拿它判断异步结果是否
@@ -113,7 +113,7 @@ struct CalibrationData {
     /// 之后都会动。版本与内容必须同出一源，否则"这一帧用的是哪份标定"就说不准。
     /// 装配路径见 `SlamResources::setCalibration()`。
     std::uint64_t revision = 0;
-    std::string device;  ///< 设备档案名，进实验回放包
+    std::string device;  ///< 设备档案名，开始运行时打印出来
     std::map<SensorName, Extrinsic> extrinsics;
     ImuIntrinsics imu;
     std::map<SensorName, LidarIntrinsics> lidars;

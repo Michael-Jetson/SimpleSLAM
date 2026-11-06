@@ -56,8 +56,4 @@ void writeTrajectory(const std::string& path, const Trajectory& trajectory,
 /// 按扩展名与内容猜格式。猜不出来就报错，不默认成某一种。
 [[nodiscard]] TrajectoryFormat detectTrajectoryFormat(const std::string& path);
 
-/// 轨迹文件的内容摘要（逐字节）。运行报告用它绑定"我描述的是哪条轨迹"：
-/// 评测外部轨迹拿运行结论当完整性凭据时，先核对摘要与眼前这条轨迹一致。
-[[nodiscard]] std::string trajectoryFileDigest(const std::string& path);
-
 }  // namespace simpleslam::eval

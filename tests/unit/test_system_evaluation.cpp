@@ -7,13 +7,9 @@
 /// 从一次运行到可复现的第二次运行，中间没有一步需要算法作者自己搭。
 
 #include <SimpleSLAM/config/loader.hpp>
-#include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/app/bindings.hpp>
-#include <SimpleSLAM/record/bundle.hpp>
-#include <SimpleSLAM/record/reader.hpp>
-#include <SimpleSLAM/record/writer.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -65,6 +61,20 @@ private:
     int emitted_scans_ = 0;
     std::int64_t next_imu_ns_ = 0;
     std::int64_t next_scan_ns_ = kScanPeriodNs;
+};
+
+/// 读到一半就断了的来源：数据给到一半，终态报不完整（文件被截断时就是这样）。
+class CutShortSource final : public fw::ISensorSource {
+public:
+    explicit CutShortSource(int scans) : inner_(scans) {}
+    std::optional<fw::SensorDatum> next() override { return inner_.next(); }
+    [[nodiscard]] std::string name() const override { return "CutShortSource"; }
+    [[nodiscard]] fw::SourceOutcome outcome() const override {
+        return fw::SourceOutcome::kIncomplete;
+    }
+
+private:
+    SyntheticSource inner_;
 };
 
 /// 与合成运动一致的里程计。写真实算法时换掉 track() 即可。
@@ -191,9 +201,7 @@ TEST_CASE("轨迹导出之后能被再读回来", "[system][eval][io]") {
     std::filesystem::remove(path);
 }
 
-TEST_CASE("录制之后回放得到逐位相同的结果", "[system][record]") {
-    const auto path = tempFile("simpleslam_system_run.ssrec");
-
+TEST_CASE("同一份输入离线跑两次，结果逐位相同", "[system][determinism]") {
     auto runAndCollect = [](std::unique_ptr<fw::ISensorSource> source) {
         modules::SlamSystem system(offlineOptions());
         system.setSource(std::move(source));
@@ -210,24 +218,11 @@ TEST_CASE("录制之后回放得到逐位相同的结果", "[system][record]") {
         return values;
     };
 
-    record::RecordMetadata metadata;
-    metadata.name = "replay-determinism";
-    metadata.config_hash = config::configHash(config::TaskConfig{});
-    auto writer = std::make_shared<record::RecordWriter>(path.string(), metadata);
-
-    const auto live = runAndCollect(std::make_unique<record::RecordingSource>(
-        std::make_unique<SyntheticSource>(16), writer));
-    writer->close();
-
-    const auto replayed = runAndCollect(std::make_unique<record::ReplaySource>(path.string()));
-
-    REQUIRE(replayed.size() == live.size());
-    CHECK(replayed == live);  // 逐位相同，不是近似相等
-
-    record::ReplaySource inspect(path.string());
-    CHECK(inspect.metadata().name == "replay-determinism");
-    CHECK(inspect.metadata().config_hash == config::configHash(config::TaskConfig{}));
-    std::filesystem::remove(path);
+    const auto first = runAndCollect(std::make_unique<SyntheticSource>(16));
+    const auto second = runAndCollect(std::make_unique<SyntheticSource>(16));
+    REQUIRE(!first.empty());
+    REQUIRE(second.size() == first.size());
+    CHECK(second == first);  // 逐位相同，不是近似相等
 }
 
 TEST_CASE("配置驱动打包器：纯 LiDAR 声明不需要 IMU", "[system][config]") {
@@ -266,53 +261,6 @@ TEST_CASE("配置的运行期可调部分进参数存储", "[system][config]") {
     CHECK(snapshot->get<double>("/slam/graph_optimizer/odometry_translation_weight") == 1.7);
 }
 
-TEST_CASE("实验回放包把配置、输入、种子钉在一起", "[system][record][bundle]") {
-    const auto record_path = tempFile("simpleslam_bundle_run.ssrec");
-    auto config = config::TaskConfig{};
-    config.task.name = "bundle-demo";
-    config.task.seed = 7;
-
-    {
-        auto writer = std::make_shared<record::RecordWriter>(record_path.string());
-        modules::SlamSystem system(app::toSystemOptions(config));
-        system.setSource(std::make_unique<record::RecordingSource>(
-            std::make_unique<SyntheticSource>(10), writer));
-        system.setOdometry<StraightLineOdometry>();
-        system.init();
-        system.runOffline();
-        writer->close();
-
-        const auto ate = eval::absoluteTrajectoryError(system.trajectory()->odometry(),
-                                                       groundTruth(10));
-        record::ExperimentBundle bundle;
-        bundle.name = config.task.name;
-        bundle.config_hash = config::configHash(config);
-        bundle.seed = config.task.seed;
-        std::uint64_t bytes = 0;
-        bundle.inputs.push_back(record::InputDigest{
-            "recording", record_path.string(), record::fileDigest(record_path.string(), &bytes),
-            bytes});
-        bundle.metrics = {{"ate.translation.rmse", ate.translation.rmse},
-                          {"ate.samples", static_cast<double>(ate.pairs)}};
-        record::writeBundle(tempFile("simpleslam_bundle_run.yaml").string(), bundle);
-    }
-
-    const auto bundle = record::readBundle(tempFile("simpleslam_bundle_run.yaml").string());
-    CHECK(bundle.config_hash == config::configHash(config));
-    CHECK(bundle.seed == 7);
-    REQUIRE(bundle.input("recording") != nullptr);
-    CHECK(bundle.input("recording")->bytes > 0);
-    CHECK(bundle.metrics.at("ate.translation.rmse") == Approx(0.0).margin(1e-9));
-
-    // 换一个配置，哈希就变——"这个结果是哪份配置跑的"因此可查
-    auto other = config;
-    other.system.runtime.spin_budget += 1;
-    CHECK(config::configHash(other) != bundle.config_hash);
-
-    std::filesystem::remove(record_path);
-    std::filesystem::remove(tempFile("simpleslam_bundle_run.yaml"));
-}
-
 TEST_CASE("运行期改参数走的是同一套校验", "[config][params]") {
     // 只保证类型一致是不够的：启动时会被 validateConfig 拒绝的值，
     // 运行期不该能直接改进去
@@ -333,30 +281,10 @@ TEST_CASE("运行期改参数走的是同一套校验", "[config][params]") {
     CHECK(good.snapshot->revision == good.revision);  // 带回的是本次提交那一份
 }
 
-TEST_CASE("回放不完整时实验产物要说出来", "[record][eval]") {
+TEST_CASE("来源读到一半就断了：运行结局要说出来", "[system][outcome]") {
     // 同样的数字，一个是跑完全程测出来的，一个是只跑了前半段
-    const auto path = std::filesystem::temp_directory_path() / "simpleslam_incomplete.ssrec";
-    {
-        record::RecordWriter writer(path.string());
-        for (int i = 0; i < 3; ++i) {
-            fw::LidarScan scan;
-            scan.sensor = "lidar";
-            scan.reference_time = fw::Timestamp{(i + 1) * 100'000'000};
-            scan.coverage = fw::TimeRange{fw::Timestamp{i * 100'000'000}, scan.reference_time};
-            scan.points.push(1.0F, 0.0F, 0.0F);
-            writer.write(scan);
-        }
-        writer.close();
-    }
-    const auto full = static_cast<std::streamoff>(std::filesystem::file_size(path));
-    std::filesystem::resize_file(path, static_cast<std::uintmax_t>(full - 28));  // 砍掉收尾记录
-
-    modules::SlamSystem::Options options;
-    options.offline = true;
-    modules::SlamSystem system(options);
-    fw::PacketizerPolicy policy;
-    policy.imu = fw::ImuRequirement::kNotRequired;
-    system.setSource(std::make_unique<record::ReplaySource>(path.string()), policy);
+    modules::SlamSystem system(offlineOptions());
+    system.setSource(std::make_unique<CutShortSource>(6));
     system.setOdometry<StraightLineOdometry>();
     system.init();
     system.runOffline();
@@ -366,5 +294,4 @@ TEST_CASE("回放不完整时实验产物要说出来", "[record][eval]") {
     CHECK_FALSE(outcome.inputComplete());
     CHECK_FALSE(outcome.complete());
     CHECK_FALSE(outcome.reasons().empty());
-    std::filesystem::remove(path);
 }

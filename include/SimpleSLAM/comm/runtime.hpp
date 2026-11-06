@@ -150,11 +150,8 @@ public:
     // ── 观测 ──
 
     [[nodiscard]] RuntimeStats stats() const;
-    /// 实际接线，Graphviz 的 dot 格式：模块、话题、服务和队列大小。
-    [[nodiscard]] std::string graph() const;
     /// 统计表，给人看的。
     [[nodiscard]] std::string statsTable() const;
-    [[nodiscard]] std::vector<std::string> danglingTopics() const { return core_->danglingTopics(); }
     [[nodiscard]] std::uint64_t isolatedFailures() const;
     /// 第一个被接住的异常，不论策略。
     [[nodiscard]] std::optional<ModuleFailure> firstFailure() const { return core_->hub()->firstFailure(); }

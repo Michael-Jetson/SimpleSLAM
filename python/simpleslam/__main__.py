@@ -9,9 +9,9 @@
     ./run.py compare <任务记录> … [--metrics …] [--csv]
                                                 几份任务记录的对比表
     ./run.py impls                              入口里登记了哪些实现、各有哪些参数
-    ./run.py config | eval | convert …          任务渲染与校验、轨迹精度速查、轨迹格式转换
+    ./run.py config | eval | convert …          任务渲染与校验、评测外部轨迹、轨迹格式转换
 
-C++ 入口是加载、校验、执行与评测判定的唯一实现，操作台只编排与展示。入口默认是示例
+C++ 入口是加载、校验、执行与评测的唯一实现，操作台只编排与展示。入口默认是示例
 ``simpleslam_lio_skeleton``，用户写的算法用登记了它的入口（``--entry <目标名或路径>``，或环境
 变量 ``SIMPLESLAM_ENTRY``）。默认在本机构建 Release，``--debug`` 换成 Debug，``--docker`` 在开发
 镜像里做同样的事。
@@ -19,8 +19,8 @@ C++ 入口是加载、校验、执行与评测判定的唯一实现，操作台�
 任务可以写成 ``.py``：文件里构造一个名为 ``config`` 的 :class:`~simpleslam.config.Config`
 （或提供 ``build()`` 返回它）；``.py`` 里 ``system`` 的相对路径相对这个文件所在的目录。
 
-精度的权威实现是 C++（退出码能让流水线失败）：``evaluate`` 交给入口，写结论、过门禁；
-``eval`` 子命令是给交互式查看用的，只打印，不写结论。
+评测都在 C++：``evaluate`` 交给入口，补评一份任务记录；``eval`` 交给 ``simpleslam-eval``，
+评测别的系统跑出来的轨迹，后面的选项原样交给它。
 """
 
 from __future__ import annotations
@@ -31,8 +31,7 @@ import sys
 from pathlib import Path
 
 from simpleslam import console
-from simpleslam.config import SYSTEM_FILE, Config, ConfigError
-from simpleslam.metrics import absolute_trajectory_error, relative_pose_error
+from simpleslam.config import SYSTEM_FILE, Config, ConfigError, dump_file
 from simpleslam.results import ResultError
 from simpleslam.schema import Schema, SchemaError
 from simpleslam.trajectory import read_trajectory, write_trajectory
@@ -44,33 +43,20 @@ COMMANDS = ("run", "evaluate", "demo", "sweep", "show", "compare", "impls", "con
 _DATA_PATHS = ("data.source.path=", "data.calibration=", "evaluation.groundtruth=")
 
 
-def _load_schema(tool: str | None, required: bool) -> Schema | None:
-    try:
-        return Schema.load(tool)
-    except SchemaError as exc:
-        if required:
-            raise
-        print(f"提示: 没有 schema，跳过校验（{exc}）", file=sys.stderr)
-        return None
+def _config_entry(args: argparse.Namespace) -> str:
+    """config 子命令用的入口：``--tool`` 给的可执行文件（旧写法），否则同别的子命令，
+    ``--entry`` 或示例入口，按需构建。"""
+    if args.tool:
+        return args.tool
+    return str(_workspace(args).entry(args.entry, build=not args.no_build))
 
 
-def _load_config(path: str, schema: Schema | None, tool: str | None) -> Config:
+def _load_config(path: str, schema: Schema, tool: str) -> Config:
     """``.py`` 任务原样取出（引用的系统文件换成绝对路径）；YAML 任务交给 C++ 读。"""
     source = Path(path)
     if source.suffix != ".py":
         return Config.load(source, tool, schema)
-    config = console.load_python_task(source)
-    if schema is not None:
-        config.validate(schema)
-    return config
-
-
-def _complete(config: Config, schema: Schema, tool: str | None) -> Config:
-    """完整、自足的任务：自足的 Python 任务直接用；引用了文件、带覆盖项或用了 v2 写法的
-    交给 C++ 展开。"""
-    if config.self_contained and not config.legacy_paths(schema):
-        return config
-    return config.through_cpp(tool=tool, schema=schema)
+    return console.load_python_task(source).validate(schema)
 
 
 def _print_schema(schema: Schema) -> None:
@@ -85,31 +71,28 @@ def _print_schema(schema: Schema) -> None:
 
 
 def _config_command(args: argparse.Namespace) -> int:
+    if args.action == "hash":
+        # 任务靠名字区分，不再算哈希：要看两份任务有什么不同，导出完整任务后对比
+        print("错误: hash 去掉了：任务靠名字区分；要看两份任务有什么不同，"
+              "用 config render --full 导出后对比", file=sys.stderr)
+        return 2
+    tool = _config_entry(args)
+    schema = Schema.from_tool(tool)
     if args.action == "schema":
-        schema = _load_schema(args.tool, required=True)
-        assert schema is not None
         _print_schema(schema)
         return 0
 
-    # 只有不补默认值的渲染可以没有 schema；其余都要按实现的字段清单还原
-    needs_schema = args.action != "render" or args.full or not args.input.endswith(".py")
-    schema = _load_schema(args.tool, required=needs_schema)
-    config = _load_config(args.input, schema, args.tool)
-
-    if args.action in ("check", "hash"):
-        assert schema is not None
-        complete = _complete(config, schema, args.tool)
-        if args.action == "hash":
-            print(complete.hash(schema))
-            return 0
-        print(f"任务有效: {args.input}（{len(config)} 项显式设置）")
-        print(f"任务哈希: {complete.hash(schema)}")
-        print(f"系统哈希: {complete.system_hash(schema)}")
+    config = _load_config(args.input, schema, tool)
+    if args.action == "check":
+        if args.input.endswith(".py"):
+            config.through_cpp(tool=tool, schema=schema)  # C++ 读一遍：写错了在这里报
+        print(f"任务有效: {args.input}")
         return 0
 
     if args.full:
-        assert schema is not None
-        text = _complete(config, schema, args.tool).canonical(schema)
+        # 完整的任务由 C++ 导出：系统展开、覆盖项应用、插件节点还原、默认值补齐
+        text = config.dump(tool=tool, schema=schema) if args.input.endswith(".py") \
+            else dump_file(args.input, tool)
     else:
         if args.output and isinstance(config.get(SYSTEM_FILE), str):
             # 渲染出的文件挪了位置：系统文件改写成相对它的路径
@@ -126,42 +109,8 @@ def _config_command(args: argparse.Namespace) -> int:
 
 
 def _eval_command(args: argparse.Namespace) -> int:
-    estimate = read_trajectory(args.estimate, args.format)
-    reference = read_trajectory(args.reference, args.format)
-    ate = absolute_trajectory_error(estimate, reference, args.align, args.tolerance)
-    rpe = relative_pose_error(
-        estimate,
-        reference,
-        delta_time=args.rpe_delta,
-        delta_distance=args.rpe_distance,
-        tolerance=args.tolerance,
-    )
-    print(f"估计: {args.estimate} ({len(estimate)} 帧)")
-    print(f"真值: {args.reference} ({len(reference)} 帧)")
-    print(
-        f"对齐: {ate.alignment.kind}  尺度: {ate.alignment.scale:.6f}  "
-        f"关联: {ate.pairs} 对 ({ate.coverage * 100:.1f}%)"
-    )
-    rows = [("ATE", "平移", ate.translation, "m"), ("ATE", "旋转", ate.rotation_deg, "deg")]
-    rows += [
-        ("RPE", "平移", rpe.translation, "m/m" if rpe.normalized else "m"),
-        ("RPE", "旋转", rpe.rotation_deg, "deg/m" if rpe.normalized else "deg"),
-    ]
-    for family, what, stats, unit in rows:
-        pairs = ate.pairs if family == "ATE" else rpe.pairs
-        if pairs == 0:
-            # 没测出来就不打印数字：零误差与"无结果"不能长得一样
-            print(f"{family} {what:6}  无结果（没有可比较的样本）")
-            continue
-        print(
-            f"{family} {what:6} rmse={stats.rmse:12.6f} mean={stats.mean:12.6f} "
-            f"median={stats.median:12.6f} max={stats.max:12.6f} [{unit}] n={stats.count}"
-        )
-    if ate.pairs == 0:
-        # 与 C++ 的门禁一致：一对都没关联上是"这次没测出东西"，退出码 4
-        print("评测结论: invalid 没有任何有效关联", file=sys.stderr)
-        return 4
-    return 0
+    return console.evaluate_trajectories(_workspace(args), args.estimate, args.reference,
+                                         args.forwarded, _options(args))
 
 
 def _convert_command(args: argparse.Namespace) -> int:
@@ -229,11 +178,7 @@ def _impls_command(args: argparse.Namespace) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m simpleslam",
                                      description="SimpleSLAM 的操作台：构建、跑任务、看结果")
-    parser.add_argument(
-        "--tool",
-        help="config 子命令用的入口（可执行文件；默认 SIMPLESLAM_CONFIG_TOOL，其次 PATH 里的 "
-        "simpleslam-config）",
-    )
+    parser.add_argument("--tool", help="config 子命令用的入口（可执行文件）；不给时同 --entry")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = argparse.ArgumentParser(add_help=False)
@@ -252,7 +197,7 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser(
         "evaluate", parents=[build],
-        help="单独评测一份任务记录（入口的 evaluate：写结论、过门禁；覆盖项只改评测一节）")
+        help="单独评测一份任务记录（入口的 evaluate：写结论；覆盖项只改评测一节）")
     evaluate.add_argument("run_dir", metavar="任务记录")
     evaluate.set_defaults(func=_evaluate_command, overrides=[])
 
@@ -284,29 +229,24 @@ def _parser() -> argparse.ArgumentParser:
     impls = subparsers.add_parser("impls", parents=[build], help="入口里登记的实现与参数")
     impls.set_defaults(func=_impls_command)
 
-    config_parser = subparsers.add_parser("config", help="任务渲染与校验")
+    config_parser = subparsers.add_parser("config", parents=[build], help="任务渲染与校验")
     config_parser.add_argument(
-        "action", choices=["schema", "render", "check", "hash"], help="要做什么"
+        "action", choices=["schema", "render", "check", "hash"], help="要做什么（hash 已去掉）"
     )
     config_parser.add_argument("input", nargs="?", help="任务文件（.py 或 .yaml）")
     config_parser.add_argument("-o", "--output", help="输出文件（默认打到标准输出）")
     config_parser.add_argument(
-        "--full", action="store_true", help="输出补齐默认值、还原插件节点的完整任务"
+        "--full", action="store_true", help="输出 C++ 展开后的完整任务（补齐默认值、还原插件节点）"
     )
     config_parser.set_defaults(func=_config_command)
 
-    eval_parser = subparsers.add_parser("eval", help="轨迹精度速查（只打印，不写结论）")
-    eval_parser.add_argument("estimate")
-    eval_parser.add_argument("reference")
-    eval_parser.add_argument("--format", choices=["tum", "kitti"], default=None)
-    eval_parser.add_argument(
-        "--align", choices=["none", "first_pose", "se3", "sim3"], default="se3"
-    )
-    eval_parser.add_argument("--tolerance", type=float, default=0.02)
-    eval_parser.add_argument("--rpe-delta", type=float, default=1.0, dest="rpe_delta")
-    eval_parser.add_argument(
-        "--rpe-distance", type=float, default=None, dest="rpe_distance"
-    )
+    eval_parser = subparsers.add_parser(
+        "eval", parents=[build],
+        help="评测外部轨迹（simpleslam-eval；后面的选项原样交给它，如 --out、--align sim3）")
+    eval_parser.add_argument("estimate", help="估计轨迹")
+    eval_parser.add_argument("reference", help="真值轨迹")
+    eval_parser.add_argument("forwarded", nargs=argparse.REMAINDER, metavar="选项",
+                             help="原样交给 simpleslam-eval 的选项，写在两条轨迹后面")
     eval_parser.set_defaults(func=_eval_command)
 
     convert_parser = subparsers.add_parser("convert", help="轨迹格式转换")

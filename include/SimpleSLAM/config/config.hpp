@@ -10,7 +10,7 @@
 /// 列了评测函数就评测，没列就只跑。任务 YAML 引用一份系统 YAML，系统 YAML 写管线、模块与插件；
 /// 加载后两者合成一棵 `TaskConfig`。
 ///
-/// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、哈希、schema 导出、
+/// 字段只写一次。`visitConfig` 是唯一的字段清单，加载、导出、schema 导出、
 /// 推送到运行期参数存储，全部从它派生。加一个字段只需要改一处。
 ///
 /// 两个概念不要混：
@@ -37,8 +37,6 @@ struct TaskSection {
     std::string name = "default";
     /// offline：单线程步进、虚拟时钟、可逐位复现；online：一个模块一个线程、单调时钟。
     std::string mode = "offline";
-    /// 随机种子。写进实验回放包，因此"当时那一次"可以重来。
-    std::int64_t seed = 0;
 };
 
 struct RuntimeSection {
@@ -113,13 +111,9 @@ struct EvaluationSection {
     PluginMap evaluators;
     /// 真值轨迹文件。空表示用数据集自带的真值。
     std::string groundtruth;
-    /// 允许拿不完整的运行下结论（前缀分析）。默认不允许：严格模式判为无效。
-    bool allow_incomplete = false;
-    /// 精度基线文件。空表示不过基线门禁，只判有效性。
-    std::string baselines;
 };
 
-/// 日志的等级。只决定记下哪些、显示哪些，不影响结果，不进任务哈希。
+/// 日志的等级。只决定记下哪些、显示哪些，不影响结果。
 struct LogOutputs {
     std::string console = "info";  ///< 终端显示的最低等级
     std::string file = "debug";    ///< 任务记录里 run.log 记录的最低等级
@@ -131,15 +125,12 @@ struct LogOutputs {
 struct OutputsSection {
     /// 任务记录目录。空表示 runs/<task.name>。
     std::string dir;
-    /// 是否录制原始数据流（录到任务记录里）。
-    bool record = false;
-    bool record_diagnostics = true;
     /// 另写一份 KITTI 格式的轨迹（给 KITTI 官方评测程序用）。TUM 格式的总会写。
     bool kitti_trajectories = false;
     LogOutputs log;
 };
 
-/// 一个任务：系统、数据、运行方式与目的、评测、产出。
+/// 一个任务：系统、数据、运行方式、评测、产出。
 struct TaskConfig {
     TaskSection task;
     SystemConfig system;
@@ -157,7 +148,6 @@ template <class Config, class Visitor>
 void visitConfig(Config& c, Visitor&& visit) {
     visit("task.name", c.task.name, "任务名，是任务记录的目录名，也进结果", Tunable::kNo);
     visit("task.mode", c.task.mode, "运行方式：offline 离线 / online 在线", Tunable::kNo);
-    visit("task.seed", c.task.seed, "随机种子", Tunable::kNo);
 
     auto& s = c.system;
     visit("system.pipeline", s.pipeline, "管线：odometry / mapping / localization", Tunable::kNo);
@@ -205,14 +195,8 @@ void visitConfig(Config& c, Visitor&& visit) {
           "这次跑哪些评测函数：名字 → 插件节点；没有就不评测", Tunable::kNo);
     visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）",
           Tunable::kNo);
-    visit("evaluation.allow_incomplete", c.evaluation.allow_incomplete,
-          "允许拿不完整的运行下结论（前缀分析）", Tunable::kNo);
-    visit("evaluation.baselines", c.evaluation.baselines, "精度基线文件路径", Tunable::kNo);
 
     visit("outputs.dir", c.outputs.dir, "任务记录目录（留空为 runs/<task.name>）",
-          Tunable::kNo);
-    visit("outputs.record", c.outputs.record, "是否录制原始数据流", Tunable::kNo);
-    visit("outputs.record_diagnostics", c.outputs.record_diagnostics, "是否同时录制诊断流",
           Tunable::kNo);
     visit("outputs.kitti_trajectories", c.outputs.kitti_trajectories,
           "另写一份 KITTI 格式的轨迹（TUM 格式的总会写）", Tunable::kNo);

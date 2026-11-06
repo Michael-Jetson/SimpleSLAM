@@ -1,6 +1,6 @@
-"""Python 侧任务配置：渲染、校验、插件节点还原、受限子集解析、哈希稳定性。
+"""Python 侧任务配置：渲染、校验、受限子集解析。还原插件节点、补默认值在 C++。
 
-不依赖 C++ 工具：schema 在这里手写一份小的。与 C++ 的逐字节比对见 test_cpp_parity.py。
+不依赖 C++ 工具：schema 在这里手写一份小的。经 C++ 加载、导出的对照见 test_cpp_entry.py。
 """
 
 import unittest
@@ -16,7 +16,7 @@ def fake_schema(extra_fields=(), legacy=None) -> Schema:
     return Schema(
         [
             Field("task.name", "string", "default", "任务名", False),
-            Field("task.seed", "int", "0", "随机种子", False),
+            Field("task.repeats", "int", "1", "测试用的整数字段", False),
             Field("system.runtime.spin_budget", "int", "4096", "步进预算", False),
             Field(LIO, "slot", "", "里程计", False),
             Field("system.modules.graph_optimizer.weight", "double", "100", "权重", True),
@@ -32,9 +32,7 @@ def fake_schema(extra_fields=(), legacy=None) -> Schema:
                 PluginField("keyframe_distance_m", "double", "1", "关键帧距离"),
                 PluginField("max_iterations", "int", "30", "迭代上限"),
                 PluginField("pressure", "float", "0.5", "单精度参数"),
-                # 默认子节点带非默认参数：只凭类型名补不对
-                PluginField("map", "slot:Map", "voxel", "地图",
-                            {"type": "voxel", "voxel_size_m": 0.5}),
+                PluginField("map", "slot:Map", "voxel", "地图"),
             )),
             PluginSchema("OdometryBase", "needs_map", (
                 PluginField("map", "slot:Map", "", "地图，必须选"),
@@ -54,23 +52,20 @@ def minimal(**extra) -> Config:
 
 
 class SchemaTest(unittest.TestCase):
-    def test_default_spec_from_cpp_json_becomes_a_plugin_node(self):
-        # 与 C++ 侧 test_config_schema 里钉住的是同一段 JSON：两边各从一头钉住格式
-        spec = ('{"type": "voxel", "params": {"label": "a\\"b", "n": 3, "on": true, '
-                '"size": 0.5}, "children": {"inner": {"type": "leaf", "params": {}, '
-                '"children": {}}}}')
+    def test_plugin_fields_and_legacy_table_are_read_from_cpp_json(self):
+        # C++ 导出的子槽默认节点（default_spec）不读：还原插件节点在 C++
         text = (
             '{"fields": [{"path": "task.name", "type": "string", "default": "x", "doc": "", '
             '"tunable": false}], "slots": {}, "plugins": [{"interface": "OdometryBase", '
             '"type": "nested", "fields": [{"name": "map", "kind": "slot:Map", '
-            f'"default": "voxel", "doc": "", "default_spec": {spec}}}]}}]}}'
+            '"default": "voxel", "doc": "地图", "default_spec": {"type": "voxel", "params": {}, '
+            '"children": {}}}]}], "legacy": {"task.repeats": "去掉了"}}'
         )
-        field = Schema.from_json(text).plugin("OdometryBase", "nested").fields[0]
-        self.assertEqual(field.slot_interface, "Map")
-        self.assertEqual(field.default_value(), {"type": "voxel", "label": 'a"b', "n": 3,
-                                                 "on": True, "size": 0.5,
-                                                 "inner": {"type": "leaf"}})
-        self.assertIsNot(field.default_value(), field.default_spec)  # 拿到的是副本
+        schema = Schema.from_json(text)
+        field = schema.plugin("OdometryBase", "nested").fields[0]
+        self.assertEqual((field.name, field.kind, field.default), ("map", "slot:Map", "voxel"))
+        self.assertEqual(schema.implementations("OdometryBase"), ["nested"])
+        self.assertEqual(schema.legacy, {"task.repeats": "去掉了"})
 
 
 class RenderTest(unittest.TestCase):
@@ -101,9 +96,9 @@ class RenderTest(unittest.TestCase):
 
     def test_update_by_section_and_by_path(self):
         config = Config()
-        config.update({"task.seed": 3}, system={"runtime": {"spin_budget": 12}})
+        config.update({"task.repeats": 3}, system={"runtime": {"spin_budget": 12}})
         config.update(system={"modules": {"odometry": {"plugin": {"type": "lio"}}}})
-        self.assertEqual(config["task.seed"], 3)
+        self.assertEqual(config["task.repeats"], 3)
         self.assertEqual(config["system.runtime.spin_budget"], 12)
         self.assertEqual(config[LIO], {"type": "lio"})  # 带 type 的映射整体是一个值
 
@@ -111,7 +106,7 @@ class RenderTest(unittest.TestCase):
         base = minimal()
         variant = base.copy()
         variant[LIO]["keyframe_distance_m"] = 9.0
-        variant.override("task.seed", 1)
+        variant.override("task.repeats", 1)
         self.assertNotIn("keyframe_distance_m", base[LIO])
         self.assertNotIn("overrides", base)
 
@@ -127,7 +122,7 @@ class ValidateTest(unittest.TestCase):
 
     def test_type_is_not_coerced(self):
         schema = fake_schema()
-        for bad in ({"task.seed": "3"}, {"task.seed": 1.5}, {"task.seed": True},
+        for bad in ({"task.repeats": "3"}, {"task.repeats": 1.5}, {"task.repeats": True},
                     {"task.name": 3}, {"data.sequences": "00"}, {SOURCE: "kitti"},
                     {"system.modules.graph_optimizer.weight": float("inf")}):
             with self.assertRaises(ConfigError, msg=repr(bad)):
@@ -146,84 +141,26 @@ class ValidateTest(unittest.TestCase):
         Config().override(f"{LIO}.anything", 1).validate(fake_schema())  # 插件内部归目录查
 
 
-class ResolveTest(unittest.TestCase):
-    def test_canonical_fills_defaults_and_resolves_plugins(self):
-        text = minimal(task={"name": "demo"}).canonical(fake_schema())
-        self.assertEqual(
-            text,
-            'task:\n  name: "demo"\n  seed: 0\n'
-            "\nsystem:\n  runtime:\n    spin_budget: 4096\n  modules:\n    odometry:\n"
-            '      plugin:\n        type: "lio"\n        keyframe_distance_m: 1\n'
-            "        max_iterations: 30\n        pressure: 0.5\n        map:\n"
-            '          type: "voxel"\n          voxel_size_m: 0.5\n'
-            "    graph_optimizer:\n      weight: 100\n"
-            '\ndata:\n  source:\n    type: "kitti"\n    path: "/data"\n    sequence: ""\n'
-            "  sequences: []\n"
-            '\noutputs:\n  dir: ""\n',
-        )
-
-    def test_float_parameters_are_rounded_like_cpp(self):
-        config = minimal()
-        config[LIO]["pressure"] = 0.1
-        resolved = config.resolved(fake_schema())[LIO]
-        self.assertEqual(resolved["pressure"], 0.10000000149011612)
-
-    def test_child_slot_is_resolved_against_its_own_schema(self):
-        config = minimal()
-        config[LIO]["map"] = {"type": "voxel"}  # 写了就按实现的默认值，不是父节点给的默认节点
-        self.assertEqual(config.resolved(fake_schema())[LIO]["map"],
-                         {"type": "voxel", "voxel_size_m": 1.0})
-
-    def test_plugin_errors_name_the_path_and_the_choices(self):
-        schema = fake_schema()
-        cases = [
-            ({"type": ""}, "没有写 type.*lio、needs_map"),
-            ({"type": "kitti"}, "kitti 是 DatasetReader 的实现"),
-            ({"type": "lio", "max_iteration": 1}, "max_iteration：lio 没有这个参数，可用的有"),
-            ({"type": "lio", "max_iterations": 1.5}, "应为 int，实际是 double"),
-            ({"type": "lio", "map": "voxel"}, "这是一个槽"),
-            ({"type": "lio", "max_iterations": {"type": "voxel"}}, "这是一个参数，不是槽"),
-            ({"type": "needs_map"}, "map：缺少这个槽"),
-            ({"type": "lio", "map": {"type": "sparse", "x": 1}}, "它不接受任何参数"),
-        ]
-        for node, pattern in cases:
-            config = minimal()
-            config[LIO] = node
-            with self.assertRaisesRegex(ConfigError, pattern, msg=repr(node)):
-                config.resolved(schema)
-
-    def test_file_references_are_left_to_cpp(self):
-        config = minimal()
-        config.override("task.seed", 1)
-        with self.assertRaisesRegex(ConfigError, "through_cpp"):
-            config.hash(fake_schema())
-
-
 class LegacyTest(unittest.TestCase):
-    """v2 的写法：Python 认得 schema 换算表里的旧键，原样渲染进所在的节，换算与还原交给 C++。"""
+    """旧写法：Python 认得 schema 换算表里的旧键，原样渲染进所在的节，换算交给 C++。"""
 
     @staticmethod
     def schema() -> Schema:
         return fake_schema(
-            extra_fields=[Field("evaluation.baselines", "string", "", "基线", False)],
+            extra_fields=[Field("evaluation.groundtruth", "string", "", "真值", False)],
             legacy={"task.purpose": "去掉了", "evaluation.alignment": "evaluators.ate.alignment"})
 
     def test_old_keys_are_known_and_rendered_in_their_section(self):
         schema = self.schema()
         config = minimal(task={"name": "old", "purpose": "experiment"},
-                         evaluation={"baselines": "b.yaml", "alignment": "sim3"})
+                         evaluation={"groundtruth": "gt.tum", "alignment": "sim3"})
         config.validate(schema)
         self.assertEqual(config.legacy_paths(schema), ["evaluation.alignment", "task.purpose"])
         text = config.to_yaml(schema)
         self.assertIn('task:\n  name: "old"\n  purpose: "experiment"\n', text)
-        self.assertIn('evaluation:\n  baselines: "b.yaml"\n  alignment: "sim3"\n', text)
+        self.assertIn('evaluation:\n  groundtruth: "gt.tum"\n  alignment: "sim3"\n', text)
         with self.assertRaisesRegex(ConfigError, "未知配置项 task.purpose"):
             config.validate(fake_schema())  # 没有换算表就不认得
-
-    def test_resolution_is_left_to_cpp(self):
-        config = minimal(task={"purpose": "run"})
-        with self.assertRaisesRegex(ConfigError, "v2 的写法.*through_cpp"):
-            config.hash(self.schema())
 
     def test_old_override_paths_are_known(self):
         config = minimal()
@@ -233,53 +170,22 @@ class LegacyTest(unittest.TestCase):
             config.validate(fake_schema())
 
 
-class HashTest(unittest.TestCase):
-    def test_hash_depends_only_on_effective_content(self):
-        schema = fake_schema()
-        a = minimal(task={"name": "demo"})
-        b = Config({SOURCE: {"path": "/data", "type": "kitti"}, "task.name": "demo",
-                    LIO: {"type": "lio"}})
-        self.assertEqual(a.hash(schema), b.hash(schema))
-        # 显式写成默认值也不改变哈希：哈希看的是还原后的生效值
-        c = minimal(task={"name": "demo", "seed": 0})
-        c[LIO].update(max_iterations=30, map={"type": "voxel", "voxel_size_m": 0.5})
-        self.assertEqual(a.hash(schema), c.hash(schema))
-        d = minimal(task={"name": "demo"})
-        d[LIO]["max_iterations"] = 31
-        self.assertNotEqual(a.hash(schema), d.hash(schema))
-
-    def test_outputs_do_not_change_the_task_hash(self):
-        schema = fake_schema()
-        a, b = minimal(), minimal(outputs={"dir": "/elsewhere"})
-        self.assertEqual(a.hash(schema), b.hash(schema))
-        self.assertNotEqual(a.canonical(schema), b.canonical(schema))
-
-    def test_system_hash_covers_only_the_system(self):
-        schema = fake_schema()
-        a, b = minimal(), minimal(task={"name": "other"})
-        b[SOURCE]["path"] = "/other"
-        self.assertEqual(a.system_hash(schema), b.system_hash(schema))
-        self.assertNotEqual(a.hash(schema), b.hash(schema))
-        b[LIO]["max_iterations"] = 7
-        self.assertNotEqual(a.system_hash(schema), b.system_hash(schema))
-
-
 class ParseTest(unittest.TestCase):
-    def test_canonical_roundtrip_is_lossless_for_nasty_strings(self):
+    def test_render_roundtrip_is_lossless_for_nasty_strings(self):
         schema = fake_schema()
         for nasty in ('a # b', 'x: y', '"quoted"', 'tail  ', 'back\\slash', 'line\nbreak',
                       'true', '42', '[1, 2]', '#lead'):
             config = minimal(task={"name": nasty}, data={"sequences": [nasty, "b"]})
             config[SOURCE]["path"] = nasty
-            reloaded = Config.from_yaml(config.canonical(schema), schema)
+            reloaded = Config.from_yaml(config.to_yaml(schema), schema)
             self.assertEqual(reloaded["task.name"], nasty, f"往返丢失: {nasty!r}")
             self.assertEqual(reloaded[SOURCE]["path"], nasty, f"插件参数往返丢失: {nasty!r}")
             self.assertEqual(reloaded["data.sequences"], [nasty, "b"])
-            self.assertEqual(reloaded.hash(schema), config.hash(schema))
+            self.assertEqual(reloaded, config)
 
     def test_rendered_task_roundtrip(self):
         schema = fake_schema()
-        original = minimal(task={"name": "demo", "seed": 7}, data={"sequences": ["00", "01"]})
+        original = minimal(task={"name": "demo", "repeats": 7}, data={"sequences": ["00", "01"]})
         original.override(f"{LIO}.max_iterations", 5)
         original["system"] = "../systems/x.yaml"
         del original[LIO]
@@ -288,7 +194,7 @@ class ParseTest(unittest.TestCase):
     def test_hand_written_subset(self):
         text = (
             "# 注释\n"
-            "task:\n  name: demo#1   # 引号外、空白之后的 # 才是注释\n  seed: 7\n"
+            "task:\n  name: demo#1   # 引号外、空白之后的 # 才是注释\n  repeats: 7\n"
             "system:\n  modules:\n    odometry:\n      plugin:\n        type: lio\n"
             "        max_iterations: 12\n"
             "data:\n  source:\n    type: kitti\n    sequence: \"00\"\n"
@@ -301,7 +207,7 @@ class ParseTest(unittest.TestCase):
     def test_subset_rejects_what_it_cannot_read(self):
         schema = fake_schema()
         for text in ("task: {name: x}\n", "data:\n  sequences:\n    - a\n",
-                     "task:\n  name: 'x'\n", "task:\n   name: x\n", "task:\n  seed: \"3\"\n",
+                     "task:\n  name: 'x'\n", "task:\n   name: x\n", "task:\n  repeats: \"3\"\n",
                      "task:\n  name: a\n  name: b\n"):
             with self.assertRaises(ConfigError, msg=text):
                 Config.from_yaml(text, schema)

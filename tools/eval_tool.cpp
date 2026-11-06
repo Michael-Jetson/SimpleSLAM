@@ -6,13 +6,8 @@
 ///
 /// 两条轨迹放进一份最小的任务记录，用内置的评测函数 ate、rpe 评测，结论写成同一种
 /// `result.json`，操作台能把它和自己的结果放进一张表；不给 `--out` 时只打印结论、不留
-/// 记录。门禁与任务的执行器是同一个 `gate()`，退出码分四档：0 通过 / 3 低于基线 /
-/// 4 无效 / 5 不可比较。
-///
-/// **独立评测不知道运行是否完整**。一条轨迹文件本身说不出产生它的运行有没有跑完，
-/// 所以完整性默认"未知"：没有基线时照常给出误差测量并写明未知，有基线时不可比较。
-/// 要拿它与基线比，用 --run-report 读产生它的那次运行的结论（它列着轨迹的内容摘要，
-/// 不是这条轨迹就拒绝），或用 --assume-complete 人工声明——声明的原话留在结论里。
+/// 记录。只评测，不判通过与否：退出码 0 是评测完成，1 是出错，2 是用法错误。
+/// 一条轨迹文件说不出产生它的运行有没有跑完，所以结论里的完整性写 null。
 
 #include <SimpleSLAM/app/catalogs.hpp>
 #include <SimpleSLAM/app/run.hpp>
@@ -41,20 +36,14 @@ int usage() {
   --interpolate <秒>          改为把真值插值到估计时刻，括点间隔不超过给定秒数
   --rpe-delta <秒>            RPE 的时间间隔（默认 1.0）
   --rpe-distance <米>         改用距离间隔，并按每米归一
-  --window <起秒> <止秒>      目标窗口：任务完成度按它算（默认取运行结论里的）
-  --run-report <result.json>  产生这条估计的那次运行的结论（也认 v2 的 report.yaml）：
-                              从中取运行完整性与目标窗口；它没列着这条估计的内容摘要就拒绝
-  --assume-complete <说明>    没有运行结论时人工声明运行完整；说明原样写进结论
-  --baselines <文件>          精度基线；0 通过 / 3 低于基线 / 4 无效 / 5 不可比较
-  --dataset <名字>            基线里对应的数据集名（有基线时必填）
-  --config-hash <哈希>        写进结论，并与基线的 config_hash 核对
-  --allow-incomparable        不可比较时仍返回 0（默认返回 5）
+  --window <起秒> <止秒>      目标窗口：任务完成度按它算（不给就不算）
+  --dataset <名字>            结论里的名字，进对比表时认它（默认取估计轨迹的文件名）
 )";
     return 2;
 }
 
-/// 解析一个数值选项：整串都得是数，且有限。"nan"、"1e999"、"0.1s" 一律拒绝——
-/// 它们会原样进入协议，让结论与基线在"同一协议"的判断上失去意义。
+/// 解析一个数值选项：整串都得是数，且有限。"nan"、"1e999"、"0.1s" 一律拒绝：
+/// 它们会原样写进结论里评测函数的参数。
 double finiteNumber(const std::string& flag, const std::string& text) {
     std::size_t used = 0;
     double value = 0.0;
@@ -113,12 +102,17 @@ int main(int argc, char** argv) {
                 request.window = simpleslam::fw::TimeRange{secondsToTimestamp(begin),
                                                            secondsToTimestamp(end)};
             }
-            else if (flag == "--run-report") request.run_result = value();
-            else if (flag == "--assume-complete") request.declaration = value();
-            else if (flag == "--baselines") request.baselines = value();
             else if (flag == "--dataset") request.name = value();
-            else if (flag == "--config-hash") request.config_hash = value();
-            else if (flag == "--allow-incomparable") request.allow_incomparable = true;
+            else if (flag == "--config-hash") {
+                (void)value();  // 旧选项：身份不再按哈希核对，照样接受，提示一句
+                std::cerr << "注意: --config-hash 不再核对（任务靠名字区分），忽略\n";
+            }
+            else if (flag == "--baselines" || flag == "--run-report"
+                     || flag == "--assume-complete" || flag == "--allow-incomparable") {
+                throw std::runtime_error(
+                    "选项 " + flag + " 去掉了：simpleslam-eval 只评测、不过门禁；"
+                    "自己跑出来的轨迹用 <入口> evaluate <任务记录> 补评");
+            }
             else if (flag == "--report") {
                 throw std::runtime_error("选项 --report 已经不用了：结论写进 --out 目录里的 "
                                          "result.json；不给 --out 时只打印、不留记录");
@@ -134,19 +128,12 @@ int main(int argc, char** argv) {
         requireRange(interpolate_gap_s >= 0.0, "--interpolate 不能为负");
         requireRange(rpe_delta_s > 0.0, "--rpe-delta 必须为正");
         requireRange(rpe_distance_m >= 0.0, "--rpe-distance 不能为负");
-        if (!request.run_result.empty() && request.declaration) {
-            throw std::runtime_error(
-                "--run-report 与 --assume-complete 只能二选一：有证据就不需要声明");
-        }
-        if (request.declaration && request.declaration->empty()) {
-            throw std::runtime_error("--assume-complete 要写明依据，声明会原样留在结论里");
-        }
     } catch (const std::exception& e) {
         std::cerr << "错误: " << e.what() << '\n';
         return 2;
     }
 
-    // 选项换成 ate、rpe 两个评测函数的参数：协议随结论保存
+    // 选项换成 ate、rpe 两个评测函数的参数，随结论保存
     const bool interpolate = interpolate_gap_s > 0.0;
     config::PluginSpec ate{.type = "ate", .params = {}, .children = {}};
     ate.params["alignment"] = alignment;

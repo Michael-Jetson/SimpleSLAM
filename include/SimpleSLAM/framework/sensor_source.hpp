@@ -54,10 +54,9 @@ using SensorDatum = std::variant<Ptr<LidarScan>, Ptr<CameraFrame>, Ptr<ImuSample
 
 /// 来源走到尽头时的终态。
 ///
-/// "next() 返回空"只说明没有下一条了，说不清是**正常读完**还是**读到一半没了**
-/// ：回放一个被截断的录制文件，SensorIO 看到的
-/// 同样是一个空 optional，于是把不完整的来源当成正常 EOF，实验产物里也就没有
-/// 任何痕迹。允许拿完整前缀继续跑是合理的，但那必须是一个明确选项并写进报告。
+/// "next() 返回空"只说明没有下一条了，说不清是**正常读完**还是**读到一半没了**：
+/// 数据文件被截断、读到一半出错时，SensorIO 看到的同样是一个空 optional，于是把不完整的
+/// 来源当成正常 EOF，任务记录里也就没有任何痕迹。所以终态单独给出，一路传到运行结局。
 enum class SourceOutcome : std::uint8_t {
     kRunning,     ///< 还没结束
     kCleanEof,    ///< 正常读完，数据完整
@@ -119,8 +118,8 @@ struct SourceDescriptor {
     /// 时间修补政策。空表示没有修补任何数据；非空时写明修补方式（例如按标称周期
     /// 回推扫描起点），受影响的帧列在 repaired_frames。修补是显式选项，默认拒绝异常数据。
     std::string timing_repair;
-    /// 被修补过时间的帧（来源自己的帧号）。与政策一起进有效身份：修补与否、修补了
-    /// 哪些帧，结论都不再建立在同一份数据上。
+    /// 被修补过时间的帧（来源自己的帧号）。与政策一起写进运行结局（`outcome.yaml` 的实际
+    /// 生效输入）：修补与否、修补了哪些帧，结论都不再建立在同一份数据上。
     std::vector<std::size_t> repaired_frames;
     bool has_calibration = false;
     bool has_ground_truth = false;
@@ -150,7 +149,7 @@ public:
     }
 
     /// 结束时的终态。默认实现对"能一次读完的来源"成立；凡是可能读到不完整数据的
-    /// 来源（回放、网络流）都必须重写它，否则上层无从知道这次输入是不是完整的。
+    /// 来源（文件可能被截断、网络流）都必须重写它，否则上层无从知道这次输入是不是完整的。
     [[nodiscard]] virtual SourceOutcome outcome() const { return SourceOutcome::kCleanEof; }
 };
 

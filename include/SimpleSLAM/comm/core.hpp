@@ -60,12 +60,8 @@ public:
     std::shared_ptr<ServiceEndpoint> findService(const std::string& resolved, std::type_index request,
                                                  std::type_index response);
 
-    [[nodiscard]] std::size_t publisherCount(const std::string& resolved) const;
     /// 日志组件：模块的日志对象是它的根，时刻取本运行时的时钟。
     [[nodiscard]] logging::Router& logRouter() noexcept { return *log_router_; }
-
-    /// 只发无订、只订无发的名字。
-    [[nodiscard]] std::vector<std::string> danglingTopics() const;
 
 private:
     std::shared_ptr<Hub> hub_ = std::make_shared<Hub>();

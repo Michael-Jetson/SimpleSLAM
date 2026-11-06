@@ -1,9 +1,8 @@
 """用 Python 写的任务：系统用 ../systems/my_lio.yaml，离线跑 KITTI raw 的一段采集并评测。
 
-渲染成 YAML（--tool 是登记了算法的入口，你的算法用你自己的入口）::
+渲染成 YAML（入口默认是示例入口；你的算法用 --entry 指向你自己的入口）::
 
-    python -m simpleslam --tool <build>/examples/simpleslam-lio-skeleton \\
-        config render configs/tasks/example.py -o example.yaml
+    ./run.py config render configs/tasks/example.py -o example.yaml
 
 扫参的变体渲染进一个目录：``python3 configs/tasks/example.py <目录>``。
 

@@ -21,8 +21,7 @@
 
 namespace simpleslam::app {
 
-/// 跑一个 `data.sequences` 非空的任务。返回各序列里最严重的退出码：
-/// 出错 > 无效 > 不可比较 > 失败 > 通过。
+/// 跑一个 `data.sequences` 非空的任务。返回各序列里最严重的退出码：出错 > 不完整 > 完整。
 int runSequences(const ResolvedTask& task, const RunOptions& options, std::ostream& out);
 
 /// 单独评测多序列的任务记录：每个子任务记录各评一遍（覆盖项照样施加），再汇总。

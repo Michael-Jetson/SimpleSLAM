@@ -21,6 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_ENTRY = "simpleslam_lio_skeleton"
+# 评测外部轨迹的工具：用不到用户写的实现，所以不是入口
+EVAL_TOOL = "simpleslam_eval_tool"
+# 进程真正的标准错误（文件描述符 2）：Python 层把 sys.stderr 换掉时，子进程照样写得进去
+_STDERR = 2
 DOCKER_IMAGE = "simpleslam-dev"
 _IN_DOCKER = "SIMPLESLAM_IN_DOCKER"
 
@@ -74,7 +78,8 @@ class Workspace:
             # 单引号留给编译命令的 shell：路径里可能有空格
             args.append(f"-DCMAKE_CXX_FLAGS=-I'{manif / 'external' / 'tl'}'")
         print(f"配置构建目录 {self.build_dir}（{self.build_type}）", file=sys.stderr)
-        if subprocess.run(args).returncode != 0:
+        # 构建的输出是过程信息，走标准错误：config render 之类的命令，标准输出是给程序读的结果
+        if subprocess.run(args, stdout=_STDERR).returncode != 0:
             raise BuildError("配置失败（日志见上）：依赖不全时运行 scripts/install_deps.sh，"
                              "或加 --docker 在开发镜像里构建")
 
@@ -84,7 +89,7 @@ class Workspace:
         print(f"构建 {target}（{self.build_type}）", file=sys.stderr)
         jobs = str(os.cpu_count() or 2)
         args = ["cmake", "--build", str(self.build_dir), "--target", target, "-j", jobs]
-        if subprocess.run(args).returncode != 0:
+        if subprocess.run(args, stdout=_STDERR).returncode != 0:
             raise BuildError(f"构建 {target} 失败（日志见上）")
 
     def artifact(self, target: str) -> Path:

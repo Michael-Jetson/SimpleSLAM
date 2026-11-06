@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SimpleSLAM contributors
 
-/// 任务配置：未知键与类型不符一律报错、缺省即默认、哈希只随内容变、系统文件按任务文件
-/// 所在目录解析、插件节点读成"类型 + 参数"、改 type 回到新实现的默认参数、
-/// 系统哈希只看 system 子树、schema 从同一份字段清单导出。
+/// 任务配置：未知键与类型不符一律报错、缺省即默认、规范化导出只随内容变、系统文件按任务
+/// 文件所在目录解析、插件节点读成"类型 + 参数"、改 type 回到新实现的默认参数、
+/// schema 从同一份字段清单导出。
 
 #include <SimpleSLAM/config/loader.hpp>
 
@@ -74,19 +74,20 @@ TEST_CASE("未知键是错误而不是忽略", "[config]") {
 TEST_CASE("类型不符是错误，不做隐式转换", "[config]") {
     CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: abc\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: 1.5\n"), ConfigError);
-    CHECK_THROWS_AS(load("outputs:\n  record: 1\n"), ConfigError);
+    CHECK_THROWS_AS(load("outputs:\n  kitti_trajectories: 1\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: \"4\"\n"), ConfigError);
     CHECK_THROWS_AS(load("data:\n  sequences: \"00\"\n"), ConfigError);  // 要列表
     CHECK_THROWS_AS(load("data:\n  source: kitti_odometry\n"), ConfigError);  // 插件节点是映射
 }
 
-TEST_CASE("配置哈希只随内容变，不随注释与键序变", "[config]") {
+TEST_CASE("规范化导出只随内容变，不随注释、键序与写不写默认值变", "[config]") {
     const auto a = load("# 注释\nsystem:\n  runtime:\n    spin_budget: 9\ntask:\n  name: run\n");
-    const auto b = load("task:\n  name: run\nsystem:\n  runtime:\n    spin_budget: 9\n");
-    CHECK(configHash(a) == configHash(b));
+    const auto b = load("task:\n  name: run\n  mode: offline\n"
+                        "system:\n  runtime:\n    spin_budget: 9\n");
+    CHECK(dumpConfig(a) == dumpConfig(b));
 
     const auto c = load("task:\n  name: run\nsystem:\n  runtime:\n    spin_budget: 10\n");
-    CHECK(configHash(a) != configHash(c));
+    CHECK(dumpConfig(a) != dumpConfig(c));
 }
 
 TEST_CASE("规范化导出可以再加载回来，插件节点与列表也一样", "[config]") {
@@ -121,7 +122,7 @@ data:
     REQUIRE(again.evaluation.evaluators.size() == 1);
     CHECK(std::get<std::string>(again.evaluation.evaluators.at("ate").params.at("alignment"))
           == "sim3");
-    CHECK(configHash(again) == configHash(config));
+    CHECK(dumpConfig(again) == dumpConfig(config));
 }
 
 TEST_CASE("规范化导出对刁钻字符串也无损", "[config]") {
@@ -139,7 +140,7 @@ TEST_CASE("规范化导出对刁钻字符串也无损", "[config]") {
         CHECK(again.data.sequences == config.data.sequences);
         CHECK(std::get<std::string>(again.system.modules.odometry.plugin.params.at("note"))
               == nasty);
-        CHECK(configHash(again) == configHash(config));
+        CHECK(dumpConfig(again) == dumpConfig(config));
     }
 }
 
@@ -149,15 +150,16 @@ TEST_CASE("未知的空映射也是未知键", "[config]") {
     CHECK_THROWS_AS(load("system:\n  nope: {}\n"), ConfigError);
 }
 
-TEST_CASE("v2 的写法照样能用：加载时换算成新写法，哈希相同，说明里给出新写法", "[config][legacy]") {
+TEST_CASE("v2 的写法照样能用：加载时换算成新写法，导出相同，说明里给出新写法",
+          "[config][legacy]") {
     const std::string v2 =
         "task:\n  name: old\n  purpose: experiment\n"
         "evaluation:\n  format: kitti\n  alignment: sim3\n  association: interpolate\n"
         "  association_tolerance_s: 0.03\n  max_interpolation_gap_s: 0.2\n"
-        "  rpe_delta_m: 0\n  rpe_delta_s: 1.5\n  baselines: b.yaml\n";
+        "  rpe_delta_m: 0\n  rpe_delta_s: 1.5\n  groundtruth: gt.tum\n";
     const std::string v3 =
         "task:\n  name: old\n"
-        "evaluation:\n  baselines: b.yaml\n  evaluators:\n"
+        "evaluation:\n  groundtruth: gt.tum\n  evaluators:\n"
         "    ate: {type: ate, alignment: sim3, association: interpolate, tolerance_s: 0.03,"
         " max_interpolation_gap_s: 0.2}\n"
         "    rpe: {type: rpe, association: interpolate, tolerance_s: 0.03,"
@@ -166,7 +168,6 @@ TEST_CASE("v2 的写法照样能用：加载时换算成新写法，哈希相同
     const auto old = loadTaskString(v2, "<v2>");
     const auto now = loadTaskString(v3, "<v3>");
     CHECK(dumpConfig(old.config) == dumpConfig(now.config));
-    CHECK(configHash(old.config) == configHash(now.config));
     CHECK(now.notes.empty());
     REQUIRE(old.notes.size() == 1);
     CHECK(old.notes.front().find("用了 v2 的写法（task.purpose、evaluation.format")
@@ -249,7 +250,7 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
     CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.spin_budget=0"}), ConfigError);
 }
 
-TEST_CASE("日志的等级：写法不对在运行之前报错，不进任务哈希", "[config][log]") {
+TEST_CASE("日志的等级：写法不对在运行之前报错", "[config][log]") {
     CHECK_THROWS_AS(load("outputs:\n  log:\n    console: verbose\n"), ConfigError);
     CHECK_THROWS_AS(load("outputs:\n  log:\n    file: INFO\n"), ConfigError);
     for (const char* rule : {"odometry", "odometry=loud", "=debug", "odometry..map=debug",
@@ -264,7 +265,6 @@ TEST_CASE("日志的等级：写法不对在运行之前报错，不进任务哈
         load("outputs:\n  log:\n    console: warn\n    levels: [\"odometry.plugin.map=debug\"]\n");
     CHECK(config.outputs.log.console == "warn");
     CHECK(config.outputs.log.levels == std::vector<std::string>{"odometry.plugin.map=debug"});
-    CHECK(configHash(config) == configHash(load("")));  // 日志不影响结果
 }
 
 TEST_CASE("覆盖项按 schema 的类型解析", "[config]") {
@@ -349,28 +349,6 @@ TEST_CASE("系统文件按任务文件所在目录解析，挂到 system 下；�
     }
 }
 
-TEST_CASE("系统哈希只看 system 子树：换数据、评测、产出不变，换算法参数就变", "[config]") {
-    const auto base = load("system:\n  modules:\n    odometry:\n      plugin: {type: lo, a: 1}\n");
-    auto other_data = base;
-    applyOverrides(other_data, {"data.source={type: kitti_odometry, path: /x}",
-                                "evaluation.evaluators.ate.type=ate", "outputs.dir=/tmp/y",
-                                "task.name=another"});
-    CHECK(systemHash(other_data) == systemHash(base));
-    CHECK(configHash(other_data) != configHash(base));
-
-    // 产出放在哪里、怎么评测都不影响运行：只改这两节，任务哈希不变
-    auto other_outputs = base;
-    applyOverrides(other_outputs, {"outputs.dir=/tmp/elsewhere", "outputs.record=true",
-                                   "evaluation.evaluators.ate.type=ate",
-                                   "evaluation.evaluators.ate.alignment=sim3"});
-    CHECK(configHash(other_outputs) == configHash(base));
-    CHECK(dumpConfig(other_outputs) != dumpConfig(base));  // 导出照样完整
-
-    auto other_system = base;
-    applyOverrides(other_system, {"system.modules.odometry.plugin.a=2"});
-    CHECK(systemHash(other_system) != systemHash(base));
-}
-
 TEST_CASE("schema 从同一份字段清单导出", "[config]") {
     const auto fields = schema();
     CHECK(fields.size() > 25);
@@ -452,5 +430,5 @@ TEST_CASE("配置文件读写往返", "[config]") {
     CHECK(loaded.task.name == "roundtrip");
     CHECK_FALSE(loaded.system.packetizer.imu_required);
     CHECK(loaded.system.packetizer.post_support_s == Approx(0.05));
-    CHECK(configHash(loaded) == configHash(config));
+    CHECK(dumpConfig(loaded) == dumpConfig(config));
 }

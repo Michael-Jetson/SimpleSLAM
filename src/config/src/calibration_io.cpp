@@ -49,8 +49,8 @@ std::vector<double> numbers(const YAML::Node& node, std::size_t expected,
 
 /// 规范化导出里的字符串一律加引号并转义。
 ///
-/// 不加的话，一个含 `#`、冒号或换行的设备名导出之后就变成了别的东西，
-/// 往返不再等价，而哈希照样算得出来——于是"哈希相同"不再意味着"内容相同"。
+/// 不加的话，一个含 `#`、冒号或换行的设备名导出之后就变成了别的东西，往返不再等价：
+/// 任务记录里存的 `calibration.yaml` 就不是这次生效的那份了。
 std::string quoted(const std::string& value) {
     std::string out = "\"";
     for (const char c : value) {
@@ -273,15 +273,15 @@ fw::CalibrationData loadCalibrationFile(const std::string& path) {
 }
 
 std::string dumpCalibration(const fw::CalibrationData& calibration) {
-    // 格式表示不了的内容一律拒绝导出，不静默丢：导出正是哈希的输入，
-    // 丢了的东西哈希也看不见
+    // 格式表示不了的内容一律拒绝导出，不静默丢：任务记录里存的就是导出，
+    // 补评换算外参时读它，丢了的东西谁也看不见
     if (const auto problem = fw::validateCalibration(calibration); !problem.empty()) {
         throw CalibrationError("标定不能无损导出：" + problem);
     }
-    // 规范化：键序固定、旋转统一成四元数、数值格式固定。标定哈希基于它。
+    // 规范化：键序固定、旋转统一成四元数、数值格式固定，两份标定有什么不同直接比导出。
     //
-    // 哈希覆盖的是**序列化内容**，不是几何等价类：q 与 −q 表示同一个旋转，
-    // 哈希却不同。要按几何等价判断"是不是同一副外参"，比较位姿本身。
+    // 比的是**序列化内容**，不是几何等价类：q 与 −q 表示同一个旋转，导出却不同。
+    // 要按几何等价判断"是不是同一副外参"，比较位姿本身。
     std::ostringstream out;
     out << "device: " << quoted(calibration.device) << '\n';
     out << "\nimu:\n";
@@ -308,10 +308,9 @@ std::string dumpCalibration(const fw::CalibrationData& calibration) {
         out << "      side: " << fw::toString(extrinsic.convention.side) << '\n';
         out << "      order: " << fw::toString(extrinsic.convention.order) << '\n';
         // 按"是否已知"决定导不导，而不是按数值是否近零：1e-14 是一个很小的已知
-        // 不确定度，省掉它往返之后就变成了"没有协方差"，哈希却看不见这个变化
+        // 不确定度，省掉它往返之后就变成了"没有协方差"
         if (extrinsic.covariance_known) {
-            // 整个 6×6 都要导，不能只导对角：非对角项是相关性，丢了它
-            // "往返之后哈希不变"就只是"哈希没看见变化"
+            // 整个 6×6 都要导，不能只导对角：非对角项是相关性，丢了它往返就不是无损的
             out << "    covariance:\n";
             for (int r = 0; r < 6; ++r) {
                 out << "      - [";
@@ -343,8 +342,5 @@ void writeCalibrationFile(const std::string& path, const fw::CalibrationData& ca
     if (!file) throw CalibrationError("写标定文件失败: " + path);
 }
 
-std::string calibrationHash(const fw::CalibrationData& calibration) {
-    return digestHex(dumpCalibration(calibration));
-}
 
 }  // namespace simpleslam::config

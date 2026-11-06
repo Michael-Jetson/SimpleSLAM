@@ -2,8 +2,8 @@
 
 字段清单之外还有三样：插件字段要求的接口（``slots``），各目录里每个实现的
 字段清单（``plugins``），以及旧写法的换算表（``legacy``：旧路径到新写法的说明，换算本身
-在 C++ 加载器里）。哪个可执行文件导出 schema，目录里就是它登记的实现：
-用户写的算法要用用户自己的入口导出（``SIMPLESLAM_CONFIG_TOOL`` 指向它）。
+在 C++ 加载器里）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用用户
+自己的入口导出。
 
 没有缓存副本。缓存会漂移，而漂移了的 schema 比没有 schema 更糟——
 它会让校验通过，然后在 C++ 侧报未知键。
@@ -11,14 +11,11 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import os
-import shutil
-import struct
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator
+from typing import Iterable, Iterator
 
 
 class SchemaError(RuntimeError):
@@ -37,39 +34,21 @@ class Field:
         """按本字段的类型解析一个字符串值。类型不符抛 ValueError。"""
         return parse_kind(self.type, text, self.path)
 
-    def default_value(self):
-        if self.type == "list":
-            return json.loads(self.default) if self.default else []
-        if self.type == "slot":
-            return {"type": self.default}
-        if self.type == "slots":
-            return {}  # 默认是空表：没列就没有
-        return self.parse(self.default) if self.type != "string" else self.default
-
 
 def find_tool(tool: str | None = None) -> str:
-    """导出 schema、加载任务的那个入口：显式给出的，或 SIMPLESLAM_CONFIG_TOOL，或 PATH 里的
-    simpleslam-config。后者只有内置实现，用户写的算法要用登记了它的入口。"""
-    binary = tool or os.environ.get("SIMPLESLAM_CONFIG_TOOL") or shutil.which("simpleslam-config")
+    """导出 schema、加载任务的那个入口（可执行文件）：显式给出的，或环境变量
+    SIMPLESLAM_CONFIG_TOOL。操作台的命令默认用示例入口，按需构建。"""
+    binary = tool or os.environ.get("SIMPLESLAM_CONFIG_TOOL")
     if not binary:
         raise SchemaError(
-            "找不到 simpleslam-config。先构建它（cmake --build <build> "
-            "--target simpleslam_config_tool），或用 SIMPLESLAM_CONFIG_TOOL "
-            "指向可执行文件（用户写的算法用用户自己的入口）。"
+            "没有给入口：用 tool= 指向登记了所需实现的入口（可执行文件），"
+            "或设环境变量 SIMPLESLAM_CONFIG_TOOL"
         )
     return binary
 
 
-def round_to_float32(value: float, path: str) -> float:
-    """C++ 的单精度字段在赋值时就舍入了，还原后的节点存的是舍入后的值。"""
-    try:
-        return struct.unpack("f", struct.pack("f", value))[0]
-    except OverflowError as exc:
-        raise ValueError(f"{path}：{value!r} 超出这个字段的取值范围") from exc
-
-
 def parse_kind(kind: str, text: str, path: str):
-    """按类型解析默认值文本。口径与 C++ 导出的默认值文本一致。"""
+    """按配置字段的类型解析文本。口径与 C++ 导出的默认值文本一致。"""
     if kind == "bool":
         if text in ("true", "True", "yes", "on"):
             return True
@@ -80,19 +59,7 @@ def parse_kind(kind: str, text: str, path: str):
         return int(text)
     if kind == "double":
         return float(text)
-    if kind == "float":
-        return round_to_float32(float(text), path)
     return text
-
-
-def plugin_node(spec: dict[str, Any]) -> dict[str, Any]:
-    """schema JSON 里的插件节点（type / params / children 三段）换成配置里的写法：
-    一个映射，``type`` 加参数，子节点是嵌套的映射。"""
-    node: dict[str, Any] = {"type": spec["type"]}
-    node.update(spec.get("params", {}))
-    for key, child in spec.get("children", {}).items():
-        node[key] = plugin_node(child)
-    return node
 
 
 @dataclass(frozen=True)
@@ -101,20 +68,6 @@ class PluginField:
     kind: str  # bool / int / float / double / string / slot:<接口名>
     default: str
     doc: str
-    # 子槽的完整默认节点（类型加补齐的参数），没有默认实现时为 None。
-    # 默认实现可以带非默认参数，只凭 default 里的类型名补不对。
-    default_spec: dict[str, Any] | None = None
-
-    @property
-    def slot_interface(self) -> str | None:
-        return self.kind[len("slot:"):] if self.kind.startswith("slot:") else None
-
-    def default_value(self):
-        if self.slot_interface is not None:
-            return copy.deepcopy(self.default_spec)
-        if self.kind == "string":
-            return self.default
-        return parse_kind(self.kind, self.default, self.name)
 
 
 @dataclass(frozen=True)
@@ -169,8 +122,6 @@ class Schema:
                             kind=field["kind"],
                             default=field["default"],
                             doc=field.get("doc", ""),
-                            default_spec=(plugin_node(field["default_spec"])
-                                          if "default_spec" in field else None),
                         )
                         for field in item["fields"]
                     ),
@@ -187,7 +138,7 @@ class Schema:
 
     @classmethod
     def from_tool(cls, tool: str | None = None) -> "Schema":
-        """调用 ``<tool> schema`` 取得字段清单。默认是 simpleslam-config（只有内置实现）。"""
+        """调用 ``<tool> schema`` 取得字段清单。"""
         binary = find_tool(tool)
         try:
             result = subprocess.run(
@@ -218,30 +169,12 @@ class Schema:
         except KeyError as exc:
             raise SchemaError(f"未知配置项 {path}") from exc
 
-    @property
-    def paths(self) -> list[str]:
-        return [field.path for field in self._fields]
-
-    def tunable_paths(self) -> list[str]:
-        return [field.path for field in self._fields if field.tunable]
-
-    def slot_interface(self, path: str) -> str:
-        """插件字段要求的接口名。schema 没给对照表时报错：还原插件节点离不开它。"""
-        try:
-            return self._slots[path]
-        except KeyError as exc:
-            raise SchemaError(f"schema 里没有插件字段 {path} 要求的接口") from exc
-
     def implementations(self, interface: str) -> list[str]:
         return sorted(t for (i, t) in self._plugins if i == interface)
 
     def interfaces(self) -> list[str]:
         """目录里出现过的全部接口。"""
         return sorted({i for (i, _) in self._plugins})
-
-    def interfaces_providing(self, type_name: str) -> list[str]:
-        """哪些接口的目录里有这个类型名。选错接口时给出提示用。"""
-        return sorted({i for (i, t) in self._plugins if t == type_name})
 
     @property
     def legacy(self) -> dict[str, str]:

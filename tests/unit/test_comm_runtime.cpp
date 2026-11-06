@@ -203,19 +203,6 @@ TEST_CASE("参数提交在帧边界生效", "[comm][runtime]") {
     CHECK(module.observed[1] == 40);
 }
 
-TEST_CASE("接线诊断能抓出只发无订与只订无发", "[comm][runtime]") {
-    Runtime runtime(RuntimeOptions{true});
-    runtime.addModule<Counter>("/counter");  // 订阅 /tick
-    runtime.init();
-
-    auto dangling = runtime.danglingTopics();
-    REQUIRE(dangling.size() == 1);
-    CHECK(dangling[0] == "/tick");  // 只订无发
-
-    auto publisher = Publisher<Tick>(runtime.core().topic<Tick>("/tick"), PublishOptions{});
-    CHECK(runtime.danglingTopics().empty());
-}
-
 TEST_CASE("两个运行时互不干扰", "[comm][runtime]") {
     Runtime first(RuntimeOptions{true});
     Runtime second(RuntimeOptions{true});

@@ -141,7 +141,7 @@ TEST_CASE("标定 YAML：旋转只能给一种，未知键报错", "[config][cal
                     cfg::CalibrationError);
 }
 
-TEST_CASE("标定文件往返与哈希", "[config][calibration]") {
+TEST_CASE("标定文件往返：读回来的导出与原来的相同，改了就不同", "[config][calibration]") {
     fw::CalibrationData calibration;
     calibration.device = "demo";
     calibration.imu.rate_hz = 100.0;
@@ -162,11 +162,11 @@ TEST_CASE("标定文件往返与哈希", "[config][calibration]") {
     REQUIRE(loaded.T_body_sensor("velodyne").has_value());
     CHECK((loaded.T_body_sensor("velodyne")->translation() - lidar.T_body_sensor.translation())
               .norm() == Approx(0.0).margin(1e-12));
-    CHECK(cfg::calibrationHash(loaded) == cfg::calibrationHash(calibration));
+    CHECK(cfg::dumpCalibration(loaded) == cfg::dumpCalibration(calibration));
 
     fw::CalibrationData changed = calibration;
     changed.imu.gravity = 9.81;
-    CHECK(cfg::calibrationHash(changed) != cfg::calibrationHash(calibration));
+    CHECK(cfg::dumpCalibration(changed) != cfg::dumpCalibration(calibration));
     std::filesystem::remove(path);
 }
 
@@ -238,8 +238,8 @@ TEST_CASE("时间列长度不符要与缺时间区分开", "[framework][deskew]"
 }
 
 TEST_CASE("标定往返不丢协方差与扰动约定", "[config][calibration]") {
-    // 只导对角就等于把相关性丢了，而哈希照样算得出来——
-    // 于是"哈希相同"不再意味着"内容相同"
+    // 只导对角就等于把相关性丢了，而导出照样写得出来——
+    // 于是"导出相同"不再意味着"内容相同"
     fw::CalibrationData calibration;
     calibration.device = "含 # 号的设备名";
     fw::Extrinsic lidar;
@@ -265,13 +265,13 @@ TEST_CASE("标定往返不丢协方差与扰动约定", "[config][calibration]")
     CHECK(entry->convention.order == fw::TangentOrder::kRotationTranslation);
     CHECK(entry->covariance_known);
     CHECK_FALSE(entry->fixed);
-    CHECK(cfg::calibrationHash(loaded) == cfg::calibrationHash(calibration));
+    CHECK(cfg::dumpCalibration(loaded) == cfg::dumpCalibration(calibration));
 
-    // 改一个非对角项，哈希必须跟着变
+    // 改一个非对角项，导出必须跟着变
     fw::CalibrationData changed = calibration;
     changed.extrinsics["velodyne"].covariance(1, 4) = 0.3;
     changed.extrinsics["velodyne"].covariance(4, 1) = 0.3;
-    CHECK(cfg::calibrationHash(changed) != cfg::calibrationHash(calibration));
+    CHECK(cfg::dumpCalibration(changed) != cfg::dumpCalibration(calibration));
     std::filesystem::remove(path);
 }
 

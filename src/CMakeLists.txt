@@ -11,7 +11,6 @@ add_subdirectory(modules)
 
 if(SIMPLESLAM_BUILD_TOOLING)
     add_subdirectory(eval)
-    add_subdirectory(record)
     add_subdirectory(config)
     add_subdirectory(app)
 endif()

@@ -9,10 +9,39 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include <system_error>
 
+#ifndef SIMPLESLAM_VERSION
+#define SIMPLESLAM_VERSION "unknown"
+#endif
+
 namespace simpleslam::app::run_dir {
+
+namespace {
+
+/// 运行的事实在 `outcome.yaml` 里；v3 及以前写在 `identity.yaml` 里。前者有这一项就取前者。
+std::optional<YAML::Node> runFact(const fs::path& dir, const char* key) {
+    for (const char* file : {"outcome.yaml", "identity.yaml"}) {
+        const fs::path path = dir / file;
+        if (!fs::exists(path)) continue;
+        const YAML::Node value = YAML::LoadFile(path.string())[key];
+        if (value) return value;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::int64_t> parseNanoseconds(const YAML::Node& node) {
+    if (!node || !node.IsScalar()) return std::nullopt;
+    const std::string text = node.Scalar();
+    std::int64_t value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) return std::nullopt;
+    return value;
+}
+
+}  // namespace
 
 fs::path directory(const config::TaskConfig& config) {
     return config.outputs.dir.empty() ? fs::path("runs") / config.task.name
@@ -83,17 +112,23 @@ std::string jsonNumber(double value) {
     return std::isfinite(value) ? std::format("{}", value) : std::string("null");
 }
 
-void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome,
-                  const RunCounts& counts) {
+void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const RunCounts& counts,
+                  const std::map<std::string, std::string>& effective) {
     const auto flag = [](bool value) { return value ? "true" : "false"; };
+    std::string inputs;
+    for (const auto& [key, value] : effective) {
+        inputs += "  " + quoted(key) + ": " + quoted(value) + "\n";
+    }
     writeText(dir / "outcome.yaml",
-              std::format("complete: {}\ninput_complete: {}\nprocessing_complete: {}\n"
-                          "output_complete: {}\npackets: {}\nframes: {}\nkeyframes: {}\n"
-                          "log_dropped: {}\nreasons: {}\nnotes: {}\n",
-                          flag(outcome.complete()), flag(outcome.inputComplete()),
-                          flag(outcome.processingComplete()), flag(outcome.outputComplete()),
-                          counts.packets, counts.frames, counts.keyframes, counts.log_dropped,
-                          quotedList(outcome.reasons()), quotedList(outcome.notes())));
+              std::format("software_version: {}\ncomplete: {}\ninput_complete: {}\n"
+                          "processing_complete: {}\noutput_complete: {}\npackets: {}\n"
+                          "frames: {}\nkeyframes: {}\nlog_dropped: {}\nreasons: {}\nnotes: {}\n"
+                          "effective:{}\n{}",
+                          quoted(SIMPLESLAM_VERSION), flag(outcome.complete()),
+                          flag(outcome.inputComplete()), flag(outcome.processingComplete()),
+                          flag(outcome.outputComplete()), counts.packets, counts.frames,
+                          counts.keyframes, counts.log_dropped, quotedList(outcome.reasons()),
+                          quotedList(outcome.notes()), inputs.empty() ? " {}" : "", inputs));
 }
 
 bool readComplete(const fs::path& dir) {
@@ -107,12 +142,47 @@ bool readComplete(const fs::path& dir) {
     }
 }
 
+void writeSources(const fs::path& dir, const config::TaskSource& source, const std::string& extra) {
+    const fs::path target = dir / "source";
+    fs::create_directories(target);
+    std::set<std::string> taken;
+    const auto copy = [&](const std::string& file, const std::string& role) {
+        if (file.empty() || !fs::is_regular_file(file)) return;
+        std::string name = fs::path(file).filename().string();
+        if (!taken.insert(name).second) {
+            name = role + "_" + name;
+            taken.insert(name);
+        }
+        fs::copy_file(file, target / name, fs::copy_options::overwrite_existing);
+    };
+    copy(source.task_file, "task");
+    copy(source.system_file, "system");
+    copy(extra, "source");
+    if (!source.overrides.empty()) {
+        std::string text;
+        for (const auto& item : source.overrides) text += item + '\n';
+        writeText(target / "overrides.txt", text);
+    }
+}
+
+std::optional<fw::TimeRange> readTargetWindow(const fs::path& dir) {
+    try {
+        const auto effective = runFact(dir, "effective");
+        if (!effective || !effective->IsMap()) return std::nullopt;
+        const auto begin = parseNanoseconds((*effective)["source.evaluation_window_begin_ns"]);
+        const auto end = parseNanoseconds((*effective)["source.evaluation_window_end_ns"]);
+        if (!begin || !end) return std::nullopt;
+        return fw::TimeRange{fw::Timestamp{*begin}, fw::Timestamp{*end}};
+    } catch (const YAML::Exception& e) {
+        throw std::runtime_error("读不懂任务记录 " + dir.string() + " 里的运行事实: " + e.what());
+    }
+}
+
 std::optional<int> writtenByMajor(const fs::path& dir) {
     try {
-        const YAML::Node identity = YAML::LoadFile((dir / "identity.yaml").string());
-        const YAML::Node version = identity["software_version"];
-        if (!version || !version.IsScalar()) return std::nullopt;
-        const std::string text = version.Scalar();
+        const auto version = runFact(dir, "software_version");
+        if (!version || !version->IsScalar()) return std::nullopt;
+        const std::string text = version->Scalar();
         int major = 0;
         const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), major);
         if (error != std::errc{} || end == text.data()) return std::nullopt;
@@ -131,12 +201,13 @@ ResultSummary readResult(const fs::path& dir) {
     } catch (const YAML::Exception& e) {
         throw std::runtime_error("读不懂结论 " + path.string() + ": " + e.what());
     }
-    if (!root["schema"] || root["schema"].as<int>() != kResultSchema) {
-        throw std::runtime_error(std::format("结论 {} 的格式版本不是 {}", path.string(),
+    const int schema = root["schema"] ? root["schema"].as<int>() : 0;
+    if (schema < kOldestResultSchema || schema > kResultSchema) {
+        throw std::runtime_error(std::format("结论 {} 的格式版本是 {}，这里读得懂 {} 到 {}",
+                                             path.string(), schema, kOldestResultSchema,
                                              kResultSchema));
     }
     ResultSummary summary;
-    summary.status = root["status"].as<std::string>();
     summary.exit_code = root["exit_code"].as<int>();
     if (root["complete"] && !root["complete"].IsNull()) {
         summary.complete = root["complete"].as<bool>();

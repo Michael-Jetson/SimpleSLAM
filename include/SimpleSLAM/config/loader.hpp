@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file loader.hpp
-/// 任务配置的加载、导出、哈希与 schema。全部从 visitConfig 派生，字段只写一次。
+/// 任务配置的加载、导出与 schema。全部从 visitConfig 派生，字段只写一次。
 ///
 /// 加载的顺序：读任务文件 → `system` 写的是路径就读那份系统文件（相对任务文件所在目录），
 /// 挂到 `system` 下 → 依次应用文件里的 `overrides` 与调用方给的覆盖项 → 严格校验。
@@ -13,8 +13,8 @@
 /// 规矩：
 /// 1. **未知键是错误**，不是"忽略"。插件节点内部的键由目录在还原时查。
 /// 2. **类型不符是错误**，不做隐式转换（`"30"` 不是 30，`1` 不是 true）。
-/// 3. **配置哈希是规范化导出的哈希**，与 YAML 里的注释、键序、空白无关。插件节点要先由
-///    目录还原（补齐默认值）再哈希，否则写不写默认值会得出两个哈希。
+/// 3. **规范化导出与 YAML 里的注释、键序、空白无关**。插件节点先由目录还原（补齐默认值）
+///    再导出，写不写默认值得到同一份导出。两份任务有什么不同，比它们的导出。
 /// 4. **规范化导出必须语义无损**：`load(dump(c)) == c`。字符串一律加引号转义。
 ///    导出不含覆盖项和文件出处：导出的是覆盖之后的结果，出处另记在 `TaskSource`。
 /// 5. **类型对了不等于值有意义**：枚举拼错、时长为负，都在加载时就报错。
@@ -53,7 +53,7 @@ struct FieldSchema {
 void validateConfig(const TaskConfig& config);
 
 /// 一个任务的出处：任务文件、它引用的系统文件、施加过的覆盖项（文件里的在前）。
-/// 进任务记录，不进配置哈希：同一份结果，换一种写法得到的应当是同一个哈希。
+/// 原件存进任务记录的 `source/`；规范化导出不含它：同一份任务换一种写法，导出相同。
 struct TaskSource {
     std::string task_file;
     std::string system_file;
@@ -80,20 +80,9 @@ struct LoadedTask {
 void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
                     std::vector<std::string>* notes = nullptr);
 
-/// 规范化导出：按 schema 顺序、按节嵌套、数值格式固定。哈希基于它，所以不能随手改。
+/// 规范化导出：按 schema 顺序、按节嵌套、数值格式固定，写不写默认值、键序与注释都不影响它。
+/// 任务记录里的 `task.yaml` 就是它，两份任务要不要比、比什么，直接比它。
 [[nodiscard]] std::string dumpConfig(const TaskConfig& config);
 void writeConfigFile(const std::string& path, const TaskConfig& config);
-
-/// 整个任务的哈希，不含 `outputs` 与 `evaluation`：产出放在哪里、怎么评测都不影响运行，
-/// 换个任务记录目录重跑、换评测函数重评，仍是同一个任务。
-[[nodiscard]] std::string configHash(const TaskConfig& config);
-/// 只覆盖 `system` 子树：标识算法的配置，与数据、评测、产出无关。
-[[nodiscard]] std::string systemHash(const TaskConfig& config);
-
-/// FNV-1a 64 的十六进制摘要（与 Python 侧一致）。
-[[nodiscard]] std::string digestHex(const std::string& text);
-
-/// 有效输入（键值对）的哈希：长度前缀编码，键或值里带 '=' 或换行也不会撞。
-[[nodiscard]] std::string effectiveHash(const std::map<std::string, std::string>& effective);
 
 }  // namespace simpleslam::config

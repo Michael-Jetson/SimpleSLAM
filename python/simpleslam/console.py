@@ -23,7 +23,7 @@ from simpleslam.config import SYSTEM_FILE, Config, ConfigError, assignment
 from simpleslam.results import (ResultError, Row, csv_table, describe, rows, table,
                                 worst_exit_code)
 from simpleslam.schema import Schema
-from simpleslam.workspace import DEFAULT_ENTRY, Workspace
+from simpleslam.workspace import DEFAULT_ENTRY, EVAL_TOOL, Workspace
 
 
 def anchored(config: Config, base: Path) -> Config:
@@ -91,11 +91,14 @@ def _flags(options: Options, *, jobs: bool) -> list[str]:
 
 def run_task(workspace: Workspace, task: Path, overrides: list[str], options: Options) -> int:
     entry = workspace.entry(options.entry, build=options.build)
+    source: list[str] = []
     if task.suffix == ".py":
+        # 渲染之前的 .py 也存进任务记录（source/）：人写的是它，不是渲染出的 YAML
+        source = [f"--source={task.resolve()}"]
         schema = Schema.from_tool(str(entry))
         task = render(load_python_task(task), schema,
                       workspace.build_dir / "rendered" / f"{task.stem}.yaml")
-    argv = [str(entry), str(task), *overrides, *_flags(options, jobs=True)]
+    argv = [str(entry), str(task), *overrides, *_flags(options, jobs=True), *source]
     return subprocess.run(argv).returncode
 
 
@@ -104,6 +107,13 @@ def evaluate(workspace: Workspace, run_dir: Path, overrides: list[str], options:
     要用登记了这些评测函数的入口。"""
     entry = workspace.entry(options.entry, build=options.build)
     return subprocess.run([str(entry), "evaluate", str(run_dir), *overrides]).returncode
+
+
+def evaluate_trajectories(workspace: Workspace, estimate: str, reference: str,
+                          flags: list[str], options: Options) -> int:
+    """评测别的系统跑出来的轨迹：交给 ``simpleslam-eval``，选项原样转交。"""
+    tool = workspace.entry(EVAL_TOOL, build=options.build)
+    return subprocess.run([str(tool), estimate, reference, *flags]).returncode
 
 
 def demo(workspace: Workspace, options: Options) -> int:
@@ -161,7 +171,8 @@ def sweep(workspace: Workspace, task: Path, overrides: list[str], options: Optio
                           workspace.build_dir / "rendered" / task.stem / f"{name}.yaml")
         # 扫参决定任务记录放在哪：一个变体一份，都在 <base> 下
         argv = [str(entry), str(rendered), *overrides,
-                assignment("outputs.dir", str(base / name)), *_flags(options, jobs=False)]
+                assignment("outputs.dir", str(base / name)), *_flags(options, jobs=False),
+                f"--source={task.resolve()}"]
         commands.append((name, argv, base / "logs" / f"{name}.log"))
     codes = _run_parallel(commands, options.jobs)
     items = []
@@ -169,7 +180,7 @@ def sweep(workspace: Workspace, task: Path, overrides: list[str], options: Optio
         try:
             items.extend(rows(base / name))
         except ResultError:
-            items.append(Row(name=name, status="error", exit_code=codes[name], complete=None,
+            items.append(Row(name=name, exit_code=codes[name], complete=None,
                              problem=f"见日志 {log}"))
     print(table(items))
     return worst_exit_code(list(codes.values()))
@@ -188,8 +199,7 @@ def compare(run_dirs: list[Path], *, as_csv: bool = False,
         try:
             items.extend(rows(run_dir))
         except ResultError as exc:
-            items.append(Row(name=str(run_dir), status="error", exit_code=1, complete=None,
-                             problem=str(exc)))
+            items.append(Row(name=str(run_dir), exit_code=1, complete=None, problem=str(exc)))
     return csv_table(items, metrics) if as_csv else table(items, metrics=metrics)
 
 

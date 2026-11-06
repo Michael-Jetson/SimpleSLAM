@@ -11,7 +11,6 @@
 ///
 /// 评测函数**只读**输入（`EvaluationInputs`），跑完立刻评与事后对任务记录补评读的是同一批
 /// 文件，数字一样。它**只返回值**（`Evaluation`），写文件、格式与版本号由框架定一次。
-/// 门禁按评测函数的样本数核验有效性，按它的类型与参数核验可比性（`baseline.hpp`）。
 
 #include <SimpleSLAM/framework/trajectory.hpp>
 #include <SimpleSLAM/logging/logger.hpp>
@@ -55,7 +54,7 @@ struct Table {
 
 /// 一个评测函数的结果。
 struct Evaluation {
-    /// 有效样本数。为零表示这次没测出东西；门禁按它核验有效性。
+    /// 有效样本数。为零表示这次没测出东西：结论里写无结果，没有标量。
     std::size_t samples = 0;
     std::vector<Scalar> scalars;
     std::vector<Table> tables;
@@ -106,7 +105,7 @@ public:
 
     [[nodiscard]] virtual Needs needs() const = 0;
 
-    /// 只读输入，只返回值。没有结果的量不给（不写 NaN）：非有限的标量会让门禁判无效。
+    /// 只读输入，只返回值。没有结果的量不给（不写 NaN）：非有限的标量在结论里写 null。
     [[nodiscard]] virtual Evaluation evaluate(const EvaluationInputs& inputs) const = 0;
 
 protected:

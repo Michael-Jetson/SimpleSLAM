@@ -37,7 +37,75 @@ constexpr std::array<Moved, 6> kMoved = {{
     {.old_key = "rpe_delta_s", .param = "delta_s", .ate = false, .rpe = true},
 }};
 
+/// 去掉的键取别的值时怎么办。取旧默认值时一律静默去掉：v2、v3 写的每份 task.yaml 都带着它们。
+enum class Otherwise : std::uint8_t {
+    kQuiet,  ///< 照样静默去掉：它的作用已经没有了
+    kNote,   ///< 去掉，说明一句
+    kError,  ///< 报错：忽略它会让人以为它生效了
+};
+
+/// v4 去掉的键：没有替代的写法，删掉这一行即可。
+struct Removed {
+    const char* section;
+    const char* key;
+    const char* old_default;  ///< 旧默认值：true / false、整数，或空串
+    Otherwise otherwise;
+    const char* reason;
+};
+
+constexpr std::array<Removed, 5> kRemoved = {{
+    {.section = "task",
+     .key = "seed",
+     .old_default = "0",
+     .otherwise = Otherwise::kNote,
+     .reason = "没有算法读它；要用随机数的算法，把种子写成那个插件的参数"},
+    {.section = "evaluation",
+     .key = "allow_incomplete",
+     .old_default = "false",
+     .otherwise = Otherwise::kQuiet,
+     .reason = "不完整的运行照常评测，是否完整另记在结论里"},
+    {.section = "evaluation",
+     .key = "baselines",
+     .old_default = "",
+     .otherwise = Otherwise::kError,
+     .reason = "基线门禁去掉了，精度对比看 ./run.py compare 的对比表"},
+    {.section = "outputs",
+     .key = "record",
+     .old_default = "false",
+     .otherwise = Otherwise::kError,
+     .reason = "录制去掉了：数据来自文件时重跑即可，实时数据用 rosbag 录"},
+    {.section = "outputs",
+     .key = "record_diagnostics",
+     .old_default = "true",
+     .otherwise = Otherwise::kQuiet,
+     .reason = "随录制一起去掉了"},
+}};
+
 bool isQuoted(const YAML::Node& node) { return node.Tag() == "!"; }
+
+/// 取的是不是旧默认值。按类型比，`False` 与 `false`、`00` 与 `0` 一样；类型不对就不是。
+bool isOldDefault(const YAML::Node& node, std::string_view old_default) {
+    if (old_default.empty()) return node.IsNull() || (node.IsScalar() && node.Scalar().empty());
+    if (!node.IsScalar()) return false;
+    try {
+        if (old_default == "true" || old_default == "false") {
+            return !isQuoted(node) && node.as<bool>() == (old_default == "true");
+        }
+        return !isQuoted(node) && node.as<std::int64_t>() == std::stoll(std::string(old_default));
+    } catch (const YAML::Exception&) {
+        return false;
+    }
+}
+
+/// 一个去掉的键：静默去掉、说明一句或报错。`where` 写在说明与报错的开头。
+void retire(const Removed& removed, const YAML::Node& value, const std::string& where,
+            std::vector<std::string>& notes) {
+    if (isOldDefault(value, removed.old_default) || removed.otherwise == Otherwise::kQuiet) return;
+    const std::string path = std::string(removed.section) + "." + removed.key;
+    const std::string message = where + path + " 去掉了（" + removed.reason + "），删掉这一行";
+    if (removed.otherwise == Otherwise::kError) throw ConfigError(message);
+    notes.push_back(message + "即可");
+}
 
 /// 映射里的一个键。没有就是空：默认构造的 `YAML::Node` 是已定义的 null，不能拿来表示"没有"。
 std::optional<YAML::Node> child(const YAML::Node& parent, const char* key) {
@@ -104,11 +172,27 @@ const std::vector<std::pair<std::string, std::string>>& fields() {
         {"evaluation.rpe_delta_m", "evaluation.evaluators.rpe.delta_m"},
         {"evaluation.rpe_delta_s", "evaluation.evaluators.rpe.delta_s"},
     };
-    return table;
+    static const auto with_removed = [] {
+        auto out = table;
+        for (const auto& removed : kRemoved) {
+            out.emplace_back(std::string(removed.section) + "." + removed.key,
+                             std::string("去掉了：") + removed.reason);
+        }
+        return out;
+    }();
+    return with_removed;
 }
 
 void upgradeTree(YAML::Node& root, const std::string& origin, std::vector<std::string>& notes) {
     const YAML::Node& view = root;  // 只读查找：非 const 的 operator[] 会插入空键
+    for (const auto& removed : kRemoved) {
+        const auto section = child(view, removed.section);
+        const auto value = section ? child(*section, removed.key) : std::nullopt;
+        if (!value) continue;
+        retire(removed, *value, origin + ": ", notes);
+        root[removed.section].remove(removed.key);
+        if (root[removed.section].size() == 0) root.remove(removed.section);
+    }
     const auto task = child(view, "task");
     const auto evaluation = child(view, "evaluation");
     const auto purpose = task ? child(*task, "purpose") : std::nullopt;
@@ -216,6 +300,17 @@ std::optional<Translated> translateAssignment(const TaskConfig& config, const st
     const auto note = [&](const std::string& meaning) {
         notes.push_back("覆盖项 " + path + "=" + text + " 是 v2 的写法，按 " + meaning + " 理解");
     };
+    for (const auto& removed : kRemoved) {
+        if (path != std::string(removed.section) + "." + removed.key) continue;
+        YAML::Node value;
+        try {
+            value = YAML::Load(text);
+        } catch (const YAML::Exception&) {
+            value = YAML::Node(text);
+        }
+        retire(removed, value, "覆盖项 ", notes);
+        return Translated{};  // 不必改：这个键已经没有了
+    }
     if (path == "task.purpose") {
         const std::string kind = overrideText(text);
         if (kind == "run") {

@@ -77,7 +77,7 @@ Dataset RawReader::doOpen(const DatasetRequest& request) const {
     RawOptions options;
     options.skip_scans = static_cast<std::size_t>(config_.skip_scans);
     options.max_scans = static_cast<std::size_t>(config_.max_scans);
-    // 时间异常的帧默认拒绝读取；修补必须显式打开，修补了哪些帧进有效身份
+    // 时间异常的帧默认拒绝读取；修补必须显式打开，修补了哪些帧写进运行结局
     options.repair_scan_timing = config_.repair_scan_timing;
     // 惯性流的右括点要与实际生效的打包策略一致，否则末帧等不到
     options.post_support = request.post_support;

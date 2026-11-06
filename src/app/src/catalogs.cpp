@@ -3,7 +3,6 @@
 
 #include <SimpleSLAM/algo/builtins.hpp>
 #include <SimpleSLAM/app/catalogs.hpp>
-#include <SimpleSLAM/app/replay_reader.hpp>
 #include <SimpleSLAM/eval/evaluators.hpp>
 #include <SimpleSLAM/plugins/dataset.hpp>
 #include <SimpleSLAM/plugins/graph_optimizer.hpp>
@@ -22,7 +21,6 @@ config::Catalogs builtinCatalogs() {
     auto& readers = catalogs.of<plugin::DatasetReader>();
     readers.add<plugin::kitti::OdometryReader>();
     readers.add<plugin::kitti::RawReader>();
-    readers.add<ReplayReader>();
 
     catalogs.of<plugin::PlaceRecognizerBase>().add<plugin::NoPlaceRecognizer>();
     catalogs.of<plugin::GraphOptimizerBase>().add<plugin::NoGraphOptimizer>();

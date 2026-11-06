@@ -86,19 +86,4 @@ void RuntimeCore::setParamBroadcast(std::function<void(const ParamSnapshotPtr&)>
     param_broadcast_ = std::move(broadcast);
 }
 
-std::size_t RuntimeCore::publisherCount(const std::string& resolved) const {
-    std::lock_guard lock(mutex_);
-    auto it = topics_.find(resolved);
-    return it == topics_.end() ? 0U : it->second->publisherCount();
-}
-
-std::vector<std::string> RuntimeCore::danglingTopics() const {
-    std::vector<std::string> dangling;
-    std::lock_guard lock(mutex_);
-    for (const auto& [name, topic] : topics_) {
-        if ((topic->subscriberCount() == 0) != (topic->publisherCount() == 0)) dangling.push_back(name);
-    }
-    return dangling;
-}
-
 }  // namespace simpleslam::comm

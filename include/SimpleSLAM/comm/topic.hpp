@@ -46,8 +46,6 @@ public:
 
     void close();
     [[nodiscard]] bool closed() const;
-    void markRequired() noexcept { required_ = true; }
-    [[nodiscard]] bool required() const noexcept { return required_; }
     [[nodiscard]] const std::string& topicName() const noexcept { return topic_; }
     [[nodiscard]] std::size_t queueSize() const noexcept { return queue_size_; }
     void offer(const AnyMsg& msg);
@@ -69,7 +67,6 @@ private:
     std::uint64_t delivered_ = 0;
     std::uint64_t dropped_ = 0;
     bool closed_ = false;
-    bool required_ = false;  ///< 只在装配期写
 };
 
 /// 订阅者对象。订阅由模块持有，所以默认不需要保存，丢掉它也不会退订；
@@ -82,11 +79,6 @@ public:
     /// 退订：队列里没处理的丢弃，之后不再开始新的回调。在别的线程调用时，正在执行的那一次不受影响。
     void shutdown() const {
         if (impl_) impl_->close();
-    }
-    /// 声明这个输入不可缺：init() 时话题没有发布者就失败。默认是可选的。
-    const Subscriber& required() const noexcept {
-        if (impl_) impl_->markRequired();
-        return *this;
     }
     [[nodiscard]] bool active() const { return impl_ && !impl_->closed(); }
     [[nodiscard]] SubscriptionStats stats() const { return impl_ ? impl_->stats() : SubscriptionStats{}; }

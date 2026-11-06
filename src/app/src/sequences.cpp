@@ -42,7 +42,9 @@ namespace {
 namespace fs = std::filesystem;
 
 /// 多序列任务记录的顶层由执行器写的文件。`--overwrite` 只删这些；各序列的子任务记录由子进程自己清。
-constexpr const char* kSuiteFiles[] = {"task.yaml", "identity.yaml", "result.json", "logs"};
+/// 多序列顶层由执行器写的文件；`identity.yaml` 是旧版本写过的，覆盖时一并删掉。
+constexpr const char* kSuiteFiles[] = {"task.yaml", "result.json", "logs", "source",
+                                       "identity.yaml"};
 
 /// 一个序列：怎么跑，跑成什么样。
 struct SequenceRun {
@@ -99,6 +101,7 @@ std::vector<SequenceRun> plan(const ResolvedTask& task, const RunOptions& option
         run.args.push_back("data.source.sequence=" + run_dir::quoted(sequence));
         run.args.push_back("outputs.dir=" + run_dir::quoted(run.dir.string()));
         if (options.overwrite) run.args.emplace_back("--overwrite");
+        if (!options.source_file.empty()) run.args.push_back("--source=" + options.source_file);
         runs.push_back(std::move(run));
     }
     return runs;
@@ -209,10 +212,10 @@ std::string lastError(const fs::path& log) {
     return last.empty() ? "见日志" : last;
 }
 
-/// 子进程跑到了最后（写下了结论）才读它的子任务记录：出错退出的子进程可能留下
-/// 上一次的旧文件，读了就是拿旧结果冒充这一次的。
+/// 子进程跑到了最后（写下了结论，退出码 0 或 4）才读它的子任务记录：出错退出的子进程
+/// 可能留下上一次的旧文件，读了就是拿旧结果冒充这一次的。
 void collect(SequenceRun& run) {
-    if (run.exit_code != 0 && run.exit_code != 3 && run.exit_code != 4 && run.exit_code != 5) {
+    if (run.exit_code != 0 && run.exit_code != 4) {
         if (run.problem.empty()) run.problem = lastError(run.log);
         return;
     }
@@ -224,8 +227,6 @@ void collect(SequenceRun& run) {
         run.exit_code = 1;
     }
 }
-
-std::string status(const SequenceRun& run) { return run.result ? run.result->status : "error"; }
 
 using Scalars = std::vector<std::pair<std::string, run_dir::ScalarValue>>;
 
@@ -272,39 +273,14 @@ std::string scalarsJson(const Scalars& scalars) {
     return out + "}";
 }
 
-/// 出错 > 无效 > 不可比较 > 失败 > 通过。
-int severity(int exit_code) {
-    switch (exit_code) {
-        case 0: return 0;
-        case 3: return 1;
-        case 5: return 2;
-        case 4: return 3;
-        default: return 4;
-    }
-}
-
+/// 出错 > 不完整 > 完整：有序列出错就是 1，否则有不完整的就是 4。
 int worstExitCode(const std::vector<SequenceRun>& runs) {
     int worst = 0;
     for (const auto& run : runs) {
-        if (severity(run.exit_code) > severity(worst)) {
-            worst = severity(run.exit_code) == 4 ? 1 : run.exit_code;
-        }
+        if (run.exit_code != 0 && run.exit_code != 4) return 1;
+        if (run.exit_code == 4) worst = 4;
     }
     return worst;
-}
-
-void writeIdentity(const fs::path& dir, const ResolvedTask& task) {
-    const auto& c = task.config;
-    run_dir::writeText(
-        dir / "identity.yaml",
-        std::format("software_version: {}\ntask_hash: {}\nsystem_hash: {}\nseed: {}\n"
-                    "task_file: {}\nsystem_file: {}\noverrides: {}\nsequences: {}\n",
-                    run_dir::quoted(SIMPLESLAM_VERSION), run_dir::quoted(config::configHash(c)),
-                    run_dir::quoted(config::systemHash(c)), c.task.seed,
-                    run_dir::quoted(task.source.task_file),
-                    run_dir::quoted(task.source.system_file),
-                    run_dir::quotedList(task.source.overrides),
-                    run_dir::quotedList(c.data.sequences)));
 }
 
 /// 汇总写成 `result.json`：与单次运行同一种格式版本，操作台（Python）读它。
@@ -316,16 +292,13 @@ void writeResult(const fs::path& dir, const config::TaskConfig& c,
          << ",\n  \"kind\": \"sequences\",\n  \"task\": " << jsonString(c.task.name)
          << ",\n  \"mode\": " << jsonString(c.task.mode)
          << ",\n  \"software_version\": " << jsonString(SIMPLESLAM_VERSION)
-         << ",\n  \"task_hash\": " << jsonString(config::configHash(c))
-         << ",\n  \"system_hash\": " << jsonString(config::systemHash(c))
          << ",\n  \"exit_code\": " << exit_code << ",\n  \"sequences\": [";
     for (std::size_t i = 0; i < runs.size(); ++i) {
         const auto& run = runs[i];
         text << (i == 0 ? "\n" : ",\n") << "    {\"name\": " << jsonString(run.name)
              << ", \"dir\": " << jsonString(run.dir.string())
              << ", \"log\": " << jsonString(run.log.string())
-             << ", \"exit_code\": " << run.exit_code
-             << ", \"status\": " << jsonString(status(run)) << ", \"complete\": "
+             << ", \"exit_code\": " << run.exit_code << ", \"complete\": "
              << (run.complete ? (*run.complete ? "true" : "false") : "null")
              << ", \"problem\": " << jsonString(run.problem)
              << ", \"scalars\": " << scalarsJson(run.result ? run.result->scalars : Scalars{})
@@ -373,18 +346,19 @@ void printTable(std::ostream& out, const std::vector<SequenceRun>& runs) {
         const auto* value = find(scalars, name);
         return value == nullptr ? std::string("-") : std::format("{:.4f}", value->value);
     };
-    out << pad("序列", 28) << pad("退出码", 8) << pad("结论", 14);
+    out << pad("序列", 28) << pad("退出码", 8) << pad("完整", 8);
     for (const auto& [name, label] : columns) out << pad(label, 12);
     out << '\n';
     for (const auto& run : runs) {
         const Scalars none;
         const Scalars& scalars = run.result ? run.result->scalars : none;
-        out << pad(run.name, 28) << pad(std::to_string(run.exit_code), 8) << pad(status(run), 14);
+        const char* complete = run.complete ? (*run.complete ? "是" : "否") : "-";
+        out << pad(run.name, 28) << pad(std::to_string(run.exit_code), 8) << pad(complete, 8);
         for (const auto& [name, label] : columns) out << pad(cell(scalars, name), 12);
         out << '\n';
     }
     const auto average = mean(runs);
-    out << pad("平均（每个序列都有结果才算）", 50);
+    out << pad("平均（每个序列都有结果才算）", 44);
     for (const auto& [name, label] : columns) out << pad(cell(average, name), 12);
     out << '\n';
 }
@@ -401,7 +375,7 @@ int runSequences(const ResolvedTask& task, const RunOptions& options, std::ostre
     run_dir::prepare(dir, kSuiteFiles);
     fs::create_directories(dir / "logs");
     config::writeConfigFile((dir / "task.yaml").string(), c);
-    writeIdentity(dir, task);
+    run_dir::writeSources(dir, task.source, options.source_file);
     out << "多序列: " << runs.size() << " 个，同时跑 " << std::min(options.jobs, runs.size())
         << " 个" << std::endl;
 

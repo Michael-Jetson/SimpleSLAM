@@ -81,16 +81,6 @@ void Runtime::init() {
     if (state() != RuntimeState::kBuilding) throw WiringError("init() 只能调用一次");
     for (auto& m : modules_) timer_queues_.push_back(&m->mailbox()->timers());
     for (auto& m : modules_) m->initialize();
-    // 接线校验：一个进程里全部模块都已登记，这里就能查出来，不用等运行时才发现收不到数据
-    std::string missing;
-    for (const auto& m : modules_) {
-        for (const auto& sub : m->subscriptions_) {
-            if (sub->required() && core_->publisherCount(sub->topicName()) == 0) {
-                missing += "\n  " + m->name() + " 需要话题 " + sub->topicName() + "，但没有发布者";
-            }
-        }
-    }
-    if (!missing.empty()) throw WiringError("接线不完整：" + missing);
     state_.store(RuntimeState::kReady, std::memory_order_release);
 }
 
@@ -264,25 +254,6 @@ RuntimeStats Runtime::stats() const {
         for (const auto& sub : m->subscriptions_) out.subscriptions.push_back(sub->stats());
     }
     return out;
-}
-
-std::string Runtime::graph() const {
-    std::string out = "digraph simpleslam {\n  rankdir=LR;\n";
-    const auto quote = [](const std::string& s) { return '"' + s + '"'; };
-    for (const auto& m : modules_) {
-        out += "  " + quote(m->name()) + " [shape=box];\n";
-        for (const auto& t : m->advertised_) {
-            out += "  " + quote(t) + " [shape=ellipse];\n  " + quote(m->name()) + " -> " + quote(t) + ";\n";
-        }
-        for (const auto& sub : m->subscriptions_) {
-            out += "  " + quote(sub->topicName()) + " [shape=ellipse];\n  " + quote(sub->topicName()) + " -> "
-                   + quote(m->name()) + " [label=" + quote(std::to_string(sub->queueSize())) + "];\n";
-        }
-        for (const auto& s : m->services_) {
-            out += "  " + quote(s) + " [shape=diamond];\n  " + quote(m->name()) + " -> " + quote(s) + " [style=dashed];\n";
-        }
-    }
-    return out + "}\n";
 }
 
 std::string Runtime::statsTable() const {

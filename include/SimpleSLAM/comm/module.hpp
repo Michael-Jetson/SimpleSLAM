@@ -74,8 +74,7 @@ protected:
 
     template <class T>
     Publisher<T> advertise(std::string_view name, PublishOptions opts = {}) {
-        advertised_.push_back(resolveEndpoint(name));
-        return Publisher<T>(core_->topic<T>(advertised_.back()), opts);
+        return Publisher<T>(core_->topic<T>(resolveEndpoint(name)), opts);
     }
 
     template <class T>
@@ -242,11 +241,11 @@ private:
 
     template <class Request, class Response, class F>
     ServiceServer advertiseServiceAny(std::string_view name, F&& handler) {
-        services_.push_back(resolveEndpoint(name));
-        return ServiceServer(core_->addService(services_.back(), typeid(Request), typeid(Response), mailbox_,
-                                               [fn = std::forward<F>(handler)](const AnyMsg& r) -> AnyMsg {
-                                                   return std::make_shared<const Response>(fn(view<Request>(r)));
-                                               }));
+        auto invoke = [fn = std::forward<F>(handler)](const AnyMsg& r) -> AnyMsg {
+            return std::make_shared<const Response>(fn(view<Request>(r)));
+        };
+        return ServiceServer(core_->addService(resolveEndpoint(name), typeid(Request),
+                                               typeid(Response), mailbox_, std::move(invoke)));
     }
 
     template <class T>
@@ -270,8 +269,6 @@ private:
 
     std::vector<std::shared_ptr<Subscription>> subscriptions_;
     std::vector<TimerHandle> timers_;
-    std::vector<std::string> advertised_;
-    std::vector<std::string> services_;
 };
 
 }  // namespace simpleslam::comm

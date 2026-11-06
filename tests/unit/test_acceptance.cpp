@@ -4,38 +4,24 @@
 /// 验收场景：按"系统在这种情形下必须怎样"来写，不按"多了几个字段"来写。
 ///
 /// 每个用例描述一个会造成丢帧、错误身份、持续积压或错误通过的边界，断言的是正确行为。
-/// 通信与生命周期、打包与确认、标定身份、评测门禁、录制兼容，分节排列。
+/// 通信与生命周期、打包与确认、标定身份、评测，分节排列。
 
 #include <SimpleSLAM/config/calibration_io.hpp>
 #include <SimpleSLAM/config/loader.hpp>
-#include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/framework/deskew.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
-#include <SimpleSLAM/record/reader.hpp>
-#include <SimpleSLAM/record/writer.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <chrono>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <thread>
 #include <typeindex>
 #include <vector>
-
-#if defined(__linux__)
-#include <csignal>
-#include <sys/resource.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 using namespace simpleslam;
 using Catch::Approx;
@@ -46,7 +32,6 @@ namespace modules = simpleslam::modules;
 namespace plugin = simpleslam::plugin;
 namespace cfg = simpleslam::config;
 namespace eval = simpleslam::eval;
-namespace rec = simpleslam::record;
 
 namespace {
 
@@ -407,7 +392,7 @@ TEST_CASE("很小的已知协方差也能无损往返", "[acceptance][calibratio
     auto with = validCalibration();
     with.extrinsics["lidar"].covariance_known = true;
     with.extrinsics["lidar"].covariance(0, 0) = 1e-14;
-    CHECK(cfg::calibrationHash(with) != cfg::calibrationHash(without));
+    CHECK(cfg::dumpCalibration(with) != cfg::dumpCalibration(without));
     const auto roundtrip = cfg::loadCalibrationString(cfg::dumpCalibration(with));
     CHECK(roundtrip.extrinsics.at("lidar").covariance_known);
     CHECK(roundtrip.extrinsics.at("lidar").covariance(0, 0) == 1e-14);
@@ -561,118 +546,6 @@ TEST_CASE("图里混入不同标定的节点就不再产出校正", "[acceptance
     CHECK(graph_module.optimizations() == 0);
 }
 
-// ─────────────────────────── 评测门禁 ───────────────────────────
-
-namespace {
-
-eval::DatasetBaseline baselineFor(const std::string& dataset) {
-    eval::DatasetBaseline baseline;
-    baseline.dataset = dataset;
-    baseline.bounds = {eval::MetricBound{"ate.translation.rmse", 0.1,
-                                         -std::numeric_limits<double>::infinity()}};
-    return baseline;
-}
-
-std::map<std::string, double> validMetrics(double rmse) {
-    return {{"ate.samples", 30.0}, {"ate.translation.rmse", rmse}};
-}
-
-}  // namespace
-
-TEST_CASE("门禁：没有基线也要做有效性检查", "[acceptance][gate]") {
-    eval::GateRequest request;
-    request.metrics = {{"ate.samples", 0.0}, {"ate.translation.rmse", 0.0}};
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
-    CHECK(eval::exitCodeFor(eval::gate(request)) == 4);
-}
-
-TEST_CASE("门禁：有基线文件就必须指定数据集，不默认取第一条", "[acceptance][gate]") {
-    const std::vector<eval::DatasetBaseline> baselines{baselineFor("kitti/00")};
-    eval::GateRequest request;
-    request.metrics = validMetrics(0.05);
-    request.completeness = eval::RunCompleteness::kComplete;
-    request.baselines = &baselines;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
-
-    request.dataset = "kitti/05";  // 文件里没有这一条
-    const auto missing = eval::gate(request);
-    CHECK(missing.outcome == eval::BaselineOutcome::kIncomparable);
-    CHECK(eval::exitCodeFor(missing) == 5);
-
-    request.dataset = "kitti/00";
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
-}
-
-TEST_CASE("门禁：不可比较先于失败", "[acceptance][gate]") {
-    // Fail 的含义是"有效、可比较、没过线"：配置不符时主结论只能是不可比较
-    auto baseline = baselineFor("kitti/00");
-    baseline.config_hash = "A";
-    const std::vector<eval::DatasetBaseline> baselines{baseline};
-    eval::GateRequest request;
-    request.metrics = validMetrics(10.0);  // 远超门限
-    request.dataset = "kitti/00";
-    request.completeness = eval::RunCompleteness::kComplete;
-    request.config_hash = "B";
-    request.baselines = &baselines;
-    const auto verdict = eval::gate(request);
-    CHECK(verdict.outcome == eval::BaselineOutcome::kIncomparable);
-    CHECK(verdict.config_mismatch);
-}
-
-TEST_CASE("门禁：评测协议不同就不可比较", "[acceptance][gate]") {
-    auto baseline = baselineFor("kitti/00");
-    const eval::Protocol recorded{{"type", "ate"},
-                                  {"alignment", "se3"},
-                                  {"association", "nearest"},
-                                  {"tolerance_s", "0.02"}};
-    baseline.evaluators["ate"] = recorded;
-    const std::vector<eval::DatasetBaseline> baselines{baseline};
-
-    eval::GateRequest request;
-    request.metrics = validMetrics(0.05);
-    request.dataset = "kitti/00";
-    request.completeness = eval::RunCompleteness::kComplete;
-    request.baselines = &baselines;
-    request.evaluators["ate"] = recorded;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
-
-    request.evaluators["ate"]["tolerance_s"] = "0.1";  // 同一份配置，换了容差
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
-}
-
-TEST_CASE("有效身份：不同的输入集合不会拼成同一个摘要", "[acceptance][gate]") {
-    // 来源名里带路径，路径里可以有 '=' 与换行：朴素的"键=值"拼接会让两份输入撞在一起
-    const std::map<std::string, std::string> one{{"a", "b\nc=d"}};
-    const std::map<std::string, std::string> two{{"a", "b"}, {"c", "d"}};
-    CHECK(cfg::effectiveHash(one) != cfg::effectiveHash(two));
-    CHECK(cfg::effectiveHash(one) == cfg::effectiveHash(one));
-}
-
-TEST_CASE("门禁：不完整的运行默认不下结论，前缀只能与前缀基线比", "[acceptance][gate]") {
-    const std::vector<eval::DatasetBaseline> full{baselineFor("kitti/00")};
-    eval::GateRequest request;
-    request.metrics = validMetrics(0.05);
-    request.dataset = "kitti/00";
-    request.baselines = &full;
-    request.completeness = eval::RunCompleteness::kIncomplete;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
-
-    request.allow_incomplete = true;  // 显式允许前缀分析
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
-
-    auto prefix_baseline = baselineFor("kitti/00");
-    prefix_baseline.prefix = true;
-    const std::vector<eval::DatasetBaseline> prefix{prefix_baseline};
-    request.baselines = &prefix;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
-
-    // 没有基线时，前缀结果也要自己说明是前缀：报告里一个裸的 pass 会被当成全程通过
-    request.baselines = nullptr;
-    const auto verdict = eval::gate(request);
-    CHECK(verdict.outcome == eval::BaselineOutcome::kPass);
-    CHECK(verdict.detail.find("前缀") != std::string::npos);
-}
-
 TEST_CASE("插值关联把不同步的真值对上，最近邻对不上", "[acceptance][eval]") {
     // 估计在扫描终点（整 100 ms），真值在中段（+50 ms）：最近邻 20 ms 容差一对都配不上，
     // 放宽容差是拿相邻时刻冒充同一时刻；插值才是显式换算
@@ -712,130 +585,8 @@ TEST_CASE("跟踪的传感器不同就拒绝比较，显式转换之后才能比
     CHECK_NOTHROW(eval::absoluteTrajectoryError(converted, camera, eval::AteOptions{}));
 }
 
-// ─────────────────────────── 录制兼容 ───────────────────────────
-
-namespace {
-
-std::filesystem::path tempPath(const char* name) {
-    return std::filesystem::temp_directory_path() / name;
-}
-
-/// 按版本 2 的规则手写一个文件：元数据里的反斜杠按字面保存。
-void writeVersion2(const std::filesystem::path& path, const std::string& metadata) {
-    rec::ByteWriter header;
-    for (const char c : rec::kMagic) header.u8(static_cast<std::uint8_t>(c));
-    header.u16(2);
-    header.u64(0);
-    header.u32(static_cast<std::uint32_t>(metadata.size()));
-    rec::ByteWriter footer_payload;
-    footer_payload.u64(0);
-    rec::ByteWriter footer_header;
-    footer_header.u32(static_cast<std::uint32_t>(rec::RecordKind::kEndOfStream));
-    footer_header.u32(static_cast<std::uint32_t>(footer_payload.size()));
-    footer_header.i64(0);
-    std::vector<std::uint8_t> checked(footer_header.bytes().begin(), footer_header.bytes().end());
-    checked.insert(checked.end(), footer_payload.bytes().begin(), footer_payload.bytes().end());
-    rec::ByteWriter crc;
-    crc.u32(rec::crc32(checked.data(), checked.size()));
-
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    file.write(reinterpret_cast<const char*>(header.bytes().data()),
-               static_cast<std::streamsize>(header.size()));
-    file.write(metadata.data(), static_cast<std::streamsize>(metadata.size()));
-    file.write(reinterpret_cast<const char*>(footer_header.bytes().data()),
-               static_cast<std::streamsize>(footer_header.size()));
-    file.write(reinterpret_cast<const char*>(footer_payload.bytes().data()),
-               static_cast<std::streamsize>(footer_payload.size()));
-    file.write(reinterpret_cast<const char*>(crc.bytes().data()),
-               static_cast<std::streamsize>(crc.size()));
-}
-
-}  // namespace
-
-TEST_CASE("旧版本文件按旧规则读：字面反斜杠不被当成转义", "[acceptance][record]") {
-    const auto path = tempPath("simpleslam_v2_metadata.ssrec");
-    writeVersion2(path, "note: C:\\new\n");  // 文件里是 `note: C:\new`
-    rec::RecordReader reader(path.string());
-    CHECK(reader.formatVersion() == 2);
-    CHECK(reader.metadata().note == "C:\\new");  // 反斜杠加 n 原样保留，不是换行
-    while (reader.next()) {
-    }
-    CHECK(reader.complete());
-    std::filesystem::remove(path);
-}
-
-TEST_CASE("校验和对、但载荷多出字节的记录被拒绝", "[acceptance][record]") {
-    const auto path = tempPath("simpleslam_trailing_payload.ssrec");
-    {
-        rec::RecordWriter writer(path.string());
-        fw::ImuSample sample;
-        sample.time = fw::Timestamp{1000};
-        writer.write(sample);
-        writer.close();
-    }
-    // 把第一条 IMU 记录的载荷改长 5 字节，并重算它的校验和
-    std::vector<char> bytes;
-    {
-        std::ifstream in(path, std::ios::binary);
-        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    }
-    rec::RecordReader probe(path.string());
-    const std::size_t header_size = 6 + 2 + 8 + 4 + probe.rawMetadata().size();
-    std::uint32_t length = 0;
-    std::memcpy(&length, bytes.data() + header_size + 4, 4);
-    const std::uint32_t longer = length + 5;
-    std::memcpy(bytes.data() + header_size + 4, &longer, 4);
-    const auto payload_end = static_cast<std::ptrdiff_t>(header_size + 16 + length);
-    bytes.insert(bytes.begin() + payload_end, 5, '\0');
-    std::vector<std::uint8_t> checked(bytes.begin() + static_cast<std::ptrdiff_t>(header_size),
-                                      bytes.begin() + payload_end + 5);
-    const std::uint32_t crc = rec::crc32(checked.data(), checked.size());
-    std::memcpy(bytes.data() + payload_end + 5, &crc, 4);
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    }
-    rec::RecordReader reader(path.string());
-    CHECK_THROWS_AS(reader.next(), rec::RecordError);
-    std::filesystem::remove(path);
-}
-
-#if defined(__linux__)
-TEST_CASE("写不下时 close 如实失败", "[acceptance][record]") {
-    // 文件尺寸上限只在子进程里设，不影响测试进程本身
-    const auto path = tempPath("simpleslam_fsize_limit.ssrec");
-    const pid_t child = fork();
-    REQUIRE(child >= 0);
-    if (child == 0) {
-        std::signal(SIGXFSZ, SIG_IGN);
-        rlimit limit{256, 256};
-        setrlimit(RLIMIT_FSIZE, &limit);
-        try {
-            rec::RecordWriter writer(path.string());
-            for (int i = 0; i < 16; ++i) {
-                fw::ImuSample sample;
-                sample.time = fw::Timestamp{i};
-                writer.write(sample);
-            }
-            writer.close();
-        } catch (const rec::RecordError&) {
-            _exit(0);  // 如实失败：这是期望的结果
-        } catch (...) {
-            _exit(0);
-        }
-        _exit(1);  // 写不下却没报错
-    }
-    int status = 0;
-    waitpid(child, &status, 0);
-    CHECK(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 0);
-    std::filesystem::remove(path);
-}
-#endif
-
 TEST_CASE("协方差有值却没声明为已知：拒绝导出，不静默丢", "[acceptance][calibration]") {
     auto calibration = validCalibration();
     calibration.extrinsics["lidar"].covariance(0, 0) = 1e-14;  // 没有声明 covariance_known
     CHECK_THROWS_AS(cfg::dumpCalibration(calibration), cfg::CalibrationError);
-    CHECK_THROWS_AS(cfg::calibrationHash(calibration), cfg::CalibrationError);
 }

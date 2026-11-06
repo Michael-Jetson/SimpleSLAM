@@ -15,8 +15,6 @@
 #include <SimpleSLAM/eval/association.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
-#include <SimpleSLAM/record/diagnostic_file_sink.hpp>
-#include <SimpleSLAM/record/writer.hpp>
 
 #include <charconv>
 #include <chrono>
@@ -45,13 +43,12 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。
-constexpr const char* kRunDirFiles[] = {"task.yaml",        "identity.yaml",
-                                        "outcome.yaml",     "calibration.yaml",
-                                        "result.json",      "run.log",
-                                        "recording.ssrec",  "recording.ssrec.diagnostics.jsonl",
-                                        "queues.txt",       "trajectory",
-                                        "evaluation"};
+/// 任务记录里由执行器写的文件。`--overwrite` 只删这些，目录里别的文件不动。后三个是旧版本
+/// 写过的：覆盖旧的任务记录时不留下它们。
+constexpr const char* kRunDirFiles[] = {
+    "task.yaml",  "outcome.yaml",  "calibration.yaml", "result.json",
+    "run.log",    "queues.txt",    "trajectory",       "evaluation",
+    "source",     "identity.yaml", "recording.ssrec",  "recording.ssrec.diagnostics.jsonl"};
 
 /// 最终生效的打包策略，以及它的出处。推荐值不能悄悄压过用户写的配置：
 /// 那样用户看着自己填的 post_support_s，却不知道它没生效。
@@ -108,16 +105,12 @@ std::string seconds(fw::Duration d) {
     return out.str();
 }
 
-/// 本次运行实际生效、影响结论的输入。进 identity.yaml，并作为基线可比性的身份。
-std::map<std::string, std::string> effectiveInputs(const config::TaskConfig& c,
-                                                   const fw::CalibrationData& calibration,
-                                                   const ResolvedPolicy& resolved,
+/// 本次运行实际生效、配置里看不出来的输入：解析出的打包策略、来源的描述、算法声明的策略、
+/// 目标窗口。进 outcome.yaml；配置本身在 task.yaml，生效的标定在 calibration.yaml。
+std::map<std::string, std::string> effectiveInputs(const ResolvedPolicy& resolved,
                                                    const fw::SourceDescriptor& descriptor,
                                                    const plugin::OdometryBase& odometry) {
     std::map<std::string, std::string> effective;
-    effective["config_hash"] = config::configHash(c);
-    effective["system_hash"] = config::systemHash(c);
-    effective["calibration_hash"] = config::calibrationHash(calibration);
     effective["packetizer.origin"] = resolved.origin;
     effective["packetizer.imu_required"] =
         resolved.policy.imu == fw::ImuRequirement::kRequired ? "true" : "false";
@@ -182,25 +175,6 @@ struct RunFacts {
     std::map<std::string, std::string> effective;
 };
 
-void writeIdentity(const fs::path& dir, const ResolvedTask& task, const RunFacts& facts) {
-    using run_dir::quoted;
-    const auto& e = facts.effective;
-    std::string effective;
-    for (const auto& [key, value] : e) {
-        effective += "  " + quoted(key) + ": " + quoted(value) + "\n";
-    }
-    run_dir::writeText(
-        dir / "identity.yaml",
-        std::format("software_version: {}\ntask_hash: {}\nsystem_hash: {}\n"
-                    "calibration_hash: {}\neffective_hash: {}\nseed: {}\n"
-                    "task_file: {}\nsystem_file: {}\noverrides: {}\neffective:\n{}",
-                    quoted(SIMPLESLAM_VERSION), quoted(e.at("config_hash")),
-                    quoted(e.at("system_hash")), quoted(e.at("calibration_hash")),
-                    quoted(e.at("effective_hash")), task.config.task.seed,
-                    quoted(task.source.task_file), quoted(task.source.system_file),
-                    run_dir::quotedList(task.source.overrides), effective));
-}
-
 /// 三条轨迹总写 TUM（带语义，评测读它）；要的话另写一份 KITTI 格式给官方评测程序。
 void writeTrajectories(const fs::path& dir, const modules::RunResult& result,
                        const config::TaskConfig& c, std::ostream& out) {
@@ -221,11 +195,11 @@ void writeTrajectories(const fs::path& dir, const modules::RunResult& result,
 
 int usage(std::ostream& err) {
     err << R"(用法:
-  <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N]
-                                          跑任务（也可以写成 run <任务.yaml> …）
+  <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N] [--source=<文件>]
+                                          跑任务（也可以写成 run <任务.yaml> …）；
+                                          --source 另存一份原始文件进任务记录（如 .py 任务）
   check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
   dump  <任务.yaml> [路径=值 …]           还原后的完整任务
-  hash  <任务.yaml> [路径=值 …]           任务哈希
   evaluate <任务记录> [evaluation.…=值 …]  单独评测：补评或换评测函数、协议重评，不重跑
   schema                                  配置 schema，含目录里每个实现的字段
   default                                 全部默认值
@@ -236,15 +210,9 @@ int usage(std::ostream& err) {
     return 2;
 }
 
-/// 门禁的结论：没过时写到 err，结论文件的位置写到 out。
-void reportGate(const EvaluationOutcome& evaluated, const fs::path& dir, std::ostream& out,
-                std::ostream& err) {
-    const auto& verdict = evaluated.verdict;
-    if (verdict.passed()) {
-        out << "门禁: pass" << (verdict.detail.empty() ? "" : "（" + verdict.detail + "）") << '\n';
-    } else {
-        err << "门禁: " << eval::toString(verdict.outcome) << ' ' << verdict.detail << '\n';
-    }
+/// 结论写在哪；运行不完整时提醒一句：评测照常写出，数字只说明跑到的那一段。
+void reportResult(const fs::path& dir, bool complete, std::ostream& out, std::ostream& err) {
+    if (!complete) err << "运行不完整：评测照常写出，数字只说明跑到的那一段\n";
     out << "结论: " << (dir / "result.json").string() << '\n';
 }
 
@@ -263,8 +231,7 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     LineStream info(runner, logging::Level::kInfo);
     LineStream warn(runner, logging::Level::kWarn);
     try {
-        info << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
-             << "  系统哈希: " << config::systemHash(c) << '\n';
+        info << "任务: " << c.task.name << "（" << options.task_file << "）\n";
         for (const auto& note : task.notes) warn << "注意: " << note << '\n';
         // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
@@ -280,30 +247,18 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
         fs::create_directories(dir / "trajectory");
         system.logRouter().openFile(dir / "run.log");
         config::writeConfigFile((dir / "task.yaml").string(), c);
+        run_dir::writeSources(dir, task.source, options.source_file);
 
         RunFacts facts;
         facts.descriptor = dataset.source->descriptor();
         facts.policy = resolvePolicy(c, dataset);
         info << "数据: " << dataset.source->name() << "  帧数: "
             << (dataset.frames ? std::to_string(*dataset.frames) : std::string("未知")) << '\n'
-            << "标定: " << dataset.calibration.device << "  哈希: "
-            << config::calibrationHash(dataset.calibration) << '\n'
+            << "标定: " << dataset.calibration.device << '\n'
             << "打包策略: " << facts.policy.origin << "  post_support=" << std::fixed
             << std::setprecision(3)
             << std::chrono::duration<double>(facts.policy.policy.post_support).count() << "s"
             << "  惯性实测: " << std::setprecision(1) << facts.descriptor.imu_rate_hz << "Hz\n";
-
-        std::shared_ptr<record::RecordWriter> recorder;
-        const fs::path recording = dir / "recording.ssrec";
-        if (c.outputs.record) {
-            record::RecordMetadata metadata;
-            metadata.name = c.task.name;
-            metadata.config_hash = config::configHash(c);
-            metadata.seed = c.task.seed;
-            recorder = std::make_shared<record::RecordWriter>(recording.string(), metadata);
-            dataset.source =
-                std::make_unique<record::RecordingSource>(std::move(dataset.source), recorder);
-        }
 
         // ── 装配：管线按工作方式分。经槽构造的插件挂到各自模块的日志下面 ──
         info << "标定版本: " << system.setCalibration(dataset.calibration) << '\n';
@@ -337,25 +292,9 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
         facts.frames = odometry.processedFrames();
         facts.keyframes = odometry.keyframeCount();
         const auto calibration = *system.resources().calibrationSnapshot();
-        facts.effective = effectiveInputs(c, calibration, facts.policy, facts.descriptor,
+        facts.effective = effectiveInputs(facts.policy, facts.descriptor,
                                           odometry.algorithm());
-        facts.effective["effective_hash"] = config::effectiveHash(facts.effective);
 
-        if (recorder) {
-            recorder->close();
-            info << "录制: " << recording.string() << '\n';
-            if (c.outputs.record_diagnostics) {
-                const std::string path = recording.string() + ".diagnostics.jsonl";
-                record::FileDiagnosticSink sink(path);
-                for (const auto& record : system.diagnostics().records()) sink.submit(record);
-                sink.close();
-                if (sink.failed() > 0) {
-                    throw std::runtime_error(
-                        std::format("诊断落盘有 {} 条没写进去: {}", sink.failed(), path));
-                }
-                info << "诊断: " << path << '\n';
-            }
-        }
         info << "跑完: " << facts.packets << " 包, " << facts.frames << " 帧, " << facts.keyframes
             << " 关键帧\n";
         for (const auto& reason : outcome.reasons()) warn << "运行不完整: " << reason << '\n';
@@ -373,7 +312,6 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
             for (const auto& note : notes) info << note << '\n';
         }
         config::writeCalibrationFile((dir / "calibration.yaml").string(), calibration);
-        writeIdentity(dir, task, facts);
         // 缓冲满了丢掉的 debug、info 也是结局的一部分：写下来，不静默
         router.flush();
         const std::uint64_t dropped = router.dropped();
@@ -382,22 +320,20 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
                               {.packets = facts.packets,
                                .frames = facts.frames,
                                .keyframes = facts.keyframes,
-                               .log_dropped = dropped});
+                               .log_dropped = dropped},
+                              facts.effective);
         info << "任务记录: " << dir.string() << '\n';
 
-        const Completeness completeness{.state = outcome.complete()
-                                                     ? eval::RunCompleteness::kComplete
-                                                     : eval::RunCompleteness::kIncomplete,
-                                        .source = "本次运行",
-                                        .declaration = {}};
+        // 评测只读任务记录：完整性与目标窗口都从刚写下的文件里读
+        const bool complete = run_dir::readComplete(dir);
         if (task.evaluators.empty()) {  // 只跑不评测
-            writeResult(dir, identityOf(task), completeness, nullptr);
-            return 0;
+            writeResult(dir, identityOf(task), complete, nullptr);
+            return exitCodeFor(complete);
         }
-        const auto evaluated = evaluateRunDir(dir, task, completeness.state, info);
-        writeResult(dir, identityOf(task), completeness, &evaluated);
-        reportGate(evaluated, dir, info, warn);
-        return evaluated.exit_code;
+        const auto evaluated = evaluateRunDir(dir, task, run_dir::readTargetWindow(dir), info);
+        writeResult(dir, identityOf(task), complete, &evaluated);
+        reportResult(dir, complete, info, warn);
+        return exitCodeFor(complete);
     } catch (const std::exception& e) {
         warn << "错误: " << e.what() << '\n';
         return 1;
@@ -412,8 +348,7 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         const ResolvedTask task = loadTask(options.task_file, options.overrides, catalogs);
         const auto& c = task.config;
         if (c.data.sequences.empty()) return runSingle(task, options, out, err);
-        out << "任务: " << options.task_file << "  任务哈希: " << config::configHash(c)
-            << "  系统哈希: " << config::systemHash(c) << '\n';
+        out << "任务: " << c.task.name << "（" << options.task_file << "）\n";
         for (const auto& note : task.notes) err << "注意: " << note << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
@@ -436,8 +371,7 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
             throw std::runtime_error(
                 dir_text + " 是 v" + std::to_string(*major) + " 写的任务记录，缺评测要的输入"
                 "（真值、生效的标定、轨迹的语义）：用现在的版本重跑这个任务（它的 task.yaml "
-                "照样能用），或用 simpleslam-eval 评测它的轨迹"
-                "（--run-report 指向它的 report.yaml）");
+                "照样能用），或用 simpleslam-eval 评测它的轨迹");
         }
         for (const auto& item : overrides) {
             if (!item.starts_with("evaluation.")) {
@@ -453,13 +387,13 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
             throw std::runtime_error("没有评测函数：在 evaluation.evaluators 里列出，"
                                      "或者用覆盖项加一个，如 evaluation.evaluators.ate.type=ate");
         }
-        const Completeness completeness = completenessOf(dir);
-        const auto evaluated = evaluateRunDir(dir, task, completeness.state, out);
-        writeResult(dir, identityOf(task), completeness, &evaluated);
-        // 评测一节随这次评测更新：评测不进任务哈希，运行的身份不变
+        const bool complete = run_dir::readComplete(dir);
+        const auto evaluated = evaluateRunDir(dir, task, run_dir::readTargetWindow(dir), out);
+        writeResult(dir, identityOf(task), complete, &evaluated);
+        // 评测一节随这次评测更新：评测不改变这次运行
         config::writeConfigFile((dir / "task.yaml").string(), task.config);
-        reportGate(evaluated, dir, out, err);
-        return evaluated.exit_code;
+        reportResult(dir, complete, out, err);
+        return exitCodeFor(complete);
     } catch (const std::exception& e) {
         err << "错误: " << e.what() << '\n';
         return 1;
@@ -478,19 +412,21 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
         out << config::dumpConfig(config::TaskConfig{});
         return 0;
     }
-    if (command != "check" && command != "dump" && command != "hash") return -1;
+    if (command == "hash") {
+        err << "错误: hash 命令去掉了：任务靠名字区分；"
+               "要看两份任务有什么不同，用 dump 导出后对比\n";
+        return 2;
+    }
+    if (command != "check" && command != "dump") return -1;
     if (args.size() < 2) return usage(err);
     try {
         const auto task =
             loadTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()), catalogs);
         for (const auto& note : task.notes) err << "注意: " << note << '\n';
         if (command == "check") {
-            out << "任务有效: " << args[1] << "\n任务哈希: " << config::configHash(task.config)
-                << "\n系统哈希: " << config::systemHash(task.config) << '\n';
-        } else if (command == "dump") {
-            out << config::dumpConfig(task.config);
+            out << "任务有效: " << args[1] << '\n';
         } else {
-            out << config::configHash(task.config) << '\n';
+            out << config::dumpConfig(task.config);
         }
         return 0;
     } catch (const std::exception& e) {
@@ -523,6 +459,8 @@ int run(int argc, char** argv, const config::Catalogs& catalogs) {
                 std::cerr << "--jobs 要写成正整数，得到 " << text << '\n';
                 return usage(std::cerr);
             }
+        } else if (arg.starts_with("--source=")) {
+            options.source_file = arg.substr(std::string_view("--source=").size());
         } else if (arg.find('=') != std::string::npos) {
             options.overrides.push_back(arg);
         } else if (options.task_file.empty()) {

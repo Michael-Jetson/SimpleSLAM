@@ -10,11 +10,8 @@
 #include <SimpleSLAM/eval/association.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 
-#include <yaml-cpp/yaml.h>
-
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <cmath>
 #include <format>
 #include <sstream>
@@ -35,16 +32,7 @@ namespace {
 using run_dir::jsonNumber;
 using run_dir::jsonString;
 
-std::optional<std::int64_t> parseNanoseconds(const YAML::Node& node) {
-    if (!node || !node.IsScalar()) return std::nullopt;
-    const std::string text = node.Scalar();
-    std::int64_t value = 0;
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || end != text.data() + text.size()) return std::nullopt;
-    return value;
-}
-
-/// 一个插件参数的规范化文本：协议的比较与 JSON 都用它，往返无损。
+/// 一个插件参数的文本，往返无损。
 std::string valueText(const config::PluginValue& value) {
     return std::visit(
         [](const auto& v) -> std::string {
@@ -64,14 +52,6 @@ std::string valueJson(const config::PluginValue& value) {
     if (const auto* text = std::get_if<std::string>(&value)) return jsonString(*text);
     if (const auto* real = std::get_if<double>(&value)) return jsonNumber(*real);
     return valueText(value);
-}
-
-/// 评测函数的协议：类型与参数，子节点的键带上前缀。门禁拿它与基线核对。
-void flattenProtocol(const config::PluginSpec& spec, const std::string& prefix,
-                     eval::Protocol& out) {
-    out[prefix + "type"] = spec.type;
-    for (const auto& [key, value] : spec.params) out[prefix + key] = valueText(value);
-    for (const auto& [key, child] : spec.children) flattenProtocol(child, prefix + key + ".", out);
 }
 
 std::string paramsJson(const config::PluginSpec& spec) {
@@ -177,20 +157,18 @@ std::string summaryLine(const NamedEvaluation& named) {
     return line;
 }
 
-std::string evaluationJson(const NamedEvaluation& named, const fs::path& dir) {
+std::string evaluationJson(const NamedEvaluation& named) {
     const auto& result = named.result;
     std::ostringstream out;
     out << "    " << jsonString(named.name)
         << ": {\n      \"type\": " << jsonString(named.spec.type)
         << ",\n      \"params\": " << paramsJson(named.spec)
-        << ",\n      \"software_version\": " << jsonString(SIMPLESLAM_VERSION)
         << ",\n      \"status\": " << jsonString(result.samples > 0 ? "ok" : "no_result")
-        << ",\n      \"samples\": " << result.samples << ",\n      \"inputs\": {";
+        << ",\n      \"samples\": " << result.samples << ",\n      \"inputs\": [";
     for (std::size_t i = 0; i < named.inputs.size(); ++i) {
-        out << (i == 0 ? "" : ", ") << jsonString(named.inputs[i]) << ": "
-            << jsonString(eval::trajectoryFileDigest((dir / named.inputs[i]).string()));
+        out << (i == 0 ? "" : ", ") << jsonString(named.inputs[i]);
     }
-    out << "},\n      \"scalars\": {";
+    out << "],\n      \"scalars\": {";
     for (std::size_t i = 0; i < result.scalars.size(); ++i) {
         const auto& scalar = result.scalars[i];
         out << (i == 0 ? "\n" : ",\n") << "        " << jsonString(scalar.name)
@@ -218,56 +196,10 @@ std::string evaluationJson(const NamedEvaluation& named, const fs::path& dir) {
     return out.str();
 }
 
-std::string gateJson(const EvaluationOutcome& outcome) {
-    const auto& verdict = outcome.verdict;
-    std::ostringstream out;
-    out << "{\"outcome\": " << jsonString(eval::toString(verdict.outcome))
-        << ", \"detail\": " << jsonString(verdict.detail)
-        << ", \"baselines\": " << jsonString(outcome.baselines) << ", \"checks\": [";
-    for (std::size_t i = 0; i < verdict.checks.size(); ++i) {
-        const auto& check = verdict.checks[i];
-        out << (i == 0 ? "" : ", ") << "{\"metric\": " << jsonString(check.metric) << ", \""
-            << (check.upper ? "max" : "min") << "\": " << jsonNumber(check.limit)
-            << ", \"value\": " << jsonNumber(check.measured)
-            << ", \"passed\": " << (check.passed ? "true" : "false") << "}";
-    }
-    out << "]}";
-    return out.str();
-}
-
-std::string trajectoriesJson(const fs::path& dir) {
-    std::vector<fs::path> files;
-    if (fs::is_directory(dir / "trajectory")) {
-        for (const auto& entry : fs::directory_iterator(dir / "trajectory")) {
-            if (entry.path().extension() == ".tum") files.push_back(entry.path());
-        }
-    }
-    std::sort(files.begin(), files.end());
-    std::string out = "{";
-    for (const auto& file : files) {
-        out += (out.size() == 1 ? "\n" : ",\n") + std::string("    ")
-               + jsonString(file.stem().string()) + ": {\"file\": "
-               + jsonString("trajectory/" + file.filename().string()) + ", \"digest\": "
-               + jsonString(eval::trajectoryFileDigest(file.string())) + "}";
-    }
-    return out + (files.empty() ? "}" : "\n  }");
-}
-
 }  // namespace
 
-RunDirInputs::RunDirInputs(fs::path dir) : dir_(std::move(dir)) {
-    const fs::path identity = dir_ / "identity.yaml";
-    try {
-        const YAML::Node root = YAML::LoadFile(identity.string());
-        if (root["effective_hash"]) effective_hash_ = root["effective_hash"].as<std::string>();
-        const YAML::Node effective = root["effective"];
-        const auto begin = parseNanoseconds(effective["source.evaluation_window_begin_ns"]);
-        const auto end = parseNanoseconds(effective["source.evaluation_window_end_ns"]);
-        if (begin && end) window_ = fw::TimeRange{fw::Timestamp{*begin}, fw::Timestamp{*end}};
-    } catch (const YAML::Exception& e) {
-        throw std::runtime_error("读不懂任务记录的身份 " + identity.string() + ": " + e.what());
-    }
-}
+RunDirInputs::RunDirInputs(fs::path dir, std::optional<fw::TimeRange> window)
+    : dir_(std::move(dir)), window_(window) {}
 
 eval::ComparablePair RunDirInputs::pair(std::string_view estimate) const {
     const std::string estimate_file = "trajectory/" + std::string(estimate) + ".tum";
@@ -311,27 +243,20 @@ std::optional<fw::TimeRange> RunDirInputs::targetWindow() const { return window_
 
 std::vector<std::string> RunDirInputs::takeUsed() const { return std::exchange(used_, {}); }
 
-Completeness completenessOf(const fs::path& dir) {
-    return Completeness{.state = run_dir::readComplete(dir) ? eval::RunCompleteness::kComplete
-                                                            : eval::RunCompleteness::kIncomplete,
-                        .source = "本次运行",
-                        .declaration = {}};
-}
-
 bool needsGroundTruth(const ResolvedTask& task) {
     return std::any_of(task.evaluators.begin(), task.evaluators.end(), [](const auto& entry) {
         return entry.second.make()->needs().groundtruth;
     });
 }
 
-EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
-                                 eval::RunCompleteness completeness, std::ostream& out) {
-    const auto& c = task.config;
-    const RunDirInputs inputs(dir);
+int exitCodeFor(std::optional<bool> complete) { return complete.value_or(true) ? 0 : 4; }
 
-    // 先全部算完、过完门禁，再动任务记录：中途出错时，上一次的结论与表格原样留着
+EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
+                                 std::optional<fw::TimeRange> window, std::ostream& out) {
+    const RunDirInputs inputs(dir, window);
+
+    // 先全部算完、核对完，再动任务记录：中途出错时，上一次的结论与表格原样留着
     EvaluationOutcome outcome;
-    eval::GateRequest request;
     for (const auto& [name, slot] : task.evaluators) {
         const auto evaluator = slot.make();
         NamedEvaluation named{.name = name,
@@ -340,31 +265,8 @@ EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
                               .inputs = inputs.takeUsed()};
         checkResult(name, named.result);
         out << summaryLine(named) << '\n';
-        for (const auto& scalar : named.result.scalars) {
-            request.metrics[name + "." + scalar.name] = scalar.value;
-        }
-        request.metrics[name + ".samples"] = static_cast<double>(named.result.samples);
-        flattenProtocol(named.spec, "", request.evaluators[name]);
         outcome.evaluations.push_back(std::move(named));
     }
-
-    std::vector<eval::DatasetBaseline> baselines;
-    outcome.baselines = c.evaluation.baselines;
-    if (!outcome.baselines.empty()) {
-        std::vector<std::string> notes;
-        baselines = eval::loadBaselines(outcome.baselines, &notes);
-        for (const auto& note : notes) out << "注意: " << note << '\n';
-    }
-    request.dataset = c.task.name;
-    request.config_hash = inputs.effectiveHash();
-    if (const fs::path truth = dir / "trajectory" / "groundtruth.tum"; fs::exists(truth)) {
-        request.groundtruth_digest = eval::trajectoryFileDigest(truth.string());
-    }
-    request.completeness = completeness;
-    request.allow_incomplete = c.evaluation.allow_incomplete;
-    request.baselines = outcome.baselines.empty() ? nullptr : &baselines;
-    outcome.verdict = eval::gate(request);
-    outcome.exit_code = eval::exitCodeFor(outcome.verdict);
 
     fs::remove_all(dir / "evaluation");  // 上一次评测的表格不留
     fs::create_directories(dir / "evaluation");
@@ -376,41 +278,24 @@ EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
 
 ResultIdentity identityOf(const ResolvedTask& task) {
     const auto& c = task.config;
-    return ResultIdentity{.task = c.task.name,
-                          .mode = c.task.mode,
-                          .task_hash = config::configHash(c),
-                          .system_hash = config::systemHash(c)};
+    return ResultIdentity{.task = c.task.name, .mode = c.task.mode};
 }
 
-void writeResult(const fs::path& dir, const ResultIdentity& identity,
-                 const Completeness& completeness, const EvaluationOutcome* evaluated) {
-    const std::string status =
-        evaluated == nullptr ? "done" : eval::toString(evaluated->verdict.outcome);
-    const std::string detail = evaluated == nullptr ? "" : evaluated->verdict.detail;
-    const int exit_code = evaluated == nullptr ? 0 : evaluated->exit_code;
+void writeResult(const fs::path& dir, const ResultIdentity& identity, std::optional<bool> complete,
+                 const EvaluationOutcome* evaluated) {
     std::ostringstream text;
     text << "{\n  \"schema\": " << run_dir::kResultSchema << ",\n  \"kind\": \"run\",\n  \"task\": "
          << jsonString(identity.task) << ",\n  \"mode\": " << jsonString(identity.mode)
          << ",\n  \"software_version\": " << jsonString(SIMPLESLAM_VERSION)
-         << ",\n  \"task_hash\": " << jsonString(identity.task_hash)
-         << ",\n  \"system_hash\": " << jsonString(identity.system_hash)
-         << ",\n  \"complete\": "
-         << (completeness.state == eval::RunCompleteness::kComplete
-                 ? "true"
-                 : (completeness.state == eval::RunCompleteness::kIncomplete ? "false" : "null"))
-         << ",\n  \"completeness\": " << jsonString(eval::toString(completeness.state))
-         << ",\n  \"completeness_source\": " << jsonString(completeness.source)
-         << ",\n  \"declaration\": " << jsonString(completeness.declaration)
-         << ",\n  \"status\": " << jsonString(status) << ",\n  \"detail\": " << jsonString(detail)
-         << ",\n  \"exit_code\": " << exit_code
-         << ",\n  \"trajectories\": " << trajectoriesJson(dir) << ",\n  \"evaluations\": {";
+         << ",\n  \"complete\": " << (complete ? (*complete ? "true" : "false") : "null")
+         << ",\n  \"exit_code\": " << exitCodeFor(complete) << ",\n  \"evaluations\": {";
     if (evaluated != nullptr) {
         for (std::size_t i = 0; i < evaluated->evaluations.size(); ++i) {
-            text << (i == 0 ? "\n" : ",\n") << evaluationJson(evaluated->evaluations[i], dir);
+            text << (i == 0 ? "\n" : ",\n") << evaluationJson(evaluated->evaluations[i]);
         }
         if (!evaluated->evaluations.empty()) text << "\n  ";
     }
-    text << "},\n  \"gate\": " << (evaluated == nullptr ? "null" : gateJson(*evaluated)) << "\n}\n";
+    text << "}\n}\n";
     run_dir::writeText(dir / "result.json", text.str());
 }
 

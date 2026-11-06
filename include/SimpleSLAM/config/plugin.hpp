@@ -120,7 +120,7 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return maker_ == nullptr; }
     [[nodiscard]] const std::string& type() const noexcept { return spec_.type; }
-    /// 还原后的完整参数，已补齐默认值。规范化导出与配置哈希用它。
+    /// 还原后的完整参数，已补齐默认值。规范化导出用它。
     [[nodiscard]] const PluginSpec& resolved() const noexcept { return spec_; }
 
     /// 构造一个实例。它的日志来源挂在父插件下面：父插件交来的槽记着父插件是谁，构造函数里
@@ -196,8 +196,8 @@ std::string kindOfField() {
     } else if constexpr (std::is_integral_v<F>) {
         return "int";
     } else if constexpr (std::is_same_v<F, float>) {
-        // 单精度字段在赋值时就舍入了，还原后的节点存的是舍入后的值。schema 要说出来，
-        // 按 schema 还原的一方（Python）才能同样舍入，导出与哈希才一致
+        // 单精度字段在赋值时就舍入了，还原后的节点存的是舍入后的值。schema 说出来，
+        // 读 schema 的人才知道写进去的值会被舍入
         return "float";
     } else if constexpr (std::is_floating_point_v<F>) {
         return "double";

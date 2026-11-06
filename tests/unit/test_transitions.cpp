@@ -10,13 +10,11 @@
 
 #include <SimpleSLAM/app/bindings.hpp>
 #include <SimpleSLAM/config/loader.hpp>
-#include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/evaluators.hpp>
 #include <SimpleSLAM/eval/metrics.hpp>
 #include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/framework/deskew.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
-#include <SimpleSLAM/record/diagnostic_file_sink.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -254,12 +252,6 @@ TEST_CASE("算法在中间一帧失败、之后又成功：那一帧有失败终
     // 失败帧同样报告了进度：在途清零说明每包都有终态，不说明每包都成功
     CHECK(system.sensorIo()->packetizer().inFlight() == 0);
     CHECK(system.trajectory()->odometry().size() == 2);
-
-    eval::GateRequest request;
-    request.metrics = {{"ate.samples", 2.0}, {"ate.translation.rmse", 0.0}};
-    request.completeness =
-        outcome.complete() ? eval::RunCompleteness::kComplete : eval::RunCompleteness::kIncomplete;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kInvalid);
 }
 
 TEST_CASE("回调里没人处理的异常：执行边界接住它，运行照样不算完整", "[transitions][outcome]") {
@@ -458,29 +450,7 @@ TEST_CASE("在线运行中并发提交参数：快照按版本顺序换上，最
     CHECK(watcher.revision.load() == last);
 }
 
-// ─────────────────────────── 产物与评测协议 ───────────────────────────
-
-TEST_CASE("评测函数的协议转存为基线，读回来每个字段都一样", "[transitions][eval]") {
-    const auto path =
-        (std::filesystem::temp_directory_path() / "simpleslam_transitions_baseline.yaml").string();
-    const eval::Protocol protocol{{"type", "ate"},
-                                  {"alignment", "se3"},
-                                  {"association", "interpolate"},
-                                  {"tolerance_s", "0.02"},
-                                  {"max_interpolation_gap_s", "0.15"},
-                                  {"estimate", "odometry"},
-                                  // 长数字原样往返：协议是文本，不经过浮点
-                                  {"window_begin_s", "1317346945.123456789"}};
-    eval::DatasetBaseline baseline;
-    baseline.dataset = "raw/0027";
-    baseline.bounds.push_back({"ate.translation.rmse", 1.0});
-    baseline.evaluators["ate"] = protocol;
-    eval::writeBaselines(path, {baseline});
-    const auto loaded = eval::loadBaselines(path);
-    REQUIRE(loaded.size() == 1);
-    CHECK(loaded.front().evaluators.at("ate") == protocol);
-    std::filesystem::remove(path);
-}
+// ─────────────────────────── 评测 ───────────────────────────
 
 TEST_CASE("任务完成度按目标窗口算：括点支撑没被用到，不是任务没完成", "[transitions][eval]") {
     // 真值在导航流的相位上（+50 ms），两侧各多一个括点；估计在四个扫描参考时刻
@@ -519,34 +489,6 @@ TEST_CASE("任务完成度按目标窗口算：括点支撑没被用到，不是
     CHECK(scalarNamed(declared, "target_coverage")->value == Approx(1.0));
     const auto undeclared = evaluator.evaluate(FixedInputs(estimate, truth, std::nullopt));
     CHECK(scalarNamed(undeclared, "target_coverage") == nullptr);
-}
-
-TEST_CASE("门禁：完整性未知时没有基线照常测量并注明，有基线不可比较；人工声明要留痕",
-          "[transitions][gate]") {
-    eval::DatasetBaseline baseline;
-    baseline.dataset = "kitti/00";
-    baseline.bounds.push_back({"ate.translation.rmse", 1.0});
-    const std::vector<eval::DatasetBaseline> baselines{baseline};
-
-    eval::GateRequest request;
-    request.metrics = {{"ate.samples", 30.0}, {"ate.translation.rmse", 0.05}};
-    request.dataset = "kitti/00";
-    CHECK(request.completeness == eval::RunCompleteness::kUnknown);  // 没有证据就不假定完整
-
-    auto verdict = eval::gate(request);
-    CHECK(verdict.outcome == eval::BaselineOutcome::kPass);
-    CHECK(verdict.detail.find("未知") != std::string::npos);
-
-    request.baselines = &baselines;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kIncomparable);
-
-    request.completeness = eval::RunCompleteness::kDeclaredComplete;
-    verdict = eval::gate(request);
-    CHECK(verdict.outcome == eval::BaselineOutcome::kPass);
-    CHECK(verdict.detail.find("人工声明") != std::string::npos);
-
-    request.completeness = eval::RunCompleteness::kComplete;
-    CHECK(eval::gate(request).outcome == eval::BaselineOutcome::kPass);
 }
 
 // ─────────────────────────── 支撑需求与缺支撑的包 ───────────────────────────
@@ -968,38 +910,6 @@ TEST_CASE("RPE 按距离取段：走过的路沿真值自身的采样量，不�
     const auto rpe = eval::relativePoseError(estimate, truth, options);
     REQUIRE(rpe.pairs == 1);
     CHECK(rpe.translation.rmse == Approx(1.0 / 20.0));  // 走过 20 米，不是弦长 14.1 米
-}
-
-TEST_CASE("诊断落盘：数值全精度，非有限值写成合法的 JSON", "[transitions][diagnostics]") {
-    const auto path = (std::filesystem::temp_directory_path() / "simpleslam_transitions_diag.jsonl");
-    {
-        fw::MemoryDiagnosticSink memory;
-        {
-            std::string unit(100, 'u');  // 调用方的字符串先于落盘死掉：记录必须持有自己的内容
-            fw::DiagnosticRecord record;
-            record.payload = fw::MetricRecord{"x", 1.00000049, unit};
-            memory.submit(record);
-            record.payload =
-                fw::MetricRecord{"y", std::numeric_limits<double>::quiet_NaN(), "m"};
-            memory.submit(record);
-        }
-        record::FileDiagnosticSink file(path.string());
-        for (const auto& record : memory.records()) file.submit(record);
-        file.close();
-        CHECK(file.written() == 2);
-    }
-    std::ifstream in(path);
-    std::string first;
-    std::string second;
-    std::getline(in, first);
-    std::getline(in, second);
-    // 全精度意味着读回来就是原值（默认 6 位有效数字会写成 1）
-    const auto at = first.find("\"value\":");
-    REQUIRE(at != std::string::npos);
-    CHECK(std::stod(first.substr(at + 8)) == 1.00000049);
-    CHECK(second.find("\"value\":null") != std::string::npos);
-    CHECK(second.find("\"value_text\":\"nan\"") != std::string::npos);
-    std::filesystem::remove(path);
 }
 
 TEST_CASE("时长换算四舍五入，装不下的量拒绝，配置里的离谱时长在加载时就拒绝",

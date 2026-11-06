@@ -9,6 +9,7 @@
 /// `outcome.yaml` 与 `result.json` 的写与读放在这里，格式各只有一份。
 
 #include <SimpleSLAM/config/config.hpp>
+#include <SimpleSLAM/config/loader.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 
 #include <cstddef>
@@ -36,12 +37,19 @@ void prepare(const fs::path& dir, std::span<const char* const> own_files);
 /// 写一个任务记录里的文件，写不进去就抛。
 void writeText(const fs::path& path, const std::string& text);
 
+/// 原始配置原样存进 `<dir>/source/`：任务文件、它引用的系统文件、`extra`（如 `.py` 任务），
+/// 施加过的覆盖项写成 `overrides.txt`。`task.yaml` 是展开后的完整任务，给程序原样重跑；
+/// 这里是人写的原文，给人看当初怎么写的。重名时前面加上它的角色（`system_`、`source_`）。
+void writeSources(const fs::path& dir, const config::TaskSource& source, const std::string& extra);
+
 /// YAML 双引号字符串。任务记录里的字符串一律加引号，读回来不会变成别的类型。
 [[nodiscard]] std::string quoted(const std::string& text);
 [[nodiscard]] std::string quotedList(const std::vector<std::string>& items);
 
 /// `result.json` 的格式版本。字段改了含义或删了字段就加一，读的一方先核对它。
-inline constexpr int kResultSchema = 2;
+/// 读旧写新：写第 3 版，读的一方也认第 2 版（多出的哈希、完整性来源、门禁等字段不读）。
+inline constexpr int kResultSchema = 3;
+inline constexpr int kOldestResultSchema = 2;
 
 /// JSON 字符串与数。`result.json` 是给程序读的结论，操作台（Python）读它，不解析 YAML。
 [[nodiscard]] std::string jsonString(const std::string& text);
@@ -57,13 +65,20 @@ struct RunCounts {
     std::uint64_t log_dropped = 0;
 };
 
-/// 写 `<dir>/outcome.yaml`：运行结局的三项、规模、原因与说明。
-void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const RunCounts& counts);
+/// 写 `<dir>/outcome.yaml`：这次运行的事实。写它的软件版本、运行结局的三项、规模、原因与
+/// 说明，以及实际生效、配置里看不出来的输入（`effective`：解析出的打包策略、来源的描述、
+/// 算法声明的策略、目标窗口）。
+void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const RunCounts& counts,
+                  const std::map<std::string, std::string>& effective);
 
 /// 读回 `<dir>/outcome.yaml` 里"运行是否完整"。读不懂就抛。
 [[nodiscard]] bool readComplete(const fs::path& dir);
 
-/// 写这份任务记录的软件的大版本号（`identity.yaml` 的 `software_version`）；读不出来时为空。
+/// 读回运行时来源声明的目标窗口；没声明时为空。v3 写的任务记录把它记在 `identity.yaml` 里。
+[[nodiscard]] std::optional<fw::TimeRange> readTargetWindow(const fs::path& dir);
+
+/// 写这份任务记录的软件的大版本号（`outcome.yaml` 的 `software_version`；v3 及以前的在
+/// `identity.yaml` 里）；读不出来时为空。
 [[nodiscard]] std::optional<int> writtenByMajor(const fs::path& dir);
 
 /// 一个标量在结论里的样子：值、单位、进汇总表时的短名。
@@ -75,7 +90,6 @@ struct ScalarValue {
 
 /// 一份任务记录的结论摘要：多序列汇总时读每个子任务记录的 `result.json`。
 struct ResultSummary {
-    std::string status;
     int exit_code = 0;
     std::optional<bool> complete;
     /// 全部标量，键是全名 `<评测函数>.<量>.<统计>`，按评测函数与它给出的先后排列。

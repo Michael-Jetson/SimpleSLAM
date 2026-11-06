@@ -1,10 +1,10 @@
 """任务记录的结论：读 C++ 写的 ``result.json``，整理成表。
 
-读旧写新：格式版本 2 原样读；v2.x 写的第 1 版在内存里换成第 2 版的样子（指标改名，
-四项汇总标上短名），v2 与 v3 的结果能放进一张表。Python 不解析任务记录里的 YAML，也不
-重新判定任何东西：结论、哪些量进汇总表（评测函数标了短名的那几项）、什么时候算没有结果，
-都是 C++ 写进 ``result.json`` 的。这里只负责显示与对比；逐样本的数据在任务记录的
-``evaluation/`` 里，画图直接读那些 CSV。
+读旧写新：格式版本 3 与 2 原样读（第 2 版多出的哈希、门禁等字段不读）；v2.x 写的第 1 版
+在内存里换成现在的样子（指标改名，四项汇总标上短名），新旧结果能放进一张表。Python 不解析
+任务记录里的 YAML，也不重新判定任何东西：退出码、运行是否完整、哪些量进汇总表（评测函数
+标了短名的那几项）、什么时候算没有结果，都是 C++ 写进 ``result.json`` 的。这里只负责显示与
+对比；逐样本的数据在任务记录的 ``evaluation/`` 里，画图直接读那些 CSV。
 """
 
 from __future__ import annotations
@@ -16,11 +16,9 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 读得懂的 result.json 格式版本（C++ 的 run_dir::kResultSchema）
-RESULT_SCHEMA = 2
+# 读得懂的 result.json 格式版本（C++ 的 run_dir::kResultSchema）；第 2 版也照样读
+RESULT_SCHEMA = 3
 
-# 退出码的严重程度：出错 > 无效 > 不可比较 > 失败 > 通过，与 C++ 的多序列汇总同一口径
-_SEVERITY = {0: 0, 3: 1, 5: 2, 4: 3}
 
 
 class ResultError(RuntimeError):
@@ -41,12 +39,10 @@ class Row:
     """表里的一行：一次运行，或多序列里的一个序列。"""
 
     name: str
-    status: str
     exit_code: int
     complete: bool | None
     #: 全名（``<评测函数的名字>.<量>``）→ 标量。没有结果的量不在这里，不当零
     scalars: dict[str, Scalar] = field(default_factory=dict)
-    system_hash: str = ""
     problem: str = ""
 
     @property
@@ -66,8 +62,8 @@ def read_result(run_dir: Path) -> dict:
     schema = data.get("schema")
     if schema == 1:
         return _upgrade_v1(data)
-    if schema != RESULT_SCHEMA:
-        raise ResultError(f"{path} 的格式版本是 {schema}，这里读得懂 1 与 {RESULT_SCHEMA}："
+    if schema not in (2, RESULT_SCHEMA):
+        raise ResultError(f"{path} 的格式版本是 {schema}，这里读得懂 1 到 {RESULT_SCHEMA}："
                           "换用写出它的那个版本的操作台")
     return data
 
@@ -128,8 +124,7 @@ def _upgrade_v1(data: dict) -> dict:
         family, scalar = full.split(".", 1)
         evaluation = evaluations.setdefault(family, {"type": family, "scalars": {}, "notes": []})
         evaluation["scalars"][scalar] = entry
-    return {**data, "schema": RESULT_SCHEMA, "evaluations": evaluations, "trajectories": {},
-            "gate": None}
+    return {**data, "schema": RESULT_SCHEMA, "evaluations": evaluations}
 
 
 def _scalars(entries: dict, prefix: str = "") -> dict[str, Scalar]:
@@ -158,24 +153,21 @@ def rows(run_dir: Path) -> list[Row]:
     data = read_result(run_dir)
     if data["kind"] == "sequences":
         return [
-            Row(name=f"{data['task']}/{item['name']}", status=item["status"],
-                exit_code=item["exit_code"], complete=item["complete"],
-                scalars=_scalars(item["scalars"]), system_hash=data["system_hash"],
+            Row(name=f"{data['task']}/{item['name']}", exit_code=item["exit_code"],
+                complete=item["complete"], scalars=_scalars(item["scalars"]),
                 problem=item.get("problem", ""))
             for item in data["sequences"]
         ]
-    return [Row(name=data["task"], status=data["status"], exit_code=data["exit_code"],
-                complete=data["complete"], scalars=run_scalars(data),
-                system_hash=data["system_hash"], problem=data.get("detail", ""))]
+    return [Row(name=data["task"], exit_code=data["exit_code"], complete=data["complete"],
+                scalars=run_scalars(data))]
 
 
 def worst_exit_code(codes: list[int]) -> int:
-    worst = 0
-    for code in codes:
-        rank = _SEVERITY.get(code, 4)
-        if rank > _SEVERITY.get(worst, 4):
-            worst = 1 if rank == 4 else code
-    return worst
+    """出错 > 不完整 > 完整：有一个出错就是 1，否则有不完整的（4）就是 4。与 C++ 的多序列
+    汇总同一口径。"""
+    if any(code not in (0, 4) for code in codes):
+        return 1
+    return 4 if 4 in codes else 0
 
 
 def columns(items: list[Row], metrics: list[str] | None = None) -> list[tuple[str, str]]:
@@ -209,21 +201,20 @@ def _cell(scalars: dict[str, Scalar], name: str) -> str:
 
 def table(items: list[Row], mean: dict[str, Scalar] | None = None,
           metrics: list[str] | None = None) -> str:
-    """对比表：名称、结论、退出码、完整与否、各列的量、系统哈希。没有值的格子写 -。"""
+    """对比表：名称、退出码、完整与否、各列的量。没有值的格子写 -。"""
     chosen = columns(items, metrics)
     name_width = max([_width("名称")] + [_width(row.name) for row in items]) + 2
-    lines = [_pad("名称", name_width) + _pad("结论", 14) + _pad("退出码", 8) + _pad("完整", 6)
-             + "".join(_pad(header, 12) for _, header in chosen) + "系统哈希"]
+    lines = [_pad("名称", name_width) + _pad("退出码", 8) + _pad("完整", 6)
+             + "".join(_pad(header, 12) for _, header in chosen)]
     for row in items:
         complete = "-" if row.complete is None else ("是" if row.complete else "否")
         cells = "".join(_pad(_cell(row.scalars, name), 12) for name, _ in chosen)
-        lines.append(_pad(row.name, name_width) + _pad(row.status, 14)
-                     + _pad(str(row.exit_code), 8) + _pad(complete, 6) + cells
-                     + row.system_hash[:8])
+        lines.append(_pad(row.name, name_width) + _pad(str(row.exit_code), 8)
+                     + _pad(complete, 6) + cells)
     if mean is not None:
         cells = "".join(_pad(_cell(mean, name), 12) for name, _ in chosen)
-        lines.append(_pad("平均（每个序列都有结果才算）", name_width + 28) + cells)
-    return "\n".join(lines) + "\n"
+        lines.append(_pad("平均（每个序列都有结果才算）", name_width + 14) + cells)
+    return "\n".join(line.rstrip() for line in lines) + "\n"
 
 
 def csv_table(items: list[Row], metrics: list[str] | None = None) -> str:
@@ -232,21 +223,19 @@ def csv_table(items: list[Row], metrics: list[str] | None = None) -> str:
     names = [name for name, _ in columns(items, metrics)]
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(["name", "status", "exit_code", "complete", *names, "system_hash"])
+    writer.writerow(["name", "exit_code", "complete", *names])
     for row in items:
         complete = "" if row.complete is None else ("true" if row.complete else "false")
         values = [repr(row.scalars[name].value) if name in row.scalars else "" for name in names]
-        writer.writerow([row.name, row.status, row.exit_code, complete, *values, row.system_hash])
+        writer.writerow([row.name, row.exit_code, complete, *values])
     return buffer.getvalue()
 
 
 def describe(run_dir: Path, metrics: list[str] | None = None) -> str:
-    """一份任务记录的摘要：身份、结论、汇总表、评测的说明；出错的序列写明原因。"""
+    """一份任务记录的摘要：身份、退出码、汇总表、评测的说明；出错的序列写明原因。"""
     data = read_result(run_dir)
     head = (f"任务记录: {run_dir}\n任务: {data['task']}  运行方式: {data['mode']}  "
-            f"版本: {data['software_version']}\n"
-            f"任务哈希: {data['task_hash']}  系统哈希: {data['system_hash']}  "
-            f"退出码: {data['exit_code']}\n")
+            f"版本: {data['software_version']}  退出码: {data['exit_code']}\n")
     items = rows(run_dir)
     mean = _scalars(data["mean"]) if data["kind"] == "sequences" else None
     text = head + table(items, mean, metrics)
@@ -255,6 +244,5 @@ def describe(run_dir: Path, metrics: list[str] | None = None) -> str:
              for note in evaluation.get("notes", [])]
     if notes:
         text += "评测说明:\n" + "\n".join(notes) + "\n"
-    problems = "".join(f"  {row.name}: {row.problem}\n" for row in items
-                       if row.problem and row.status in ("error", "invalid", "fail"))
+    problems = "".join(f"  {row.name}: {row.problem}\n" for row in items if row.problem)
     return text + (f"问题:\n{problems}" if problems else "")

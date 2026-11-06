@@ -18,12 +18,10 @@
 改系统参数只能用覆盖项，和命令行同一写法。渲染：
 ``python -m simpleslam config render task.py -o task.yaml``。
 
-规范化导出（:meth:`Config.canonical`）与哈希在 C++ 与 Python 各有一份实现，插件节点
-按 schema 里各实现的字段清单还原，与 C++ 的目录同一口径。重复是刻意的——扫参时
-Python 侧不该为每个变体起一次子进程——但它只在有自动比对的前提下成立：
-``python/tests/test_cpp_parity.py`` 逐字节比两边的输出。读系统文件、应用覆盖项、换算
-v2 的旧写法这三件事 Python 不做，交给 C++（:meth:`Config.load`、:meth:`Config.through_cpp`）；
-旧写法的路径由 schema 的换算表给出，Python 认得它们，原样渲染。
+Python 只写显式设置过的项，按 C++ 导出的 schema 核对键名与类型，免得扫参时几个子进程
+一起报同一个拼写错误。读系统文件、应用覆盖项、还原插件节点、补默认值、换算旧写法都在
+C++ 一处：要完整的任务，交给入口的 ``dump``（:meth:`Config.dump`、:meth:`Config.load`、
+:meth:`Config.through_cpp`）。旧写法的路径由 schema 的换算表给出，Python 认得它们，原样渲染。
 """
 
 from __future__ import annotations
@@ -36,11 +34,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
-from simpleslam.schema import Field, Schema, SchemaError, find_tool, round_to_float32
+from simpleslam.schema import Field, Schema, find_tool
 
-# 任务文件里不是配置字段的两个键：引用的系统文件、覆盖项。C++ 把它们记作出处，不进哈希
+# 任务文件里不是配置字段的两个键：引用的系统文件、覆盖项。C++ 把它们记作出处
 SYSTEM_FILE = "system"
 OVERRIDES = "overrides"
 
@@ -52,7 +50,7 @@ class ConfigError(ValueError):
     """配置项不存在、类型不符，或 YAML 结构不对。"""
 
 
-# ── 值的文本：与 C++ 的 quoteYaml / canonicalText 逐字符一致，哈希依赖它们 ──
+# ── 值的文本：与 C++ 的 quoteYaml / canonicalText 逐字符一致，规范化导出依赖它们 ──
 
 
 def _quote_yaml(text: str) -> str:
@@ -99,24 +97,6 @@ def assignment(path: str, value: Any) -> str:
     """一条覆盖项：``路径=值``，值按 YAML 的写法给出（字符串加引号转义）。
     任务文件里的 ``overrides`` 与命令行用的都是这种写法。"""
     return f"{path}={_flow_value(value)}"
-
-
-def _join(names: list[str]) -> str:
-    return "、".join(names)
-
-
-def _kind_of(value: Any) -> str:
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "double"
-    if isinstance(value, Mapping):
-        return "插件节点"
-    if isinstance(value, (list, tuple)):
-        return "列表"
-    return "string"
 
 
 # ── 类型检查：与 C++ 同一口径，不做隐式转换；实数字段接受整数（按实数存） ──
@@ -175,34 +155,6 @@ def _coerce_kind(kind: str, value: Any, path: str) -> Any:
     return value
 
 
-def _coerce_param(kind: str, value: Any, path: str) -> Any:
-    """插件参数（bool / int / float / double / string），与 C++ 的 detail::assign 一致。"""
-    mismatch = ConfigError(f"{path}：应为 {kind}，实际是 {_kind_of(value)}")
-    if kind == "bool":
-        if not isinstance(value, bool):
-            raise mismatch
-        return value
-    if kind == "int":
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise mismatch
-        return _require_int64(value, path)
-    if kind in ("float", "double"):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise mismatch
-        real = float(value)  # YAML 里的 100 与 100.0 是同一个量
-        if not math.isfinite(real):
-            raise ConfigError(f"{path}：不是有限数")
-        if kind == "float":
-            try:
-                real = round_to_float32(real, path)
-            except ValueError as exc:
-                raise ConfigError(str(exc)) from exc
-        return real
-    if not isinstance(value, str):
-        raise mismatch
-    return value
-
-
 def _copy_plugin(node: Mapping[str, Any], path: str) -> dict[str, Any]:
     """插件节点的深拷贝与结构检查：type 是字符串，参数是标量，子节点是映射。"""
     out: dict[str, Any] = {}
@@ -221,63 +173,11 @@ def _copy_plugin(node: Mapping[str, Any], path: str) -> dict[str, Any]:
     return out
 
 
-# ── 插件节点的还原：与 C++ 的 Catalog::resolve 同一口径 ──
-
-
-def _resolve_plugin(node: Mapping[str, Any], interface: str, schema: Schema,
-                    path: str) -> dict[str, Any]:
-    """按实现的字段清单还原：没写的参数补默认值，没写的子槽用默认节点，多余的键是错误。"""
-    type_name = node.get("type", "")
-    names = schema.implementations(interface)
-    if not type_name:
-        raise ConfigError(f"{path}.type：没有写 type。这里要求 {interface}，"
-                          f"可选的实现有 {_join(names)}")
-    plugin = schema.plugin(interface, type_name)
-    if plugin is None:
-        message = f"{path}.type = {type_name}：这里要求 {interface}"
-        others = schema.interfaces_providing(type_name)
-        if others:
-            message += f"，{type_name} 是 {_join(others)} 的实现"
-        message += "，目录里还没有任何实现" if not names else f"；满足的实现有 {_join(names)}"
-        raise ConfigError(message)
-
-    out: dict[str, Any] = {"type": type_name}
-    known: list[str] = []
-    for field in plugin.fields:
-        known.append(field.name)
-        sub = f"{path}.{field.name}"
-        given = field.name in node
-        value = node.get(field.name)
-        child_interface = field.slot_interface
-        if child_interface is not None:
-            if not given:
-                if field.default_spec is None:
-                    raise ConfigError(f"{sub}：缺少这个槽，要用 type 选一个实现")
-                out[field.name] = field.default_value()  # 已是 C++ 还原过的完整节点
-            elif not isinstance(value, Mapping):
-                raise ConfigError(f"{sub}：这是一个槽，要写成带 type 的映射")
-            else:
-                out[field.name] = _resolve_plugin(value, child_interface, schema, sub)
-        elif not given:
-            out[field.name] = field.default_value()
-        elif isinstance(value, Mapping):
-            raise ConfigError(f"{sub}：这是一个参数，不是槽")
-        else:
-            out[field.name] = _coerce_param(field.kind, value, sub)
-
-    unknown = sorted(key for key in node if key != "type" and key not in known)
-    if unknown:
-        message = f"{path}.{unknown[0]}：{type_name} 没有这个参数"
-        message += "，它不接受任何参数" if not known else f"，可用的有 {_join(known)}"
-        raise ConfigError(message)
-    return out
-
-
-# ── 导出：嵌套、按字段顺序、节与节之间空一行（与 C++ 的 dump 一致） ──
+# ── 渲染：嵌套、按字段顺序、节与节之间空一行 ──
 
 
 def _emit_plugin(lines: list[str], node: Mapping[str, Any], indent: int) -> None:
-    """type 在前，参数与子节点各按键名排序（与 C++ 的 emitPlugin 一致）。"""
+    """type 在前，参数与子节点各按键名排序。"""
     pad = " " * indent
     lines.append(f"{pad}type: {_quote_yaml(node.get('type', ''))}")
     params = sorted(k for k, v in node.items() if k != "type" and not isinstance(v, Mapping))
@@ -321,14 +221,6 @@ def _emit(values: Mapping[str, Any], fields: list[Field]) -> str:
             lines.append(f"{pad}{key}: {_format_value(value)}")
     return "\n".join(lines) + "\n" if lines else ""
 
-
-def _fnv1a64(text: str) -> str:
-    """与 C++ 的 digestHex 相同：FNV-1a 64，十六进制。"""
-    digest = 0xCBF29CE484222325
-    for byte in text.encode("utf-8"):
-        digest ^= byte
-        digest = (digest * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return "%016x" % digest
 
 
 def _flatten(prefix: str, values: Mapping[str, Any], out: dict[str, Any]) -> None:
@@ -449,17 +341,12 @@ class Config:
     def as_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self._values)
 
-    @property
-    def self_contained(self) -> bool:
-        """不引用系统文件、没有覆盖项：Python 自己就能还原、导出与哈希。"""
-        return SYSTEM_FILE not in self._values and not self._values.get(OVERRIDES)
-
-    # ── 校验与还原 ──
+    # ── 校验 ──
 
     def validate(self, schema: Schema) -> "Config":
         """未知项与类型不符在这里报出来，不等到 C++ 侧才发现。
-        插件节点要还原才知道参数对不对，见 :meth:`resolved`；取值是否有意义（枚举、
-        范围）由 C++ 在加载时查，Python 不另写一份。"""
+        插件节点的参数对不对、取值是否有意义（枚举、范围），由 C++ 在加载时查，
+        Python 不另写一份。"""
         system_file = self._values.get(SYSTEM_FILE)
         if system_file is not None and (not isinstance(system_file, str) or not system_file):
             raise ConfigError("system 要写成系统文件的路径（或按节写出 system.* 各项）")
@@ -494,74 +381,16 @@ class Config:
         return self
 
     def legacy_paths(self, schema: Schema) -> list[str]:
-        """用了 v2 的哪些旧写法。有的话还原与哈希交给 C++（:meth:`through_cpp`）。"""
+        """用了哪些旧写法。换算在 C++ 加载器里，Python 原样渲染。"""
         return sorted(path for path in self._values if path in schema.legacy)
-
-    def resolved(self, schema: Schema) -> dict[str, Any]:
-        """补齐默认值之后的完整取值，按 schema 的字段顺序；插件节点按各实现的字段清单还原。"""
-        if not self.self_contained:
-            raise ConfigError(
-                "这份任务引用了系统文件或带覆盖项：读文件、应用覆盖项交给 C++，"
-                "先用 through_cpp() 得到完整的任务"
-            )
-        legacy = self.legacy_paths(schema)
-        if legacy:
-            raise ConfigError(
-                f"这份任务用了 v2 的写法（{_join(legacy)}）：换算交给 C++，"
-                "先用 through_cpp() 得到完整的任务；新写法见 schema 的换算表"
-            )
-        self.validate(schema)
-        values = _merged_tables(self._values, schema)
-        out: dict[str, Any] = {}
-        for field in schema:
-            given = field.path in values
-            value = values[field.path] if given else field.default_value()
-            value = _coerce_kind(field.type, value, field.path)
-            if field.type in ("slot", "slots"):
-                try:
-                    interface = schema.slot_interface(field.path)
-                except SchemaError as exc:
-                    raise ConfigError(str(exc)) from exc
-                if field.type == "slot":
-                    value = _resolve_plugin(value, interface, schema, field.path)
-                else:
-                    value = {name: _resolve_plugin(node, interface, schema,
-                                                   f"{field.path}.{name}")
-                             for name, node in sorted(value.items())}
-            out[field.path] = value
-        return out
-
-    def _canonical(self, schema: Schema, keep: Callable[[str], bool]) -> str:
-        resolved = self.resolved(schema)
-        return _emit(resolved, [field for field in schema if keep(field.path)])
-
-    def canonical(self, schema: Schema) -> str:
-        """规范化导出。与 C++ 的 dumpConfig 逐字节一致（有比对测试）。"""
-        return self._canonical(schema, lambda path: True)
-
-    def hash(self, schema: Schema) -> str:
-        """任务哈希，不含 outputs 与 evaluation：产出放在哪里、怎么评测都不影响运行。
-        与 C++ 的 configHash 相同。"""
-        return _fnv1a64(self._canonical(
-            schema, lambda path: not path.startswith(("outputs.", "evaluation."))))
-
-    def system_hash(self, schema: Schema) -> str:
-        """系统哈希：只覆盖 system 子树，标识算法的配置。与 C++ 的 systemHash 相同。"""
-        return _fnv1a64(self._canonical(schema, lambda path: path.startswith("system.")))
 
     # ── 渲染 ──
 
-    def to_yaml(self, schema: Schema | None = None, *, full: bool = False) -> str:
-        """渲染成任务 YAML。
-
-        默认只写显式设置过的项——任务文件因此只说"我改了什么"，而不是把几十个
-        默认值抄一遍。``full=True`` 时输出规范化的完整任务（插件节点已还原）。
-        没有 schema 时不校验，按路径排序输出。
+    def to_yaml(self, schema: Schema | None = None) -> str:
+        """渲染成任务 YAML，只写显式设置过的项：任务文件因此只说"我改了什么"，而不是把
+        几十个默认值抄一遍。完整的任务由 C++ 导出（:meth:`dump`）。没有 schema 时不校验，
+        按路径排序输出。
         """
-        if full:
-            if schema is None:
-                raise ConfigError("输出完整任务需要 schema")
-            return self.canonical(schema)
         order = self._render_order(schema)
         values = self._values if schema is None else _merged_tables(self._values, schema)
         return _emit(values, order)
@@ -599,7 +428,7 @@ class Config:
         """解析任务 YAML 的受限子集：两格缩进的块映射、双引号或不加引号的标量、
         行内列表、空映射 ``{}``、``#`` 注释。
 
-        规范化导出（:meth:`canonical` 与 C++ 的 dump）和 :meth:`to_yaml` 都在这个子集里。
+        C++ 的 dump 与 :meth:`to_yaml` 都在这个子集里。
         别的写法交给 C++：见 :meth:`load`。插件节点从哪一层开始只有 schema 知道，
         所以这里要求 schema。
         """
@@ -638,28 +467,19 @@ class Config:
     def load(cls, path: str | os.PathLike[str], tool: str | None = None,
              schema: Schema | None = None) -> "Config":
         """任意写法的任务文件：交给 C++ 加载（读系统文件、应用覆盖项、还原插件节点），
-        规范化导出后再读回来。得到的是完整、自足的任务。
+        导出完整的任务再读回来。得到的是完整、自足的任务。
 
         ``tool`` 是登记了所需实现的入口，见 :func:`simpleslam.schema.find_tool`。
         """
         binary = find_tool(tool)
         if schema is None:
             schema = Schema.from_tool(binary)
-        try:
-            result = subprocess.run([binary, "dump", str(path)], capture_output=True,
-                                    text=True, check=True)
-        except subprocess.CalledProcessError as exc:
-            raise ConfigError(f"{binary} dump {path} 失败: {exc.stderr.strip()}") from exc
-        except OSError as exc:
-            raise ConfigError(f"调用 {binary} 失败: {exc}") from exc
-        # C++ 换算旧写法时的说明（带替换用的新写法）照样给人看
-        if result.stderr:
-            sys.stderr.write(result.stderr)
-        return cls.from_yaml(result.stdout, schema)
+        return cls.from_yaml(_dump(binary, Path(path)), schema)
 
-    def through_cpp(self, base_dir: str | os.PathLike[str] = ".", tool: str | None = None,
-                    schema: Schema | None = None) -> "Config":
-        """让 C++ 读系统文件、应用覆盖项、还原插件节点，得到完整、自足的任务。
+    def dump(self, base_dir: str | os.PathLike[str] = ".", tool: str | None = None,
+             schema: Schema | None = None) -> str:
+        """C++ 导出的完整任务：系统展开、覆盖项应用、插件节点还原、默认值补齐。
+        要知道两份任务有什么不同，就比它。
 
         ``base_dir`` 是 ``system`` 里相对路径的基准，通常是任务 ``.py`` 所在的目录。
         """
@@ -670,7 +490,35 @@ class Config:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task.yaml"
             path.write_text(rendered.to_yaml(schema), encoding="utf-8")
-            return Config.load(path, tool, schema)
+            return _dump(find_tool(tool), path)
+
+    def through_cpp(self, base_dir: str | os.PathLike[str] = ".", tool: str | None = None,
+                    schema: Schema | None = None) -> "Config":
+        """让 C++ 读系统文件、应用覆盖项、还原插件节点，得到完整、自足的任务。"""
+        binary = find_tool(tool)
+        if schema is None:
+            schema = Schema.from_tool(binary)
+        return Config.from_yaml(self.dump(base_dir, binary, schema), schema)
+
+
+def dump_file(path: str | os.PathLike[str], tool: str | None = None) -> str:
+    """任务文件经 C++ 展开后的完整任务（``<入口> dump``）。"""
+    return _dump(find_tool(tool), Path(path))
+
+
+def _dump(binary: str, path: Path) -> str:
+    """``<入口> dump <任务>``：C++ 读这份任务，导出完整的任务。"""
+    try:
+        result = subprocess.run([binary, "dump", str(path)], capture_output=True, text=True,
+                                check=True)
+    except subprocess.CalledProcessError as exc:
+        raise ConfigError(f"{binary} dump {path} 失败: {exc.stderr.strip()}") from exc
+    except OSError as exc:
+        raise ConfigError(f"调用 {binary} 失败: {exc}") from exc
+    # C++ 换算旧写法时的说明（带替换用的新写法）照样给人看
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    return result.stdout
 
 
 # ── 受限 YAML 子集的解析 ──

@@ -38,15 +38,11 @@ catch_discover_tests(test_slam_system)
 
 # ── 评测 / 回放 / 配置 ──
 if(SIMPLESLAM_BUILD_TOOLING)
-    foreach(t eval_trajectory eval_metrics eval_baseline eval_evaluators)
+    foreach(t eval_trajectory eval_metrics eval_evaluators)
         add_executable(test_${t} unit/test_${t}.cpp)
         target_link_libraries(test_${t} PRIVATE simpleslam_eval Catch2::Catch2WithMain)
         catch_discover_tests(test_${t})
     endforeach()
-
-    add_executable(test_record_replay unit/test_record_replay.cpp)
-    target_link_libraries(test_record_replay PRIVATE simpleslam_record Catch2::Catch2WithMain)
-    catch_discover_tests(test_record_replay)
 
     add_executable(test_framework_calibration unit/test_framework_calibration.cpp)
     target_link_libraries(test_framework_calibration
@@ -63,22 +59,20 @@ if(SIMPLESLAM_BUILD_TOOLING)
 
     add_executable(test_system_evaluation unit/test_system_evaluation.cpp)
     target_link_libraries(test_system_evaluation
-        PRIVATE simpleslam_app simpleslam_eval simpleslam_record
-                Catch2::Catch2WithMain)
+        PRIVATE simpleslam_app simpleslam_eval Catch2::Catch2WithMain)
     catch_discover_tests(test_system_evaluation)
 
-    # 验收场景：按"系统在这种情形下必须怎样"组织，跨通信、打包、标定、评测、录制
+    # 验收场景：按"系统在这种情形下必须怎样"组织，跨通信、打包、标定、评测
     add_executable(test_acceptance unit/test_acceptance.cpp)
     target_link_libraries(test_acceptance
-        PRIVATE simpleslam_modules simpleslam_eval simpleslam_record simpleslam_config
+        PRIVATE simpleslam_modules simpleslam_eval simpleslam_config
                 Catch2::Catch2WithMain)
     catch_discover_tests(test_acceptance)
 
     # 相邻的状态转换：两件事紧挨着发生时，终态证据、寿命与结论是否仍然成立
     add_executable(test_transitions unit/test_transitions.cpp)
     target_link_libraries(test_transitions
-        PRIVATE simpleslam_app simpleslam_eval simpleslam_record
-                Catch2::Catch2WithMain)
+        PRIVATE simpleslam_app simpleslam_eval Catch2::Catch2WithMain)
     catch_discover_tests(test_transitions)
 
     # 任务执行器：从任务文件到任务记录。多序列的子进程要登记同一个测试实现，另有一个入口

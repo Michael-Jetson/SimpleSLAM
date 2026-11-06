@@ -11,7 +11,6 @@
 /// 逐样本的表格写进 `evaluation/`。
 
 #include <SimpleSLAM/app/task.hpp>
-#include <SimpleSLAM/eval/baseline.hpp>
 #include <SimpleSLAM/eval/evaluator.hpp>
 
 #include <filesystem>
@@ -26,22 +25,20 @@ namespace simpleslam::app {
 
 namespace fs = std::filesystem;
 
-/// 任务记录作为评测函数的输入：轨迹、真值、生效的标定、目标窗口都从目录里读。
+/// 任务记录作为评测函数的输入：轨迹、真值与生效的标定从目录里读；目标窗口由调用方给，
+/// 任务记录的取自它的 `outcome.yaml`（`run_dir::readTargetWindow`）。
 class RunDirInputs final : public eval::EvaluationInputs {
 public:
-    explicit RunDirInputs(fs::path dir);
+    RunDirInputs(fs::path dir, std::optional<fw::TimeRange> window);
 
     [[nodiscard]] eval::ComparablePair pair(std::string_view estimate) const override;
     [[nodiscard]] std::optional<fw::TimeRange> targetWindow() const override;
 
-    /// 有效身份的哈希，门禁拿它与基线核对。
-    [[nodiscard]] const std::string& effectiveHash() const noexcept { return effective_hash_; }
     /// 自上次取走以来用到的轨迹文件（相对任务记录的路径），取走后清空。
     [[nodiscard]] std::vector<std::string> takeUsed() const;
 
 private:
     fs::path dir_;
-    std::string effective_hash_;
     std::optional<fw::TimeRange> window_;
     mutable std::vector<std::string> used_;
 };
@@ -54,46 +51,35 @@ struct NamedEvaluation {
     std::vector<std::string> inputs;
 };
 
-/// 一次评测的全部结论。
+/// 一次评测的全部结果。
 struct EvaluationOutcome {
     std::vector<NamedEvaluation> evaluations;
-    eval::BaselineVerdict verdict;
-    std::string baselines;  ///< 基线文件；空表示没有
-    int exit_code = 0;
 };
 
-/// 产生这份任务记录的运行是否完整，以及这个判断从哪里来。
-struct Completeness {
-    eval::RunCompleteness state = eval::RunCompleteness::kUnknown;
-    std::string source;       ///< 本次运行、产生轨迹的那次运行的结论文件，或人工声明
-    std::string declaration;  ///< 人工声明的原话：声明不是证据，所以原话留在结论里
-};
-
-/// 本次运行的完整性：读任务记录里的运行结局。
-[[nodiscard]] Completeness completenessOf(const fs::path& dir);
+/// 任务记录对应的退出码：运行完整是 0，不完整是 4（任务记录照常写完）。外部轨迹不知道
+/// 产生它的运行是否完整，也是 0。
+[[nodiscard]] int exitCodeFor(std::optional<bool> complete);
 
 /// 所选评测函数里有没有要真值的。执行器在运行之前据此核对数据有没有真值。
 [[nodiscard]] bool needsGroundTruth(const ResolvedTask& task);
 
-/// 对任务记录评测：依次跑评测函数、核对它们给的名字、过门禁，都成了才写表格；
-/// 给人看的每项一行写到 out。出错时抛异常，任务记录里上一次的表格不动。
+/// 对任务记录评测：依次跑评测函数、核对它们给的名字，都成了才写表格；给人看的每项一行
+/// 写到 out。出错时抛异常，任务记录里上一次的表格不动。
 [[nodiscard]] EvaluationOutcome evaluateRunDir(const fs::path& dir, const ResolvedTask& task,
-                                               eval::RunCompleteness completeness,
+                                               std::optional<fw::TimeRange> window,
                                                std::ostream& out);
 
-/// 结论里的身份。任务记录的身份取自任务；外部轨迹没有任务，只有调用方给的名字与哈希，
+/// 结论里的身份：任务名与运行方式。任务记录的取自任务；外部轨迹没有任务，名字由调用方给，
 /// 不编一个出来。
 struct ResultIdentity {
     std::string task;
     std::string mode;
-    std::string task_hash;
-    std::string system_hash;
 };
 
 [[nodiscard]] ResultIdentity identityOf(const ResolvedTask& task);
 
-/// 写 `result.json`：身份、运行的完整性、轨迹的内容摘要、评测与门禁（没评测时为空）。
-void writeResult(const fs::path& dir, const ResultIdentity& identity,
-                 const Completeness& completeness, const EvaluationOutcome* evaluated);
+/// 写 `result.json`：身份、运行是否完整（外部轨迹为 null）、退出码、评测（没评测时为空）。
+void writeResult(const fs::path& dir, const ResultIdentity& identity, std::optional<bool> complete,
+                 const EvaluationOutcome* evaluated);
 
 }  // namespace simpleslam::app

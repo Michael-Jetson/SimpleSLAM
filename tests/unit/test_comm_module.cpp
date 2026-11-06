@@ -407,7 +407,7 @@ public:
     std::atomic<int> count{0};
     void onInit() override {
         pub_ = advertise<Msg>("out");
-        subscribe("in", 0, &Filter::on).required();
+        subscribe("in", 0, &Filter::on);
         createOneShot(5ms, &Filter::fire);
     }
     void onStart() override {
@@ -579,20 +579,8 @@ TEST_CASE("通信层自身不占线程：定时器在模块线程上，线程数
     }
 }
 
-TEST_CASE("接线校验、重映射、onStart、线程属性、一次性定时器、日志、统计、调度打乱", "[comm][module]") {
-    // 接线校验：必需输入没有发布者，init 就失败，并说清楚缺什么
-    {
-        cm::Runtime rt(offline());
-        rt.addModule<Filter>("/slam/filter");
-        std::string error;
-        try {
-            rt.init();
-        } catch (const cm::WiringError& e) {
-            error = e.what();
-        }
-        CHECK(error.find("/slam/filter 需要话题 /slam/in") != std::string::npos);
-    }
-    // 有发布者就通过；可选订阅缺了也不算错
+TEST_CASE("重映射、onStart、线程属性、一次性定时器、日志、统计、调度打乱", "[comm][module]") {
+    // 装配完成就绪
     {
         cm::Runtime rt(offline());
         rt.addModule<Filter>("/slam/filter");
@@ -641,7 +629,6 @@ TEST_CASE("接线校验、重映射、onStart、线程属性、一次性定时�
         CHECK(info == 3);
         CHECK(every == 1);  // 虚拟时钟没走够 1 秒
         CHECK(rt.statsTable().find("/slam/filter") != std::string::npos);
-        CHECK(rt.graph().find("digraph") != std::string::npos);
     }
     // 日志按来源设等级：关掉的等级不记
     {
@@ -1208,14 +1195,5 @@ TEST_CASE("在线：模块内串行、停止走完因果链、取消、长回调
         rt.shutdown();
         CHECK(r.finished == 1);
         CHECK(rt.state() == cm::RuntimeState::kDone);
-    }
-    // 图和悬空话题
-    {
-        cm::Runtime rt(offline());
-        rt.addModule<Relay>("/r1", "/in", "/m1");
-        rt.init();
-        CHECK(rt.graph().find("\"/r1\" -> \"/m1\"") != std::string::npos);
-        CHECK(rt.graph().find("\"/in\" -> \"/r1\"") != std::string::npos);
-        CHECK(rt.danglingTopics().size() == 2);
     }
 }

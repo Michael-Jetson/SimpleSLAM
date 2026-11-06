@@ -41,7 +41,7 @@ else()
     message(STATUS "manif: 未找到 CMake 配置，按头文件路径使用 (${SIMPLESLAM_MANIF_INCLUDE_DIR})")
 endif()
 
-# yaml-cpp：新栈的配置、精度基线与实验回放包都用它。旧栈里它是硬依赖，
+# yaml-cpp：新栈的配置与任务记录都用它。旧栈里它是硬依赖，
 # 新栈里是软依赖——没有它就不构建评测/回放/配置三层，其余照常。
 find_package(yaml-cpp QUIET)
 if(TARGET yaml-cpp::yaml-cpp)

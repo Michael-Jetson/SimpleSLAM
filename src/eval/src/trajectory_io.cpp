@@ -2,7 +2,6 @@
 // Copyright (c) 2026 SimpleSLAM contributors
 
 #include <SimpleSLAM/eval/trajectory_io.hpp>
-#include <SimpleSLAM/framework/digest.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -204,15 +203,6 @@ std::optional<TrajectoryFormat> parseTrajectoryFormat(std::string_view text) {
     if (text == "tum" || text == "TUM") return TrajectoryFormat::kTum;
     if (text == "kitti" || text == "KITTI") return TrajectoryFormat::kKitti;
     return std::nullopt;
-}
-
-std::string trajectoryFileDigest(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) throw TrajectoryIoError("打不开轨迹文件: " + path);
-    std::ostringstream bytes;
-    bytes << file.rdbuf();
-    if (file.bad()) throw TrajectoryIoError("读轨迹文件失败: " + path);
-    return fw::digestHex(bytes.str());
 }
 
 TrajectoryFormat detectTrajectoryFormat(const std::string& path) {

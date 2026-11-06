@@ -1,4 +1,4 @@
-# 配置层：配置聚合体（真源）、YAML 加载/导出、schema 导出、配置哈希、参数桥接。
+# 配置层：配置聚合体（真源）、YAML 加载/导出、schema 导出、旧写法的换算。
 add_library(simpleslam_config STATIC
     src/loader.cpp
     src/legacy.cpp

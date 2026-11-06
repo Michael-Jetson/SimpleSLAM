@@ -5,8 +5,6 @@
 
 #include "legacy.hpp"
 
-#include <SimpleSLAM/framework/digest.hpp>
-
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -54,8 +52,8 @@ std::string quoteJson(const std::string& text) {
 /// 规范化导出时字符串一律加引号并转义。
 ///
 /// 不加引号是不可逆的：`name: "a # b"` 导出成 `name: a # b`，再加载只剩 `a`
-/// 。规范化导出是配置哈希的输入，也是"把生效配置落盘"
-/// 的载体，它必须满足 load(dump(c)) == c。一律加引号比"看着需要才加"更可靠，
+/// 。规范化导出是"把生效配置落盘"的载体（任务记录里的 `task.yaml`），
+/// 它必须满足 load(dump(c)) == c。一律加引号比"看着需要才加"更可靠，
 /// 因为"需要"的判据会随 YAML 版本变。
 std::string quoteYaml(const std::string& text) {
     std::string out = "\"";
@@ -276,7 +274,7 @@ std::string canonicalText(const PluginValue& v) {
 }
 
 /// 插件节点：type 在前，参数与子节点各按键名排序。还原后的节点补齐了默认值，
-/// 写没写默认值因此不影响导出与哈希。
+/// 写没写默认值因此不影响导出。
 void emitPlugin(std::ostream& out, const PluginSpec& spec, std::size_t indent) {
     const std::string pad(indent, ' ');
     out << pad << "type: " << quoteYaml(spec.type) << '\n';
@@ -484,14 +482,12 @@ void applyAssignment(TaskConfig& config, const std::string& assignment) {
     if (!found) throw ConfigError("未知配置项 " + path);
 }
 
-/// 规范化导出的主体。`keep` 决定哪些字段进导出：完整导出全要，哈希各取所需。
-template <class Keep>
-std::string dump(const TaskConfig& config, Keep&& keep) {
+/// 规范化导出的主体：按字段清单的顺序嵌套输出。
+std::string dump(const TaskConfig& config) {
     std::ostringstream out;
     std::vector<std::string> open;
     bool first_section = true;
     visitConfig(config, [&](const char* path, const auto& value, const char*, Tunable) {
-        if (!keep(std::string_view(path))) return;
         auto parts = splitPath(path);
         const std::string key = parts.back();
         parts.pop_back();
@@ -797,41 +793,13 @@ void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignme
     validateConfig(config);
 }
 
-std::string dumpConfig(const TaskConfig& config) {
-    return dump(config, [](std::string_view) { return true; });
-}
+std::string dumpConfig(const TaskConfig& config) { return dump(config); }
 
 void writeConfigFile(const std::string& path, const TaskConfig& config) {
     std::ofstream file(path);
     if (!file) throw ConfigError("打不开配置输出文件: " + path);
     file << dumpConfig(config);
     if (!file) throw ConfigError("写配置文件失败: " + path);
-}
-
-std::string digestHex(const std::string& text) { return fw::digestHex(text); }
-
-std::string configHash(const TaskConfig& config) {
-    // 产出放在哪里、怎么评测都不影响运行：换个目录重跑、加一个评测函数，仍是同一个任务
-    const auto keep = [](std::string_view path) {
-        return !path.starts_with("outputs.") && !path.starts_with("evaluation.");
-    };
-    return digestHex(dump(config, keep));
-}
-
-std::string systemHash(const TaskConfig& config) {
-    const auto keep = [](std::string_view path) { return path.starts_with("system."); };
-    return digestHex(dump(config, keep));
-}
-
-std::string effectiveHash(const std::map<std::string, std::string>& effective) {
-    // 长度前缀编码：键或值里带 '=' 或换行（例如来源名里的路径）也不会让两份不同的
-    // 输入拼成同一个串
-    std::string canonical;
-    for (const auto& [key, value] : effective) {
-        canonical += std::to_string(key.size()) + ':' + key + std::to_string(value.size()) + ':'
-                     + value + '\n';
-    }
-    return digestHex(canonical);
 }
 
 }  // namespace simpleslam::config

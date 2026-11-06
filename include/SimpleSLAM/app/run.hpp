@@ -8,8 +8,8 @@
 ///
 /// 一个任务是"用哪个 SLAM 系统、在线还是离线、处理哪份数据、评不评测"。
 /// 执行器依次：读并还原任务 → 核对组合规则 → 打开数据、合并外部标定 → 按管线装配 →
-/// 驱动运行 → 终结、写任务记录 → 列了评测函数就对任务记录评测并过基线门禁 →
-/// 按结论返回退出码。多序列（`data.sequences` 非空）时，每个序列用同一个可执行文件起一个
+/// 驱动运行 → 终结、写任务记录 → 列了评测函数就对任务记录评测 → 按运行是否完整返回
+/// 退出码。多序列（`data.sequences` 非空）时，每个序列用同一个可执行文件起一个
 /// 子进程，各自写一份子任务记录，最后汇总成一张表。评测也可以单独做（`evaluateTask`）。
 ///
 /// 入口只有几行：用户的实现先追加到目录，再交给 `run`。
@@ -42,11 +42,13 @@ struct RunOptions {
     /// 多序列时为每个序列起子进程的可执行文件。空就用当前的可执行文件，用户登记的实现
     /// 在子进程里因此同样有。
     std::string executable{};
+    /// 另存进任务记录 `source/` 的原始文件，如操作台渲染之前的 `.py` 任务。空表示没有。
+    std::string source_file{};
 };
 
 /// 跑一个任务。进度与结论写到 out，问题写到 err；多序列时每个序列的输出在它的日志里。
-/// 返回退出码：0 完成（评测时门禁通过）；1 出错；门禁不过时返回评测的退出码。
-/// 多序列时返回各序列里最严重的那个：出错 > 无效 > 不可比较 > 失败 > 通过。
+/// 返回退出码：0 跑完且完整；4 跑完但不完整（任务记录照常写完）；1 出错；2 用法错误。
+/// 多序列时返回各序列里最严重的那个：出错 > 不完整 > 完整。
 int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::ostream& out,
             std::ostream& err);
 
@@ -66,27 +68,21 @@ struct TrajectoryEvaluation {
     bool overwrite = false;
     /// false 时只打印结论、不报任务记录的位置：调用方把它写在临时目录里，评测完删掉。
     bool keep_record = true;
-    /// 任务名，也是匹配基线用的数据集名。有基线时必须给：不会默认取第一条。
+    /// 结论里的名字，放进对比表时认它。空表示取估计轨迹的文件名。
     std::string name{};
     /// 评测函数，名字 → 插件节点。空表示 ate 与 rpe 都用默认参数。
     config::PluginMap evaluators{};
-    std::string baselines{};
-    std::string config_hash{};  ///< 有效身份，与基线核对
+    /// 目标窗口：任务完成度按它算。空表示不算任务完成度。
     std::optional<fw::TimeRange> window{};
-    /// 产生这条估计的那次运行的 `result.json`（也认 v2 的 `report.yaml`）：完整性与目标
-    /// 窗口取自它。它必须列着这条估计的内容摘要，不是这条轨迹就拒绝。
-    std::string run_result{};
-    /// 没有运行结论时人工声明运行完整；声明的原话写进结论。
-    std::optional<std::string> declaration{};
-    bool allow_incomparable = false;
 };
 
-/// 返回退出码：0 通过，3 失败，4 无效，5 不可比较（允许时为 0），1 出错。
+/// 只评测、写结论：别的系统跑出来的轨迹进对比表，不判通过与否。
+/// 返回退出码：0 评测完成（没测出东西的评测函数在结论里写无结果），1 出错。
 int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Catalogs& catalogs,
                          std::ostream& out, std::ostream& err);
 
-/// 配置命令：schema、default、check、dump、hash。不是配置命令时返回 -1。
-/// 用法错误返回 2。
+/// 配置命令：schema、default、check、dump（hash 去掉了，报错时指明用 dump 对比）。
+/// 不是配置命令时返回 -1，用法错误返回 2。
 int configCommand(const std::vector<std::string>& args, const config::Catalogs& catalogs,
                   std::ostream& out, std::ostream& err);
 
@@ -98,7 +94,6 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
 ///     evaluate <任务记录> [evaluation.…=值 …]  单独评测，不重跑
 ///     check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
 ///     dump  <任务.yaml> [路径=值 …]           还原后的完整任务
-///     hash  <任务.yaml> [路径=值 …]           任务哈希
 ///     schema                                  配置 schema，含目录里每个实现的字段
 ///     default                                 全部默认值
 int run(int argc, char** argv, const config::Catalogs& catalogs);

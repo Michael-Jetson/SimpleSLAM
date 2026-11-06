@@ -6,7 +6,6 @@ add_library(simpleslam_app STATIC
     src/external.cpp
     src/bindings.cpp
     src/catalogs.cpp
-    src/replay_reader.cpp
     src/run.cpp
     src/sequences.cpp
     src/task.cpp
@@ -18,9 +17,8 @@ target_link_libraries(simpleslam_app PUBLIC
     simpleslam_modules
     simpleslam_algo
     simpleslam_eval
-    simpleslam_record
 )
-# 读回运行结局、身份与各子任务记录的结论
+# 读回运行结局与各子任务记录的结论
 target_link_libraries(simpleslam_app PRIVATE ${SIMPLESLAM_YAMLCPP_TARGET})
 # 软件版本进任务记录：结果是哪个版本跑出来的，要能查
 target_compile_definitions(simpleslam_app PRIVATE SIMPLESLAM_VERSION="${PROJECT_VERSION}")
