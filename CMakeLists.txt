@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(SimpleSLAM
-    VERSION 4.0
+    VERSION 5.0
     DESCRIPTION "模块化 C++20 SLAM 框架"
     LANGUAGES CXX
 )
