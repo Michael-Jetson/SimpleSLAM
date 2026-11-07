@@ -50,6 +50,13 @@ struct DatasetRequest {
     fw::Duration post_support{0};
 };
 
+/// 数据集读取器：把一种数据格式读成框架的统一数据，来源、标定、真值、推荐的打包策略
+/// 一起给出。任务里 `data.source` 那个槽的接口，每种格式一个实现。
+///
+/// 时刻只用数据自带的：每条数据的时刻取自格式本身（KITTI odometry 的 `times.txt`、
+/// raw 的 `timestamps.txt`），不按标称周期或行号编。格式里没有时刻、缺了或与帧数
+/// 对不上，就报错。数据里坏掉的时刻默认也报错；要用这份数据，就显式打开实现自己的
+/// 修补选项，修补过的帧记进来源声明（`SourceDescriptor::repaired_frames` 与说明）。
 class DatasetReaderBase : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "DatasetReaderBase";
