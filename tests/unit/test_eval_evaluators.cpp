@@ -41,7 +41,7 @@ Trajectory line(int count, double step_m, double offset_y = 0.0) {
 }
 
 /// 评测函数看到的输入：两条现成的轨迹，记下评测函数要的是哪条估计。
-class FixedInputs final : public EvaluationInputs {
+class FixedInputs final : public IEvaluationInputs {
 public:
     FixedInputs(Trajectory estimate, Trajectory reference)
         : estimate_(std::move(estimate)), reference_(std::move(reference)) {}
@@ -190,7 +190,7 @@ TEST_CASE("写法不对在构造时报：装配时试构造一次就能发现", 
 namespace {
 
 /// 只带度量的输入：timing 只读度量，不要真值。
-class MetricInputs final : public EvaluationInputs {
+class MetricInputs final : public IEvaluationInputs {
 public:
     explicit MetricInputs(std::vector<MetricSample> samples) : samples_(std::move(samples)) {}
 

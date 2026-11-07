@@ -73,9 +73,9 @@ struct DiagnosticRecord {
 };
 
 /// 诊断汇聚点。实现必须自己吞掉异常：诊断路径不得影响估计流程。
-class DiagnosticSink {
+class IDiagnosticSink {
 public:
-    virtual ~DiagnosticSink() = default;
+    virtual ~IDiagnosticSink() = default;
     virtual void submit(const DiagnosticRecord& record) noexcept = 0;
 };
 
@@ -84,7 +84,7 @@ public:
 /// 汇聚点是跨模块共享的：多个模块的执行上下文会同时写它。各模块内部串行
 /// 并不能保证它们之间串行，所以这里必须自己加锁：不加锁就是多模块并发写同一个
 /// vector。诊断路径的锁只在追加一条记录时持有。
-class MemoryDiagnosticSink final : public DiagnosticSink {
+class MemoryDiagnosticSink final : public IDiagnosticSink {
 public:
     void submit(const DiagnosticRecord& record) noexcept override {
         try {

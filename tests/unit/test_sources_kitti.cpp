@@ -483,12 +483,6 @@ TEST_CASE("raw：缺 IMU→激光外参时外参取不出来，由装配核对",
     REQUIRE(descriptor.required_extrinsics.size() == 1);
     CHECK(descriptor.required_extrinsics.front() == "velodyne");
     CHECK(fw::missingExtrinsics(strict.calibration(), descriptor.required_extrinsics).size() == 1);
-
-    kitti::RawOptions relaxed;
-    relaxed.allow_assumed_extrinsics = true;
-    kitti::RawSource source(drive.string(), relaxed);
-    CHECK(source.calibration().extrinsic("velodyne")->source == fw::CalibrationSource::kAssumed);
-    CHECK_FALSE(source.calibration().hasMeasuredExtrinsic("velodyne"));
 }
 
 TEST_CASE("odometry：坏的时间行不被静默吞掉", "[sources][kitti]") {

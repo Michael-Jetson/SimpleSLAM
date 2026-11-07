@@ -45,7 +45,7 @@ inline constexpr TopicDesc<fw::HealthEvent> kHealth{"/slam/health"};
 ///
 /// 写者归属（装配期确定，写令牌保证）：
 ///   keyframes → 里程计模块；graph → 图优化模块；state → 里程计模块；
-///   calibration → 装配期写入（将来的在线标定模块接手）。
+///   calibration → 装配期写入。
 struct SlamResources {
     fw::KeyframeStore keyframes;
     fw::PoseGraph graph;

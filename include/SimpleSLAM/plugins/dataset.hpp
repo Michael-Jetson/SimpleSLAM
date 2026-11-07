@@ -50,13 +50,13 @@ struct DatasetRequest {
     fw::Duration post_support{0};
 };
 
-class DatasetReader : public logging::Loggable {
+class DatasetReaderBase : public logging::Loggable {
 public:
-    static constexpr std::string_view kInterfaceName = "DatasetReader";
+    static constexpr std::string_view kInterfaceName = "DatasetReaderBase";
 
-    virtual ~DatasetReader() = default;
-    DatasetReader(const DatasetReader&) = delete;
-    DatasetReader& operator=(const DatasetReader&) = delete;
+    virtual ~DatasetReaderBase() = default;
+    DatasetReaderBase(const DatasetReaderBase&) = delete;
+    DatasetReaderBase& operator=(const DatasetReaderBase&) = delete;
 
     /// 打开数据集。读不了就抛异常并写明路径与原因，不返回半个数据集；
     /// 实现没给出来源是实现的错，抛 `std::logic_error`。
@@ -65,7 +65,7 @@ public:
     [[nodiscard]] virtual std::string name() const = 0;
 
 protected:
-    DatasetReader() = default;
+    DatasetReaderBase() = default;
 
 private:
     [[nodiscard]] virtual Dataset doOpen(const DatasetRequest& request) const = 0;

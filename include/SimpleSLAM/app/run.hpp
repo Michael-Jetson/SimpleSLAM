@@ -87,9 +87,10 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
 
 /// 命令行入口：
 ///
-///     <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N]
+///     <任务.yaml> [路径=值 …] [--overwrite] [--jobs=N] [--source=<文件>]
 ///                                             跑任务（也可以写成 run <任务.yaml> …）；
-///                                             多序列时同时跑 N 个序列
+///                                             多序列时同时跑 N 个序列；--source 另存一份
+///                                             原始文件进 source/
 ///     evaluate <任务记录> [evaluation.…=值 …]  单独评测，不重跑
 ///     check <任务.yaml> [路径=值 …]           校验，插件节点由目录还原
 ///     dump  <任务.yaml> [路径=值 …]           还原后的完整任务

@@ -30,15 +30,15 @@ class Mailbox;
 using MailboxPtr = std::shared_ptr<Mailbox>;
 
 /// 收件箱一格指向的投递目标（一个订阅端）。
-class DeliveryTarget {
+class IDeliveryTarget {
 public:
-    virtual ~DeliveryTarget() = default;
-    DeliveryTarget(const DeliveryTarget&) = delete;
-    DeliveryTarget& operator=(const DeliveryTarget&) = delete;
+    virtual ~IDeliveryTarget() = default;
+    IDeliveryTarget(const IDeliveryTarget&) = delete;
+    IDeliveryTarget& operator=(const IDeliveryTarget&) = delete;
     virtual void deliverOne() = 0;
 
 protected:
-    DeliveryTarget() = default;
+    IDeliveryTarget() = default;
 };
 
 /// 所有收件箱共用的小对象。句柄可能比 Runtime 活得久，所以它由 shared_ptr 持有。
@@ -100,17 +100,17 @@ struct MailboxStats {
 };
 
 /// 收件箱的主人在每个回调前后要做的事：模块在这里设上参数作用域，回调结束后提交插件记下的写。
-class CallbackScope {
+class ICallbackScope {
 public:
-    virtual ~CallbackScope() = default;
+    virtual ~ICallbackScope() = default;
     virtual void enterCallback() noexcept = 0;
     /// `completed` 为 false 表示回调抛了异常。
     virtual void leaveCallback(bool completed) noexcept = 0;
 
 protected:
-    CallbackScope() = default;
-    CallbackScope(const CallbackScope&) = default;
-    CallbackScope& operator=(const CallbackScope&) = default;
+    ICallbackScope() = default;
+    ICallbackScope(const ICallbackScope&) = default;
+    ICallbackScope& operator=(const ICallbackScope&) = default;
 };
 
 class Mailbox final : public std::enable_shared_from_this<Mailbox> {
@@ -131,13 +131,13 @@ public:
 
     [[nodiscard]] const std::string& owner() const noexcept { return owner_; }
     /// 每个回调前后都调它。装配时设一次，`scope` 的寿命不短于收件箱的回调。
-    void setCallbackScope(CallbackScope* scope) noexcept { scope_ = scope; }
+    void setCallbackScope(ICallbackScope* scope) noexcept { scope_ = scope; }
     void setExceptionPolicy(ExceptionPolicy policy) noexcept {
         policy_.store(policy, std::memory_order_relaxed);
     }
 
     /// 排一条已接纳的消息。target 的寿命由收件箱在处理期间持有。
-    bool postSlot(std::shared_ptr<DeliveryTarget> target) {
+    bool postSlot(std::shared_ptr<IDeliveryTarget> target) {
         return push(Item{std::move(target), {}});
     }
     /// 排一件控制类工作：参数换代、定时器回调、服务请求与响应。
@@ -173,7 +173,7 @@ public:
 
 private:
     struct Item {
-        std::shared_ptr<DeliveryTarget> target;
+        std::shared_ptr<IDeliveryTarget> target;
         std::function<void()> task;
     };
 
@@ -186,7 +186,7 @@ private:
     ErrorReporter reporter_;
     std::atomic<ExceptionPolicy> policy_;
     TimerQueue timers_;
-    CallbackScope* scope_ = nullptr;
+    ICallbackScope* scope_ = nullptr;
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

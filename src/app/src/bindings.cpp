@@ -38,12 +38,6 @@ fw::PacketizerPolicy toPacketizerPolicy(const config::PacketizerSection& section
     return policy;
 }
 
-comm::RuntimeOptions toRuntimeOptions(const config::TaskConfig& config) {
-    comm::RuntimeOptions options;
-    options.offline = config.task.mode == "offline";
-    return options;
-}
-
 modules::SlamSystemOptions toSystemOptions(const config::TaskConfig& config) {
     modules::SlamSystemOptions options;
     options.offline = config.task.mode == "offline";

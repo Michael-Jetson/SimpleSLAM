@@ -4,7 +4,6 @@
 #include <SimpleSLAM/app/task.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 
-#include <algorithm>
 #include <string_view>
 #include <utility>
 
@@ -27,10 +26,9 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
     ResolvedTask task;
     task.config = std::move(loaded.config);
     task.source = std::move(loaded.source);
-    task.notes = std::move(loaded.renames.notes);
     auto& modules = task.config.system.modules;
     task.data =
-        resolveField<plugin::DatasetReader>(task.config.data.source, "data.source", catalogs);
+        resolveField<plugin::DatasetReaderBase>(task.config.data.source, "data.source", catalogs);
     task.odometry = resolveField<plugin::OdometryBase>(
         modules.odometry.plugin, "system.modules.odometry.plugin", catalogs);
     task.place_recognizer = resolveField<plugin::PlaceRecognizerBase>(
@@ -60,18 +58,6 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
             modules::kPlaceRecognizerModule);
         add("system.modules.graph_optimizer.plugin", task.graph_optimizer,
             modules::kGraphOptimizerModule);
-    }
-    // 旧写法给的参数这次没有组件声明（只跑里程计的管线里没有图优化模块）：旧写法当初在这样的
-    // 管线里不起作用、也不报错，v5 的任务记录里都写着它们。照旧，只说一句；新写法照常报错
-    for (const auto& name : loaded.renames.params) {
-        const bool declared = std::ranges::any_of(components, [&](const auto& component) {
-            return std::ranges::any_of(component.uses,
-                                       [&](const auto& use) { return use.name == name; });
-        });
-        if (!declared && task.config.system.params.erase(name) > 0) {
-            task.notes.push_back("system.params." + name
-                                 + " 这次没有组件用到（管线里没有声明它的模块），这一项不起作用");
-        }
     }
     try {
         auto resolved = comm::resolveParams(components, task.config.system.params);

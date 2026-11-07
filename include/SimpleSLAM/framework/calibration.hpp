@@ -174,10 +174,9 @@ struct CalibrationData {
 /// "合法"的旋转，不能让它变成对的，所以这里查的是语义，不是能不能构造出来。
 [[nodiscard]] std::string validateCalibration(const CalibrationData& calibration);
 
-/// 缺哪些必需的外参。已知（来源不是 unset）才算有；允许假设时 assumed 也算。
+/// 缺哪些必需的外参。已知（来源不是 unset）且不是假设值（assumed）才算有。
 [[nodiscard]] std::vector<SensorName> missingExtrinsics(const CalibrationData& calibration,
-                                                      std::span<const SensorName> required,
-                                                      bool allow_assumed = false);
+                                                      std::span<const SensorName> required);
 
 using Calibration = Resource<CalibrationData>;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 SimpleSLAM contributors
+
 /// @file test_geometry.cpp
 /// 几何类型测试——验证 manif 别名和基本运算
 ///

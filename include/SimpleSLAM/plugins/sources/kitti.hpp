@@ -47,7 +47,7 @@
 /// 后者一律标 kUnset 并让取用处失败。
 /// raw 序列有 IMU（oxts），body 就是 IMU，激光外参来自 `calib_imu_to_velo.txt`。
 /// 该文件缺失时读取不失败，这条外参保持"未知"：外部标定文件可以补上它。补没补上
-/// 由装配核对（SourceDescriptor::required_extrinsics），没补上就失败，除非显式允许假设。
+/// 由装配核对（SourceDescriptor::required_extrinsics），没补上就失败。
 
 #include <SimpleSLAM/framework/trajectory.hpp>
 #include <SimpleSLAM/framework/calibration.hpp>
@@ -107,11 +107,6 @@ struct OdometryOptions : CommonOptions {
 struct RawOptions : CommonOptions {
     /// oxts 除了 IMU 还有 GNSS。发不发由使用者定：没人消费就是白占带宽。
     bool emit_gnss = false;
-    /// 允许在缺少 `calib_imu_to_velo.txt` 且没有外部标定时把激光外参假设为单位阵。
-    ///
-    /// 默认不允许：body 是 IMU，激光在别处，猜一个单位阵等于凭空抹掉杆臂。
-    /// 确实要在没有外参的情况下先跑通流程时显式打开，产物里会留下 kAssumed。
-    bool allow_assumed_extrinsics = false;
     /// 算法要求的时间偏置余量（与打包策略的 post_support 一致）。惯性流的右括点
     /// 取"最后一帧终点加上它之后的第一条样本"，保证末帧也等得到。
     fw::Duration post_support{0};

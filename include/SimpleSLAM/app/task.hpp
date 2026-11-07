@@ -29,7 +29,7 @@ struct ResolvedTask {
     /// 插件节点已换成还原后的节点。
     config::TaskConfig config;
     config::TaskSource source;
-    config::Slot<plugin::DatasetReader> data;
+    config::Slot<plugin::DatasetReaderBase> data;
     config::Slot<plugin::OdometryBase> odometry;
     config::Slot<plugin::PlaceRecognizerBase> place_recognizer;
     config::Slot<plugin::GraphOptimizerBase> graph_optimizer;
@@ -37,8 +37,6 @@ struct ResolvedTask {
     std::map<std::string, config::Slot<eval::EvaluatorBase>> evaluators;
     /// 参数的定义：选中的组件与模块声明的，连同写者。值在 `config.system.params`，已补齐。
     std::vector<comm::ParamDefinition> params;
-    /// 加载时要告诉人的话：用了旧写法时，替换用的新写法。
-    std::vector<std::string> notes;
 };
 
 /// 还原全部插件节点并核对参数。名字不在所要求接口的目录里、参数不合法、构造失败、

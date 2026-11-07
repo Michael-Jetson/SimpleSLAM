@@ -34,7 +34,7 @@ void toReferenceSensor(eval::ComparablePair& pair,
 
 /// 任务记录作为评测函数的输入：轨迹、真值、生效的标定、度量与事件从目录里读；目标窗口
 /// 由调用方给，任务记录的取自它的 `outcome.yaml`（`run_dir::readTargetWindow`）。
-class RunDirInputs final : public eval::EvaluationInputs {
+class RunDirInputs final : public eval::IEvaluationInputs {
 public:
     RunDirInputs(fs::path dir, std::optional<fw::TimeRange> window);
 

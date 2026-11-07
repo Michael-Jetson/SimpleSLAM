@@ -15,7 +15,6 @@
 #include <fstream>
 #include <map>
 #include <set>
-#include <span>
 #include <sstream>
 #include <system_error>
 #include <string_view>
@@ -45,13 +44,6 @@ bool dottedKey(std::string_view key) {
     }
     return true;
 }
-
-std::string renamedNote(const RenamedField& renamed) {
-    return std::string(renamed.old_path) + " 改写成了 " + std::string(renamed.new_path)
-           + "：这次按新写法读，请改成新写法";
-}
-
-constexpr std::string_view kParamsPrefix = "system.params.";
 
 std::string quoteJson(const std::string& text) {
     std::string out = "\"";
@@ -470,20 +462,12 @@ void applyToPlugin(PluginSpec& spec, const std::vector<std::string>& rest, const
     spec.params[key] = scalarValue(value);
 }
 
-void applyAssignment(TaskConfig& config, const std::string& assignment, Renames* renames) {
+void applyAssignment(TaskConfig& config, const std::string& assignment) {
     const auto equals = assignment.find('=');
     if (equals == std::string::npos || equals == 0) {
         throw ConfigError("覆盖项要写成 路径=值，得到 " + assignment);
     }
-    std::string path = assignment.substr(0, equals);
-    for (const auto& renamed : renamedFields()) {
-        if (path != renamed.old_path) continue;
-        path = std::string(renamed.new_path);
-        if (renames != nullptr) {
-            renames->notes.push_back(renamedNote(renamed));
-            renames->params.insert(path.substr(kParamsPrefix.size()));
-        }
-    }
+    const std::string path = assignment.substr(0, equals);
     const std::string text = assignment.substr(equals + 1);
     const YAML::Node value = parseOverrideValue(text);
 
@@ -685,14 +669,8 @@ std::string schemaJson(const std::map<std::string, std::string>& slots,
             << ", \"doc\": " << quoteJson(field.doc) << "}" << (i + 1 < fields.size() ? "," : "")
             << '\n';
     }
-    out << "  ],\n  \"renamed\": {";
+    out << "  ],\n  \"slots\": {";
     std::size_t n = 0;
-    for (const auto& renamed : renamedFields()) {
-        out << (n++ == 0 ? "\n" : ",\n") << "    " << quoteJson(std::string(renamed.old_path))
-            << ": " << quoteJson(std::string(renamed.new_path));
-    }
-    out << (n == 0 ? "" : "\n  ") << "},\n  \"slots\": {";
-    n = 0;
     for (const auto& [path, interface_name] : slots) {
         out << (n++ == 0 ? "\n" : ",\n") << "    " << quoteJson(path) << ": "
             << quoteJson(interface_name);
@@ -721,17 +699,6 @@ std::string schemaJson(const std::map<std::string, std::string>& slots,
     }
     out << (modules.empty() ? "" : "\n  ") << "]\n}\n";
     return out.str();
-}
-
-std::span<const RenamedField> renamedFields() {
-    // 两个兜底权重从图优化模块的配置字段变成了它声明的参数
-    static constexpr RenamedField kRenamed[] = {
-        {"system.modules.graph_optimizer.odometry_translation_weight",
-         "system.params.graph.odometry_translation_weight"},
-        {"system.modules.graph_optimizer.odometry_rotation_weight",
-         "system.params.graph.odometry_rotation_weight"},
-    };
-    return kRenamed;
 }
 
 void validateConfig(const TaskConfig& config) {
@@ -871,53 +838,6 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         throw ConfigError(origin + ": system 要写成系统文件的路径");
     }
 
-    // 改过写法的配置项：搬到新写法的位置，说明替换用的新写法
-    for (const auto& renamed : renamedFields()) {
-        // 只读地往下找（const 的 operator[] 不插入空键）；节点要用 reset 换指向，赋值会改写原节点
-        const auto parts = splitPath(std::string(renamed.old_path));
-        YAML::Node parent;
-        parent.reset(root);
-        bool present = true;
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            const YAML::Node& view = parent;
-            if (!view.IsMap() || !view[parts[i]]) {
-                present = false;
-                break;
-            }
-            if (i + 1 < parts.size()) parent.reset(view[parts[i]]);
-        }
-        if (!present) continue;
-        const YAML::Node& view = parent;
-        const YAML::Node value = YAML::Clone(view[parts.back()]);
-        parent.remove(parts.back());
-        // 去掉之后空下来的映射也去掉：空映射也算一个叶子，留着会被当成拼错的键
-        for (std::size_t depth = parts.size() - 1; depth > 0; --depth) {
-            YAML::Node container;
-            container.reset(root);
-            for (std::size_t i = 0; i + 1 < depth; ++i) {
-                const YAML::Node& step = container;
-                container.reset(step[parts[i]]);
-            }
-            const YAML::Node& holder = container;
-            const YAML::Node child = holder[parts[depth - 1]];
-            if (!child || !child.IsMap() || child.size() != 0) break;
-            container.remove(parts[depth - 1]);
-        }
-        const std::string new_path(renamed.new_path);
-        const std::string name = new_path.substr(kParamsPrefix.size());
-        const YAML::Node& top = root;  // 旧写法在 system 下找到了，所以 system 一定在
-        if (const YAML::Node params = top["system"]["params"];
-            params && params.IsMap() && params[name]) {
-            const std::string& where =
-                loaded.source.system_file.empty() ? origin : loaded.source.system_file;
-            throw ConfigError(where + ": " + std::string(renamed.old_path) + " 与 " + new_path
-                              + " 是同一项，新旧两种写法都写了：删掉旧写法");
-        }
-        root["system"]["params"][name] = value;
-        loaded.renames.notes.push_back(renamedNote(renamed));
-        loaded.renames.params.insert(name);
-    }
-
     // 未知键先查：拼错的键静默忽略，比报错难查得多
     const FieldPaths paths = fieldPaths();
     std::vector<std::string> present;
@@ -935,7 +855,7 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
         assign(value, node, path, origin);
     });
     // 类型对了不等于值有意义：覆盖全部到位之后整体校验
-    applyOverrides(loaded.config, loaded.source.overrides, &loaded.renames);
+    applyOverrides(loaded.config, loaded.source.overrides);
     return loaded;
 }
 
@@ -945,9 +865,8 @@ LoadedTask loadTaskFile(const std::string& path, const std::vector<std::string>&
                           parent.empty() ? std::string(".") : parent.string(), overrides);
 }
 
-void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
-                    Renames* renames) {
-    for (const auto& assignment : assignments) applyAssignment(config, assignment, renames);
+void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments) {
+    for (const auto& assignment : assignments) applyAssignment(config, assignment);
     validateConfig(config);
 }
 

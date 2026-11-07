@@ -17,7 +17,7 @@
 
 namespace simpleslam::plugin::kitti {
 
-class OdometryReader final : public DatasetReader {
+class OdometryReader final : public DatasetReaderBase {
 public:
     static constexpr std::string_view kTypeName = "kitti_odometry";
 
@@ -50,7 +50,7 @@ private:
     Config config_;
 };
 
-class RawReader final : public DatasetReader {
+class RawReader final : public DatasetReaderBase {
 public:
     static constexpr std::string_view kTypeName = "kitti_raw";
 

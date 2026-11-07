@@ -18,7 +18,7 @@ config::Catalogs builtinCatalogs() {
     config::Catalogs catalogs;
     algo::registerBuiltins(catalogs);
 
-    auto& readers = catalogs.of<plugin::DatasetReader>();
+    auto& readers = catalogs.of<plugin::DatasetReaderBase>();
     readers.add<plugin::kitti::OdometryReader>();
     readers.add<plugin::kitti::RawReader>();
 
@@ -37,7 +37,7 @@ config::Catalogs builtinCatalogs() {
 
 std::map<std::string, std::string> slotInterfaces() {
     return {
-        {"data.source", std::string(plugin::DatasetReader::kInterfaceName)},
+        {"data.source", std::string(plugin::DatasetReaderBase::kInterfaceName)},
         {"evaluation.evaluators", std::string(eval::EvaluatorBase::kInterfaceName)},
         {"system.modules.graph_optimizer.plugin",
          std::string(plugin::GraphOptimizerBase::kInterfaceName)},

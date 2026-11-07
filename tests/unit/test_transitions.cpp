@@ -224,7 +224,7 @@ void appendKeyframe(fw::WriteToken<fw::KeyframeStoreData>& writer, std::uint64_t
 }
 
 /// 评测函数的输入：两条现成的轨迹与一个目标窗口。
-class FixedInputs final : public eval::EvaluationInputs {
+class FixedInputs final : public eval::IEvaluationInputs {
 public:
     FixedInputs(fw::Trajectory estimate, fw::Trajectory reference,
                 std::optional<fw::TimeRange> window)

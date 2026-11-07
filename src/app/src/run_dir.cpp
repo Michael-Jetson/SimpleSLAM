@@ -273,7 +273,7 @@ std::vector<eval::MetricSample> readMetrics(const fs::path& dir, std::string_vie
     std::ifstream file(path);
     if (!file) {
         throw std::runtime_error("任务记录 " + dir.string()
-                                 + " 里没有 metrics.csv：写它的软件还不记逐帧度量");
+                                 + " 里没有 metrics.csv");
     }
     std::string line;
     if (!std::getline(file, line) || line != kMetricsHeader) {
@@ -307,7 +307,7 @@ std::vector<eval::EventSample> readEvents(const fs::path& dir, std::string_view 
     std::ifstream file(path);
     if (!file) {
         throw std::runtime_error("任务记录 " + dir.string()
-                                 + " 里没有 events.jsonl：写它的软件还不记事件");
+                                 + " 里没有 events.jsonl");
     }
     std::vector<eval::EventSample> out;
     std::string line;

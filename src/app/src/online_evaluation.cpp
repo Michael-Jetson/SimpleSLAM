@@ -15,7 +15,7 @@ namespace {
 
 /// 运行中的快照作为评测函数的输入：轨迹是到目前为止攒下的，真值是运行之前备好的，
 /// 度量与事件取自诊断汇聚点。目标窗口说的是整次运行，截至此刻不适用，所以没有。
-class SnapshotInputs final : public eval::EvaluationInputs {
+class SnapshotInputs final : public eval::IEvaluationInputs {
 public:
     SnapshotInputs(const modules::TrajectoryRecorder& recorder,
                    const OnlineEvaluationModule::Setup& setup)

@@ -103,9 +103,10 @@ public:
 
     // ── 在线驱动 ──
 
-    /// 给每个模块起一个线程，立刻返回，调用线程可以去做别的（比如 ros::spin）。通信层自身不占线程。
+    /// 给每个模块起一个线程，立刻返回，调用线程可以去做别的；结束时由控制线程调 shutdown()。
+    /// 通信层自身不占线程。
     void start();
-    /// start() 之后阻塞到 requestStop() 且已接纳的工作走完。
+    /// 起线程（自己调 start()，不要先调），阻塞到 requestStop() 且已接纳的工作走完。
     void spin();
 
     /// 停止输入：入口发布端不再发，服务和参数写入不再受理。已接纳的工作继续走完。
@@ -141,7 +142,7 @@ public:
             *core_, resolveName(name, "/"), typeid(Request), typeid(Response), nullptr));
     }
 
-    /// 外部写入参数（操作员，以后的 ROS 适配）：只能写没有组件声明写的参数。
+    /// 外部写入参数（运行时之外的调用方）：只能写没有组件声明写的参数。
     ParamCommitResult setParams(const std::vector<ParamChange>& changes) {
         return core_->setParams(changes, kExternalWriter);
     }

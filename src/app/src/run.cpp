@@ -262,7 +262,6 @@ int runSingle(const ResolvedTask& task, const RunOptions& options, std::ostream&
     LineStream warn(runner, logging::Level::kWarn);
     try {
         info << "任务: " << c.task.name << "（" << options.task_file << "）\n";
-        for (const auto& note : task.notes) warn << "旧写法: " << note << '\n';
         // 不支持的组合、占用的任务记录目录、要真值却没有真值，都在动任务记录目录之前报错
         checkCombination(c);
         const fs::path dir = run_dir::directory(c);
@@ -379,7 +378,6 @@ int runTask(const RunOptions& options, const config::Catalogs& catalogs, std::os
         const auto& c = task.config;
         if (c.data.sequences.empty()) return runSingle(task, options, out, err);
         out << "任务: " << c.task.name << "（" << options.task_file << "）\n";
-        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         checkCombination(c);
         return runSequences(task, options, out);
     } catch (const std::exception& e) {
@@ -402,7 +400,6 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
             }
         }
         const ResolvedTask task = loadTask((dir / "task.yaml").string(), overrides, catalogs);
-        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         if (!task.config.data.sequences.empty()) {
             return evaluateSequences(task, dir, overrides, catalogs, out, err);
         }
@@ -445,7 +442,6 @@ int configCommand(const std::vector<std::string>& args, const config::Catalogs& 
     try {
         const auto task =
             loadTask(args[1], std::vector<std::string>(args.begin() + 2, args.end()), catalogs);
-        for (const auto& note : task.notes) err << "旧写法: " << note << '\n';
         if (command == "check") {
             out << "任务有效: " << args[1] << '\n';
         } else {

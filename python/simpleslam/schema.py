@@ -1,9 +1,8 @@
 """配置 schema：从 C++ 那份唯一的字段清单读出来，不在这里重写一遍。
 
 字段清单之外还有几样：插件字段要求的接口（``slots``），各目录里每个实现的字段清单与
-它用到的参数（``plugins``），内置模块用到的参数（``modules``），改过写法的配置项
-（``renamed``）。哪个入口导出 schema，目录里就是它登记的实现：用户写的算法要用
-用户自己的入口导出。
+它用到的参数（``plugins``），内置模块用到的参数（``modules``）。哪个入口导出 schema，
+目录里就是它登记的实现：用户写的算法要用用户自己的入口导出。
 
 没有缓存副本。缓存会漂移，而漂移了的 schema 比没有 schema 更糟——
 它会让校验通过，然后在 C++ 侧报未知键。
@@ -109,14 +108,12 @@ class Schema:
         fields: Iterable[Field],
         slots: dict[str, str] | None = None,
         plugins: Iterable[PluginSchema] = (),
-        renamed: dict[str, str] | None = None,
         modules: dict[str, tuple[ParamSpec, ...]] | None = None,
     ) -> None:
         self._fields = list(fields)
         self._by_path = {field.path: field for field in self._fields}
         self._slots = dict(slots or {})
         self._plugins = {(plugin.interface, plugin.type): plugin for plugin in plugins}
-        self._renamed = dict(renamed or {})
         self._modules = dict(modules or {})
 
     # ── 构造 ──
@@ -155,14 +152,13 @@ class Schema:
                 for item in payload.get("plugins", [])
             ]
             slots = dict(payload.get("slots", {}))
-            renamed = dict(payload.get("renamed", {}))
             modules = {item["module"]: _param_specs(item.get("params", []))
                        for item in payload.get("modules", [])}
         except (KeyError, TypeError) as exc:
             raise SchemaError(f"schema 结构不对: {exc}") from exc
         if not fields:
             raise SchemaError("schema 里一个字段也没有")
-        return cls(fields, slots, plugins, renamed, modules)
+        return cls(fields, slots, plugins, modules)
 
     @classmethod
     def from_tool(cls, tool: str | None = None) -> "Schema":
@@ -203,11 +199,6 @@ class Schema:
     def interfaces(self) -> list[str]:
         """目录里出现过的全部接口。"""
         return sorted({i for (i, _) in self._plugins})
-
-    @property
-    def renamed(self) -> dict[str, str]:
-        """改过写法的配置项：旧写法 → 新写法。旧写法照样认，原样交给 C++，由它翻译并提示。"""
-        return dict(self._renamed)
 
     @property
     def module_params(self) -> dict[str, tuple[ParamSpec, ...]]:

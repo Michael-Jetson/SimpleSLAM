@@ -27,24 +27,20 @@ runs/
 configs/local/*
 !configs/local/README.md
 
-# 内部文档（蓝图、调研报告等，不对外发布）
+# 内部文档（设计、调研等，不对外发布）
 docs/
 # 只服务内部文档的检查工具，跟着文档留在本地
 /.githooks/
 /scripts/doc_lint.py
 
-# Docker 预下载依赖（由 scripts/install_deps.sh 或手动下载）
+# Docker 构建连不上 GitHub 时用的 manif 本地副本（见 Dockerfile 开头的说明）
 docker/deps/
 
 # 临时文件
-issue.md
-Review.md
-git.sh
 *.zip
 
 # 本地文档/配置（本地保留，不入库）
 /AGENTS.md
-/教学文档编写规范.md
 /Claude_Code_工具链配置文档.md
 
 # 系统文件

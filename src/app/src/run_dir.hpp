@@ -82,8 +82,7 @@ void writeOutcome(const fs::path& dir, const modules::RunOutcome& outcome, const
 /// （一个事件一行），评测函数读它们，事后不必重跑。
 void writeDiagnostics(const fs::path& dir, const std::vector<fw::DiagnosticRecord>& records);
 
-/// 读回键为 `key` 的度量，按记下的先后。任务记录里没有 `metrics.csv` 时抛：写它的软件
-/// 还不记逐帧度量。
+/// 读回键为 `key` 的度量，按记下的先后。任务记录里没有 `metrics.csv` 时抛。
 [[nodiscard]] std::vector<eval::MetricSample> readMetrics(const fs::path& dir,
                                                           std::string_view key);
 

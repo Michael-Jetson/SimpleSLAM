@@ -24,7 +24,7 @@ public:
     explicit CountEvaluator(const Config& /*config*/) {}
 
     [[nodiscard]] eval::Needs needs() const override { return {.groundtruth = true}; }
-    [[nodiscard]] eval::Evaluation evaluate(const eval::EvaluationInputs& inputs) const override {
+    [[nodiscard]] eval::Evaluation evaluate(const eval::IEvaluationInputs& inputs) const override {
         const auto pair = inputs.pair("odometry");
         const auto frames = static_cast<double>(pair.reference.size());
         eval::Evaluation out;

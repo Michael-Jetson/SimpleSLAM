@@ -393,7 +393,7 @@ class Config:
             path, equals, _ = item.partition("=")
             if not equals or not path:
                 raise ConfigError(f"覆盖项要写成 路径=值，得到 {item}")
-            known = (path in schema or path in schema.renamed
+            known = (path in schema
                      or _slot_containing(path, schema) is not None
                      or _table_of(path, schema) is not None)
             if not known:
@@ -404,8 +404,6 @@ class Config:
             if system_file is not None and path.startswith("system."):
                 raise ConfigError(f"{path}：system 引用了系统文件 {system_file}，"
                                   "改系统参数要写成覆盖项（config.override）")
-            if path in schema.renamed:  # 改过写法的旧写法：原样交给 C++，由它翻译并提示
-                continue
             table = _table_of(path, schema) if path not in schema else None
             if table is not None and schema.field(table).type == "params":
                 _check_param_name(path[len(table) + 1:])  # 参数的一项：名字合规，值是标量
@@ -451,12 +449,6 @@ class Config:
                     order.append(pseudo(SYSTEM_FILE, ""))
                 continue
             order.append(field)
-        # 改过写法的旧写法：写在原来那一节的末尾
-        for old in (path for path in schema.renamed if path in self._values):
-            section = old.rpartition(".")[0] + "."
-            index = max((i for i, field in enumerate(order) if field.path.startswith(section)),
-                        default=len(order) - 1)
-            order.insert(index + 1, pseudo(old, self._values[old]))
         if OVERRIDES in self._values:
             order.append(pseudo(OVERRIDES, ""))
         return order
@@ -500,8 +492,6 @@ class Config:
                             isinstance(item, Mapping) for item in value.values()):
                         raise ConfigError(f"{path} 是参数的值，要写成 参数名: 标量")
                     config[path] = {name: _scalar(item) for name, item in value.items()}
-                elif path in schema.renamed and not isinstance(value, Mapping):
-                    config[path] = _scalar(value)  # 旧写法原样留着，C++ 加载时翻译
                 elif isinstance(value, Mapping) and path not in schema:
                     walk(value, path)
                 else:

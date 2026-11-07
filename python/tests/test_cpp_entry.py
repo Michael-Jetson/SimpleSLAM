@@ -27,7 +27,6 @@ REPO = Path(__file__).resolve().parents[2]
 LIO = "system.modules.odometry.plugin"
 SOURCE = "data.source"
 WEIGHT = "graph.odometry_translation_weight"
-OLD_WEIGHT = "system.modules.graph_optimizer.odometry_translation_weight"
 
 
 def find_tool(name: str, env: str, subdir: str = "tools") -> str | None:
@@ -109,14 +108,13 @@ class ThroughCppTest(unittest.TestCase):
     def test_schema_lists_fields_slots_and_plugins(self):
         self.assertGreater(len(self.schema), 20)
         self.assertEqual(self.schema.field("system.params").type, "params")
-        self.assertEqual(self.schema.renamed[OLD_WEIGHT], "system.params." + WEIGHT)
         graph = {spec.name: spec for spec in self.schema.module_params["/slam/graph_optimizer"]}
         self.assertTrue(graph[WEIGHT].runtime)
         self.assertEqual(graph[WEIGHT].default, 100)
         self.assertEqual(self.schema.slots[LIO], "OdometryBase")
-        self.assertEqual(self.schema.slots[SOURCE], "DatasetReader")
+        self.assertEqual(self.schema.slots[SOURCE], "DatasetReaderBase")
         self.assertIn("my_lio", self.schema.implementations("OdometryBase"))
-        self.assertEqual(self.schema.implementations("DatasetReader"),
+        self.assertEqual(self.schema.implementations("DatasetReaderBase"),
                          ["kitti_odometry", "kitti_raw"])
 
     def test_rendered_tasks_load_as_written(self):
@@ -161,16 +159,6 @@ class ThroughCppTest(unittest.TestCase):
                                           schema=self.schema)["evaluation.evaluators"]
         self.assertEqual(sorted(evaluators), ["ate", "rpe", "z9"])
         self.assertEqual(evaluators["ate"]["alignment"], "none")
-
-    def test_renamed_keys_are_translated_by_cpp(self):
-        # 旧写法照样认：C++ 翻译成新写法，读回来就是新写法
-        old = self.base(system={"pipeline": "mapping", "modules": {
-            "graph_optimizer": {"plugin": {"type": "none"}, "odometry_translation_weight": 50}}})
-        old.override("system.modules.graph_optimizer.odometry_rotation_weight", 60)
-        complete = old.through_cpp(tool=TASK_TOOL, schema=self.schema)
-        self.assertNotIn(OLD_WEIGHT, complete)
-        self.assertEqual(complete["system.params"][WEIGHT], 50)
-        self.assertEqual(complete["system.params"]["graph.odometry_rotation_weight"], 60)
 
     def test_evaluator_names_and_types_are_checked(self):
         for name in ("ate.v2", "ate-2", ""):

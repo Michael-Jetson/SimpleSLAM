@@ -126,8 +126,6 @@ struct SourceDescriptor {
     /// 装配时必须已知的外参（通常是触发传感器相对 body 的那一条）。来源只负责
     /// 说"需要哪些"，外参由谁提供——数据集自带还是外部标定文件——是装配的事。
     std::vector<std::string> required_extrinsics;
-    /// 允许用假设值（kAssumed）顶替缺失外参。显式选项，会记进产物。
-    bool assumed_extrinsics_allowed = false;
     /// 解释性的来源说明：同源关系、缺省解释、修补过的数据等。进评测报告，
     /// 让读结论的人知道这些数字建立在什么前提上。
     std::vector<std::string> notes;

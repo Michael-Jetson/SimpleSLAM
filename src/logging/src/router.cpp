@@ -42,7 +42,7 @@ std::string consoleLine(const Record& record) {
                        record.text);
 }
 
-/// run.log：终端那一行再加上代码位置。
+/// run.log：等级、时刻、帧序号、来源、正文，执行器自己的输出也带；模块与插件的记录再加代码位置。
 std::string fileLine(const Record& record) {
     std::string where;
     if (!record.plain && record.where.line() != 0) {

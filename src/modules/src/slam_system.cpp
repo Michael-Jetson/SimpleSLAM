@@ -170,8 +170,7 @@ void SlamSystem::init() {
     }
     if (!descriptor_.required_extrinsics.empty()) {
         const auto missing = fw::missingExtrinsics(*resources_.calibrationSnapshot(),
-                                                   descriptor_.required_extrinsics,
-                                                   descriptor_.assumed_extrinsics_allowed);
+                                                   descriptor_.required_extrinsics);
         if (!missing.empty()) {
             std::string list;
             for (const auto& sensor : missing) list += (list.empty() ? "" : "、") + sensor;

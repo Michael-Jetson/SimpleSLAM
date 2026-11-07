@@ -78,7 +78,7 @@ AteEvaluator::AteEvaluator(const Config& config) : config_(config) {
         seconds(config_.max_interpolation_gap_s, "max_interpolation_gap_s");
 }
 
-Evaluation AteEvaluator::evaluate(const EvaluationInputs& inputs) const {
+Evaluation AteEvaluator::evaluate(const IEvaluationInputs& inputs) const {
     ComparablePair pair = inputs.pair(config_.estimate);
     AteOptions options = options_;
     if (const auto window = inputs.targetWindow()) options.target_window = *window;
@@ -134,7 +134,7 @@ RpeEvaluator::RpeEvaluator(const Config& config) : config_(config) {
         seconds(config_.max_interpolation_gap_s, "max_interpolation_gap_s");
 }
 
-Evaluation RpeEvaluator::evaluate(const EvaluationInputs& inputs) const {
+Evaluation RpeEvaluator::evaluate(const IEvaluationInputs& inputs) const {
     ComparablePair pair = inputs.pair(config_.estimate);
     const RpeResult rpe = relativePoseError(pair.estimate, pair.reference, options_);
 
@@ -171,7 +171,7 @@ KittiEvaluator::KittiEvaluator(const Config& config) : config_(config) {
         seconds(config_.max_interpolation_gap_s, "max_interpolation_gap_s");
 }
 
-Evaluation KittiEvaluator::evaluate(const EvaluationInputs& inputs) const {
+Evaluation KittiEvaluator::evaluate(const IEvaluationInputs& inputs) const {
     ComparablePair pair = inputs.pair(config_.estimate);
     const KittiResult kitti = kittiOdometryError(pair.estimate, pair.reference, options_);
 
@@ -211,7 +211,7 @@ TimingEvaluator::TimingEvaluator(const Config& config) : config_(config) {
     if (config_.key.empty()) throw std::invalid_argument("key 不能是空的：要读哪个度量");
 }
 
-Evaluation TimingEvaluator::evaluate(const EvaluationInputs& inputs) const {
+Evaluation TimingEvaluator::evaluate(const IEvaluationInputs& inputs) const {
     const auto samples = inputs.metrics(config_.key);
     Evaluation out;
     if (samples.empty()) {

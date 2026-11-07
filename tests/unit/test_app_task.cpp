@@ -58,7 +58,7 @@ public:
     explicit FinalDrift(const Config& config) : config_(config) {}
 
     [[nodiscard]] eval::Needs needs() const override { return {.groundtruth = true}; }
-    [[nodiscard]] eval::Evaluation evaluate(const eval::EvaluationInputs& inputs) const override {
+    [[nodiscard]] eval::Evaluation evaluate(const eval::IEvaluationInputs& inputs) const override {
         const auto pair = inputs.pair(config_.estimate);
         eval::Evaluation out;
         const double length = pair.reference.pathLength();
@@ -91,7 +91,7 @@ public:
 
     [[nodiscard]] eval::Needs needs() const override { return {}; }
     [[nodiscard]] eval::Evaluation evaluate(
-        const eval::EvaluationInputs& /*inputs*/) const override {
+        const eval::IEvaluationInputs& /*inputs*/) const override {
         const auto& mistake = config_.mistake;
         eval::Evaluation out;
         out.samples = 1;
@@ -111,7 +111,7 @@ private:
 };
 
 /// 没有 sequence 参数的读取器：多序列用不了它。核对在打开数据之前，所以不必真能读。
-class SingleFileReader final : public plugin::DatasetReader {
+class SingleFileReader final : public plugin::DatasetReaderBase {
 public:
     static constexpr std::string_view kTypeName = "single_file";
     struct Config {
@@ -168,7 +168,7 @@ protected:
 
 config::Catalogs catalogs() {
     auto result = app::builtinCatalogs();
-    result.of<plugin::DatasetReader>().add<SingleFileReader>();
+    result.of<plugin::DatasetReaderBase>().add<SingleFileReader>();
     result.of<plugin::OdometryBase>().add<test::StillOdometry>();
     result.of<plugin::OdometryBase>().add<ParamOdometry>();
     result.of<eval::EvaluatorBase>().add<FinalDrift>();
@@ -339,7 +339,7 @@ TEST_CASE("选错了在运行之前报错，带完整路径与可选的实现", 
                     config::ConfigError);
 }
 
-TEST_CASE("参数：按声明核对、补齐默认值，覆盖项照常写，旧写法按新写法读并提示", "[app][params]") {
+TEST_CASE("参数：按声明核对、补齐默认值，覆盖项照常写", "[app][params]") {
     const std::string data = "data:\n  source: {type: kitti_odometry, path: /data/x}\n";
     const std::string mapping =
         "system:\n  pipeline: mapping\n  modules:\n    odometry:\n"
@@ -389,44 +389,6 @@ TEST_CASE("参数：按声明核对、补齐默认值，覆盖项照常写，旧
         "system:\n  modules:\n    odometry:\n      plugin: {type: param_odometry}\n";
     CHECK(message(odometry + "  params:\n    graph.odometry_translation_weight: 120\n")
               .find("未知参数") != std::string::npos);
-
-    // 旧写法：两个兜底权重原来是图优化模块的配置字段，按新写法读，并说明替换用的新写法
-    const auto old = config::loadTaskString(
-        mapping + "    graph_optimizer:\n      odometry_translation_weight: 120\n" + data,
-        "<string>");
-    REQUIRE(old.renames.notes.size() == 1);
-    CHECK(old.renames.notes[0].find("system.params.graph.odometry_translation_weight")
-          != std::string::npos);
-    const auto translated = app::resolveTask(old, catalogs());
-    CHECK(std::get<double>(translated.config.system.params.at("graph.odometry_translation_weight"))
-          == 120.0);
-    CHECK(translated.notes == old.renames.notes);
-    // 新旧两种写法都写了：不让旧值悄悄盖掉新值
-    CHECK(message(mapping + "    graph_optimizer:\n      odometry_translation_weight: 120\n"
-                  + "  params:\n    graph.odometry_translation_weight: 90\n")
-              .find("两种写法都写了")
-          != std::string::npos);
-    const auto via_override = config::loadTaskString(
-        mapping + data, "<string>", ".",
-        {"system.modules.graph_optimizer.odometry_rotation_weight=500"});
-    REQUIRE(via_override.renames.notes.size() == 1);
-    CHECK(std::get<std::int64_t>(via_override.config.system.params.at(
-              "graph.odometry_rotation_weight"))
-          == 500);
-
-    // 只跑里程计的管线里没有图优化模块：旧写法给的权重当初在这里不起作用、也不报错，v5 的
-    // 任务记录里都写着它们，照旧只说一句；新写法照常报未知参数（上面）
-    const std::string v5_system =
-        odometry + "    graph_optimizer:\n      odometry_translation_weight: 100\n";
-    const auto v5_record = app::resolveTask(
-        config::loadTaskString(v5_system + data, "<string>", ".",
-                               {"system.modules.graph_optimizer.odometry_rotation_weight=400"}),
-        catalogs());
-    CHECK_FALSE(v5_record.config.system.params.contains("graph.odometry_translation_weight"));
-    CHECK_FALSE(v5_record.config.system.params.contains("graph.odometry_rotation_weight"));
-    CHECK(v5_record.config.system.params.contains("gravity"));  // 选中的插件声明的照常补齐
-    REQUIRE(v5_record.notes.size() == 4);
-    CHECK(v5_record.notes[2].find("不起作用") != std::string::npos);
 }
 
 TEST_CASE("插件在回调里写参数：所属模块回调结束后提交，每次修改记进 run.log", "[app][params]") {
@@ -872,15 +834,14 @@ TEST_CASE("度量与事件进任务记录：评测函数读它们，旧的任务
     CHECK(durations.front().starts_with("1,0,odometry.plugin,track.duration,"));
     CHECK(durations.front().ends_with(",ms"));
 
-    // 写它的软件还不记逐帧度量的任务记录（复制一份、去掉 metrics.csv）：ate 照样能评，
-    // timing 明确报错
-    const fs::path old = fixture.dir.path() / "old_run";
-    fs::copy(fixture.run_dir, old, fs::copy_options::recursive);
-    fs::remove(old / "metrics.csv");
+    // 没有 metrics.csv 的任务记录（复制一份、去掉它）：ate 照样能评，timing 明确报错
+    const fs::path trimmed = fixture.dir.path() / "no_metrics_run";
+    fs::copy(fixture.run_dir, trimmed, fs::copy_options::recursive);
+    fs::remove(trimmed / "metrics.csv");
     std::ostringstream out;
     std::ostringstream err;
-    CHECK(app::evaluateTask(old.string(), {}, catalogs(), out, err) == 0);
-    CHECK(app::evaluateTask(old.string(), {"evaluation.evaluators.t.type=timing"}, catalogs(),
+    CHECK(app::evaluateTask(trimmed.string(), {}, catalogs(), out, err) == 0);
+    CHECK(app::evaluateTask(trimmed.string(), {"evaluation.evaluators.t.type=timing"}, catalogs(),
                             out, err)
           == 1);
     CHECK(err.str().find("没有 metrics.csv") != std::string::npos);

@@ -443,9 +443,9 @@ auto makerFor(typename T::Config config) {
 }  // namespace detail
 
 /// 目录的类型无关部分：报错提示与 schema 导出要跨接口遍历。
-class CatalogBase {
+class ICatalog {
 public:
-    virtual ~CatalogBase() = default;
+    virtual ~ICatalog() = default;
     [[nodiscard]] virtual std::string_view interfaceName() const noexcept = 0;
     [[nodiscard]] virtual std::vector<std::string> names() const = 0;
     [[nodiscard]] virtual bool contains(std::string_view type) const = 0;
@@ -454,7 +454,7 @@ public:
 
 /// 一个接口的目录：类型名 → 实现。
 template <class I>
-class Catalog final : public CatalogBase {
+class Catalog final : public ICatalog {
     static_assert(PluginInterface<I>,
                   "接口要声明 static constexpr std::string_view kInterfaceName");
 
@@ -556,7 +556,7 @@ public:
     }
 
 private:
-    std::map<std::type_index, std::shared_ptr<CatalogBase>> catalogs_;
+    std::map<std::type_index, std::shared_ptr<ICatalog>> catalogs_;
 };
 
 // ── 模板成员的定义：要用到完整的 Catalogs ──

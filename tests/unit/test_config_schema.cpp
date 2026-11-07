@@ -327,10 +327,6 @@ TEST_CASE("schema 从同一份字段清单导出", "[config]") {
           != std::string::npos);
     CHECK(json.find("{\"module\": \"/slam/graph_optimizer\", \"params\": []}")
           != std::string::npos);
-    // 改过写法的配置项：Python 据此认得旧写法，交给 C++ 翻译
-    CHECK(json.find("\"system.modules.graph_optimizer.odometry_translation_weight\": "
-                    "\"system.params.graph.odometry_translation_weight\"")
-          != std::string::npos);
     CHECK(json.find("default_spec") == std::string::npos);  // 没有子槽就没有默认节点
 
     // 子槽的默认节点整个导出：按 schema 还原的一方（Python）照抄它，不另行推算

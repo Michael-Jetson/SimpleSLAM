@@ -58,13 +58,12 @@ std::string validateCalibration(const CalibrationData& calibration) {
 }
 
 std::vector<SensorName> missingExtrinsics(const CalibrationData& calibration,
-                                          std::span<const SensorName> required,
-                                          bool allow_assumed) {
+                                          std::span<const SensorName> required) {
     std::vector<SensorName> missing;
     for (const auto& sensor : required) {
         const auto* entry = calibration.extrinsic(sensor);
         const bool ok = entry != nullptr && entry->known()
-                        && (allow_assumed || entry->source != CalibrationSource::kAssumed);
+                        && entry->source != CalibrationSource::kAssumed;
         if (!ok) missing.push_back(sensor);
     }
     return missing;

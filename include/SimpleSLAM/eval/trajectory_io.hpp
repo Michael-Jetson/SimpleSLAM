@@ -11,8 +11,8 @@
 /// - **TUM**：每行 `timestamp tx ty tz qx qy qz qw`，时间单位秒，四元数 xyzw。
 ///   自带时间，可直接与真值做时间关联。
 /// - **KITTI**：每行 12 个数，行主序的 3×4 位姿（R|t），**不带时间**。
-///   读取时必须外部给出时刻来源：同名 `times.txt`，或固定采样周期。
-///   把"没有时间"当成"时间等于行号"会让 RPE 的时间口径悄悄失真，所以这里要显式选。
+///   读取时按 `TrajectoryIoOptions` 给每行编时刻：给了时刻文件就用它，否则按固定周期，
+///   默认 0.1 秒（KITTI 里程计的帧率）。
 
 #include <SimpleSLAM/framework/trajectory.hpp>
 

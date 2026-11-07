@@ -27,10 +27,7 @@
 #include <SimpleSLAM/config/plugin.hpp>
 
 #include <map>
-#include <set>
-#include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace simpleslam::config {
@@ -42,14 +39,6 @@ struct FieldSchema {
     std::string default_value;
     std::string doc;
 };
-
-/// 改过写法的配置项：旧写法在加载与覆盖时翻译成新写法，并给出替换用的新写法
-/// （`docs/architecture.md`「六、配置层规则」的兼容）。
-struct RenamedField {
-    std::string_view old_path;
-    std::string_view new_path;
-};
-[[nodiscard]] std::span<const RenamedField> renamedFields();
 
 /// 一个模块用到的参数：schema 里与实现的参数一起导出。
 struct ModuleParams {
@@ -77,19 +66,9 @@ struct TaskSource {
     std::vector<std::string> overrides;
 };
 
-/// 加载时用到的旧写法。
-struct Renames {
-    /// 告诉人的话：每处一条，说明替换用的新写法。
-    std::vector<std::string> notes;
-    /// 经旧写法给了值的参数名（不带 `system.params.`）。还原任务时要用：这次没有组件声明它的，
-    /// 照旧写法当初的样子不起作用、也不报错。
-    std::set<std::string> params;
-};
-
 struct LoadedTask {
     TaskConfig config;
     TaskSource source;
-    Renames renames;
 };
 
 /// `base_dir` 用来解析 `system` 里的相对路径。
@@ -101,9 +80,7 @@ struct LoadedTask {
 
 /// 应用"路径=值"覆盖项，写法与任务文件里的 `overrides` 相同；改某个插件节点的 `type`
 /// 时，这个节点换成新实现的默认参数；参数写成 `system.params.<名字>=值`。然后整体校验。
-/// 用了旧写法时记进 `renames`。
-void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments,
-                    Renames* renames = nullptr);
+void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments);
 
 /// 规范化导出：按 schema 顺序、按节嵌套、数值格式固定，写不写默认值、键序与注释都不影响它。
 /// 任务记录里的 `task.yaml` 就是它，两份任务要不要比、比什么，直接比它。

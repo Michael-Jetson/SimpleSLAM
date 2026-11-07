@@ -1,5 +1,5 @@
 #!/bin/bash
-# SimpleSLAM 的依赖安装脚本（Ubuntu 22.04/24.04 原生构建）。与仓库根目录的 Dockerfile 一致。
+# SimpleSLAM 的依赖安装脚本（Ubuntu 24.04 原生构建，GCC 13）。与仓库根目录的 Dockerfile 一致。
 set -e
 
 echo "=== 安装系统包 ==="

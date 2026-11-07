@@ -9,7 +9,7 @@
     ./run.py compare <任务记录> … [--metrics …] [--csv]
                                                 几份任务记录的对比表
     ./run.py impls                              入口里登记了哪些实现、各有哪些参数
-    ./run.py config | eval | convert …          任务渲染与校验、评测外部轨迹、轨迹格式转换
+    ./run.py config | eval …                    任务渲染与校验、评测外部轨迹
 
 C++ 入口是加载、校验、执行与评测的唯一实现，操作台只编排与展示。入口默认是示例
 ``simpleslam_lio_skeleton``，用户写的算法用登记了它的入口（``--entry <目标名或路径>``，或环境
@@ -34,11 +34,9 @@ from simpleslam import console
 from simpleslam.config import SYSTEM_FILE, Config, ConfigError, dump_file
 from simpleslam.results import ResultError
 from simpleslam.schema import Schema, SchemaError
-from simpleslam.trajectory import read_trajectory, write_trajectory
 from simpleslam.workspace import BuildError, Workspace, in_docker, repo_root, run_in_docker
 
-COMMANDS = ("run", "evaluate", "demo", "sweep", "show", "compare", "impls", "config", "eval",
-            "convert")
+COMMANDS = ("run", "evaluate", "demo", "sweep", "show", "compare", "impls", "config", "eval")
 # 覆盖项里指向数据的路径：--docker 时把它们所在的目录挂进容器
 _DATA_PATHS = ("data.source.path=", "data.calibration=", "evaluation.groundtruth=")
 
@@ -59,10 +57,6 @@ def _load_config(path: str, schema: Schema, tool: str) -> Config:
 def _print_schema(schema: Schema) -> None:
     for field in schema:
         print(f"{field.path:52} {field.type:7} 默认={field.default:<12} {field.doc}")
-    if schema.renamed:
-        print("\n改过写法的配置项（旧写法照样认，加载时提示）：")
-        for old, new in sorted(schema.renamed.items()):
-            print(f"  {old} → {new}")
     if schema.slots:
         print("\n插件节点可选的实现：")
         for path, interface in sorted(schema.slots.items()):
@@ -107,12 +101,6 @@ def _eval_command(args: argparse.Namespace) -> int:
     return console.evaluate_trajectories(_workspace(args), args.estimate, args.reference,
                                          args.forwarded, _options(args))
 
-
-def _convert_command(args: argparse.Namespace) -> int:
-    trajectory = read_trajectory(args.input, args.format)
-    write_trajectory(args.output, trajectory, args.to)
-    print(f"{len(trajectory)} 帧 → {args.output}（{args.to}）", file=sys.stderr)
-    return 0
 
 
 def _workspace(args: argparse.Namespace) -> Workspace:
@@ -243,12 +231,6 @@ def _parser() -> argparse.ArgumentParser:
                              help="原样交给 simpleslam-eval 的选项，写在两条轨迹后面")
     eval_parser.set_defaults(func=_eval_command)
 
-    convert_parser = subparsers.add_parser("convert", help="轨迹格式转换")
-    convert_parser.add_argument("input")
-    convert_parser.add_argument("output")
-    convert_parser.add_argument("--format", choices=["tum", "kitti"], default=None)
-    convert_parser.add_argument("--to", choices=["tum", "kitti"], required=True)
-    convert_parser.set_defaults(func=_convert_command)
     return parser
 
 

@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file parameters.hpp
-/// 参数服务器：一个进程一份。参数由用到它的组件声明（`param.hpp`），装配时连同初值一起定下；
+/// 参数服务器：一个运行时一份。参数由用到它的组件声明（`param.hpp`），装配时连同初值一起定下；
 /// 读的是不可变的快照，写的是事务：名字、类型、范围、谁能写、运行中改不改都核对，全部通过
 /// 才生效，版本由提交生成。
 ///
@@ -66,7 +66,7 @@ struct ParamDefinition {
     std::vector<std::string> writers;
 };
 
-/// 外部写入的写者名：操作员，以后的 ROS 适配模块。
+/// 外部写入的写者名：运行时之外的调用方。
 inline constexpr std::string_view kExternalWriter = "外部";
 
 struct ParamChange {

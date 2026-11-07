@@ -26,9 +26,6 @@ namespace simpleslam::app {
 
 [[nodiscard]] fw::PacketizerPolicy toPacketizerPolicy(const config::PacketizerSection& section);
 
-/// 离线用虚拟时钟，不等墙钟。
-[[nodiscard]] comm::RuntimeOptions toRuntimeOptions(const config::TaskConfig& config);
-
 [[nodiscard]] modules::SlamSystemOptions toSystemOptions(const config::TaskConfig& config);
 
 }  // namespace simpleslam::app

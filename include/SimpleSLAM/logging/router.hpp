@@ -83,7 +83,7 @@ struct LogOptions {
     bool defer_file = false;
     /// 缓冲里至多存这么多条 debug、info。
     std::size_t capacity = 8192;
-    /// 另一个接收端，在后台线程上收到每条记下的记录：测试里收集，以后转发 ROS 的 rosout。
+    /// 另一个接收端，在后台线程上收到每条记下的记录（测试里用它收集）。
     std::function<void(const Record&)> tap{};
 };
 

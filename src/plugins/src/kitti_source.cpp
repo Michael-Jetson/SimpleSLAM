@@ -690,10 +690,8 @@ RawSource::RawSource(const std::string& drive_path, RawOptions options)
         const SE3d T_velo_imu = poseFromRT(readLines(imu_to_velo), imu_to_velo);
         lidar.T_body_sensor = T_velo_imu.inverse();  // T_imu_velo
         lidar.source = fw::CalibrationSource::kDataset;
-    } else if (impl_->options.allow_assumed_extrinsics) {
-        lidar.source = fw::CalibrationSource::kAssumed;  // 产物里留得下这个痕迹
     }
-    // 缺文件且不允许假设时，这条外参保持"未知"（取不出来），读取本身不失败：
+    // 缺文件时这条外参保持"未知"（取不出来），读取本身不失败：
     // 外部标定文件可以补上它。补没补上由装配核对（SourceDescriptor::required_extrinsics）——
     // body 是 IMU，激光在车顶另一处，猜一个单位阵等于把杆臂抹掉。
     impl_->calibration.extrinsics[impl_->options.lidar_name] = lidar;
@@ -708,8 +706,8 @@ RawSource::RawSource(const std::string& drive_path, RawOptions options)
         fw::Extrinsic camera;
         camera.T_body_sensor = lidar.T_body_sensor.compose(T_cam_velo.inverse());
         camera.source = fw::CalibrationSource::kDataset;
-        // calib_velo_to_cam 给的是**未经 rectify** 的 cam0；rectified 图像还要乘 R_rect_00。
-        // 名字写明，免得将来接 rectified 图像时拿错
+        // calib_velo_to_cam 给的是**未经 rectify** 的 cam0；rectified 图像还要乘 R_rect_00，
+        // 所以名字写明是未经 rectify 的
         impl_->calibration.extrinsics["cam0_unrectified"] = camera;
     }
 
@@ -832,7 +830,6 @@ fw::SourceDescriptor RawSource::descriptor() const {
     }
     // body 是 IMU：激光相对 body 的外参必须已知，由数据集或外部标定文件提供
     descriptor.required_extrinsics = {impl_->options.lidar_name};
-    descriptor.assumed_extrinsics_allowed = impl_->options.allow_assumed_extrinsics;
     descriptor.notes.push_back("真值取自 OXTS 融合导航解，与 OXTS 导出的 GNSS 同源");
     descriptor.notes.push_back(
         "OXTS 的 navstat 取值表未公布：GNSS 定位类型一律按 single 缺省解释，"

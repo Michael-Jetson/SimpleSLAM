@@ -36,7 +36,8 @@ struct SubscriptionStats {
 
 /// 缓冲只管容量，顺序由收件箱决定：每接纳一条就排一格，丢最旧时不排新格，
 /// 所以丢弃之后该订阅端的存活条目会继承更早的格位。
-class Subscription final : public DeliveryTarget, public std::enable_shared_from_this<Subscription> {
+class Subscription final : public IDeliveryTarget,
+                           public std::enable_shared_from_this<Subscription> {
 public:
     using Callback = std::function<void(const AnyMsg&)>;
 

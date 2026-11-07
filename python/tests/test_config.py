@@ -12,7 +12,6 @@ LIO = "system.modules.odometry.plugin"
 SOURCE = "data.source"
 GRAPH = "system.modules.graph_optimizer.plugin"
 PARAMS = "system.params"
-OLD_WEIGHT = "system.modules.graph_optimizer.weight"  # 改过写法：现在是参数 graph.weight
 
 
 def fake_schema(extra_fields=()) -> Schema:
@@ -30,7 +29,7 @@ def fake_schema(extra_fields=()) -> Schema:
             Field("outputs.dir", "string", "", "任务记录目录"),
             *extra_fields,
         ],
-        slots={LIO: "OdometryBase", GRAPH: "GraphOptimizerBase", SOURCE: "DatasetReader"},
+        slots={LIO: "OdometryBase", GRAPH: "GraphOptimizerBase", SOURCE: "DatasetReaderBase"},
         plugins=[
             PluginSchema("OdometryBase", "lio", (
                 PluginField("keyframe_distance_m", "double", "1", "关键帧距离"),
@@ -43,12 +42,11 @@ def fake_schema(extra_fields=()) -> Schema:
             )),
             PluginSchema("Map", "voxel", (PluginField("voxel_size_m", "double", "1", "体素"),)),
             PluginSchema("Map", "sparse", ()),
-            PluginSchema("DatasetReader", "kitti", (
+            PluginSchema("DatasetReaderBase", "kitti", (
                 PluginField("path", "string", "", "路径"),
                 PluginField("sequence", "string", "", "序列名"),
             )),
         ],
-        renamed={OLD_WEIGHT: "system.params.graph.weight"},
     )
 
 
@@ -66,7 +64,7 @@ class SchemaTest(unittest.TestCase):
             '"default": "voxel", "doc": "地图", "default_spec": {"type": "voxel", "params": {}, '
             '"children": {}}}], "params": [{"name": "gravity", "type": "double", '
             '"default": 9.81, "doc": "重力", "min": 9, "max": 10.5, "runtime": false, '
-            '"writes": false}]}], "renamed": {"a.b": "system.params.b"}, '
+            '"writes": false}]}], '
             '"modules": [{"module": "/slam/x", "params": []}]}'
         )
         schema = Schema.from_json(text)
@@ -76,7 +74,6 @@ class SchemaTest(unittest.TestCase):
         self.assertEqual(schema.implementations("OdometryBase"), ["nested"])
         self.assertEqual((plugin.params[0].name, plugin.params[0].default, plugin.params[0].max),
                          ("gravity", 9.81, 10.5))
-        self.assertEqual(schema.renamed, {"a.b": "system.params.b"})
         self.assertEqual(schema.module_params, {"/slam/x": ()})
 
 
@@ -152,7 +149,6 @@ class ValidateTest(unittest.TestCase):
             Config().override("task.nam", "x").validate(fake_schema())
         Config().override(f"{LIO}.anything", 1).validate(fake_schema())  # 插件内部归目录查
         Config().override(f"{PARAMS}.graph.weight", 1).validate(fake_schema())  # 参数归组件查
-        Config().override(OLD_WEIGHT, 1).validate(fake_schema())  # 旧写法交给 C++ 翻译
 
 
 class ParamsTest(unittest.TestCase):
@@ -175,15 +171,6 @@ class ParamsTest(unittest.TestCase):
         self.assertEqual(whole.to_yaml(schema), expected)
         reloaded = Config.from_yaml(expected, schema)
         self.assertEqual(reloaded[PARAMS], {"deskew": False, "graph.weight": 50})
-
-    def test_renamed_path_passes_through_to_cpp(self):
-        # 旧写法原样写出、读回，C++ 加载时翻译成新写法并提示
-        schema = fake_schema()
-        config = Config({GRAPH: {"type": "pgo"}, OLD_WEIGHT: 7.5})
-        text = config.to_yaml(schema)
-        self.assertEqual(text, 'system:\n  modules:\n    graph_optimizer:\n      plugin:\n'
-                               '        type: "pgo"\n      weight: 7.5\n')
-        self.assertEqual(Config.from_yaml(text, schema), config)
 
 
 class ParseTest(unittest.TestCase):

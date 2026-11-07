@@ -41,7 +41,7 @@ namespace simpleslam::comm {
 
 class Runtime;
 
-class Module : private CallbackScope {
+class Module : private ICallbackScope {
 public:
     ~Module() override = default;
     Module(const Module&) = delete;

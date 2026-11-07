@@ -9,7 +9,7 @@
 /// 任务里列一组带名字的评测函数（`evaluation.evaluators`），没列就不评测。评测函数与算法插件
 /// 是同一套机制：类型名、配置聚合体与字段清单、在入口的目录里登记，用户写的和内置的一样选。
 ///
-/// 评测函数**只读**输入（`EvaluationInputs`），跑完立刻评与事后对任务记录补评读的是同一批
+/// 评测函数**只读**输入（`IEvaluationInputs`），跑完立刻评与事后对任务记录补评读的是同一批
 /// 文件，数字一样。它**只返回值**（`Evaluation`），写文件、格式与版本号由框架定一次。
 
 #include <SimpleSLAM/framework/trajectory.hpp>
@@ -110,9 +110,9 @@ struct EventSample {
 ///
 /// `pair` 与 `targetWindow` 每种输入都有。度量、事件与单独一条估计是可选的能力：
 /// 默认实现抛 `std::runtime_error`，说明这份输入没有它。
-class EvaluationInputs {
+class IEvaluationInputs {
 public:
-    virtual ~EvaluationInputs() = default;
+    virtual ~IEvaluationInputs() = default;
 
     /// 一条估计（`odometry`、`online`、`keyframes`）与真值，换算到同一个跟踪的传感器。
     /// 没有真值、没有这条估计时抛 `std::runtime_error`。
@@ -142,7 +142,7 @@ public:
     [[nodiscard]] virtual Needs needs() const = 0;
 
     /// 只读输入，只返回值。没有结果的量不给（不写 NaN）：非有限的标量在结论里写 null。
-    [[nodiscard]] virtual Evaluation evaluate(const EvaluationInputs& inputs) const = 0;
+    [[nodiscard]] virtual Evaluation evaluate(const IEvaluationInputs& inputs) const = 0;
 
 protected:
     EvaluatorBase() = default;

@@ -44,7 +44,7 @@ public:
     explicit AteEvaluator(const Config& config);
 
     [[nodiscard]] Needs needs() const override { return Needs{.groundtruth = true}; }
-    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+    [[nodiscard]] Evaluation evaluate(const IEvaluationInputs& inputs) const override;
 
 private:
     Config config_;
@@ -80,7 +80,7 @@ public:
     explicit RpeEvaluator(const Config& config);
 
     [[nodiscard]] Needs needs() const override { return Needs{.groundtruth = true}; }
-    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+    [[nodiscard]] Evaluation evaluate(const IEvaluationInputs& inputs) const override;
 
 private:
     Config config_;
@@ -116,7 +116,7 @@ public:
     explicit KittiEvaluator(const Config& config);
 
     [[nodiscard]] Needs needs() const override { return Needs{.groundtruth = true}; }
-    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+    [[nodiscard]] Evaluation evaluate(const IEvaluationInputs& inputs) const override;
 
 private:
     Config config_;
@@ -142,7 +142,7 @@ public:
     explicit TimingEvaluator(const Config& config);
 
     [[nodiscard]] Needs needs() const override { return Needs{}; }
-    [[nodiscard]] Evaluation evaluate(const EvaluationInputs& inputs) const override;
+    [[nodiscard]] Evaluation evaluate(const IEvaluationInputs& inputs) const override;
 
 private:
     Config config_;
