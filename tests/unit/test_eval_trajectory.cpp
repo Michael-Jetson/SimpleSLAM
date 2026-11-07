@@ -130,7 +130,7 @@ TEST_CASE("TUM 的第一行记下轨迹的语义，读回来一样；写坏的�
     std::filesystem::remove(path);
 }
 
-TEST_CASE("KITTI 没有时间列，按周期或 times 文件补", "[eval][trajectory][io]") {
+TEST_CASE("KITTI 没有时间列，时刻只取时刻文件", "[eval][trajectory][io]") {
     const auto path = tempFile("simpleslam_traj.kitti");
     {
         std::ofstream file(path);
@@ -139,12 +139,10 @@ TEST_CASE("KITTI 没有时间列，按周期或 times 文件补", "[eval][trajec
         file << "1 0 0 2  0 1 0 0  0 0 1 0\n";
     }
 
+    // 不带时刻：没给时刻文件就报错，不拿行号或标称周期编
     TrajectoryIoOptions options;
-    options.kitti_period_s = 0.5;
-    const auto by_period = readTrajectory(path.string(), TrajectoryFormat::kKitti, options);
-    REQUIRE(by_period.size() == 3);
-    CHECK(by_period.at(1).time.count() == 500'000'000);
-    CHECK(by_period.at(2).pose.translation().x() == Approx(2.0));
+    CHECK_THROWS_AS(readTrajectory(path.string(), TrajectoryFormat::kKitti, options),
+                    TrajectoryIoError);
 
     const auto times_path = tempFile("simpleslam_traj_times.txt");
     {
@@ -153,7 +151,10 @@ TEST_CASE("KITTI 没有时间列，按周期或 times 文件补", "[eval][trajec
     }
     options.kitti_times_path = times_path.string();
     const auto by_times = readTrajectory(path.string(), TrajectoryFormat::kKitti, options);
+    REQUIRE(by_times.size() == 3);
+    CHECK(by_times.at(1).time.count() == 200'000'000);
     CHECK(by_times.at(2).time.count() == 900'000'000);
+    CHECK(by_times.at(2).pose.translation().x() == Approx(2.0));
 
     std::filesystem::remove(path);
     std::filesystem::remove(times_path);

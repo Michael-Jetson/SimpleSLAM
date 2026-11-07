@@ -88,8 +88,13 @@ plugin::Dataset openData(const ResolvedTask& task, const logging::Logger& runner
     }
     const auto& groundtruth = c.evaluation.groundtruth;
     if (!groundtruth.empty()) {
-        dataset.ground_truth =
-            eval::readTrajectory(groundtruth, eval::detectTrajectoryFormat(groundtruth));
+        // 外部真值要自带时刻：KITTI 格式只有位姿，不拿行号或标称周期编时间
+        if (eval::detectTrajectoryFormat(groundtruth) == eval::TrajectoryFormat::kKitti) {
+            throw std::runtime_error(
+                "evaluation.groundtruth 要用带时刻的 TUM 格式，KITTI 格式不带时刻：" + groundtruth
+                + "（用 kitti_odometry 跑时，真值由数据集按 times.txt 给出，不用写它）");
+        }
+        dataset.ground_truth = eval::readTrajectory(groundtruth, eval::TrajectoryFormat::kTum);
     }
     if (!dataset.ground_truth && needsGroundTruth(task)) {
         throw std::runtime_error("所选的评测函数要真值：数据没有自带，evaluation.groundtruth "

@@ -64,6 +64,8 @@ struct TrajectoryEvaluation {
     std::string estimate;     ///< 估计轨迹文件（TUM 或 KITTI）
     std::string groundtruth;  ///< 真值轨迹文件
     std::string format{};     ///< tum / kitti；空表示按内容判断
+    /// KITTI 格式的时刻文件（如序列的 times.txt），KITTI 格式的输入共用；有这种输入时必须给。
+    std::string times{};
     std::string out;          ///< 写出的任务记录目录
     bool overwrite = false;
     /// false 时只打印结论、不报任务记录的位置：调用方把它写在临时目录里，评测完删掉。

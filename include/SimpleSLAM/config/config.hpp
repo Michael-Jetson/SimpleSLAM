@@ -191,7 +191,8 @@ void visitConfig(Config& c, Visitor&& visit) {
 
     visit("evaluation.evaluators", c.evaluation.evaluators,
           "这次跑哪些评测函数：名字 → 插件节点；没有就不评测");
-    visit("evaluation.groundtruth", c.evaluation.groundtruth, "真值轨迹路径（留空用数据集的）");
+    visit("evaluation.groundtruth", c.evaluation.groundtruth,
+          "真值轨迹，TUM 格式（留空用数据集的）");
     visit("evaluation.online.evaluators", c.evaluation.online.evaluators,
           "在线评哪几个：evaluation.evaluators 里的名字；空表示不做在线评测");
     visit("evaluation.online.interval_s", c.evaluation.online.interval_s,

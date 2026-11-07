@@ -357,7 +357,6 @@ std::pair<std::size_t, std::size_t> applyRange(std::size_t total, std::size_t sk
 // ─────────────────────────────── odometry ───────────────────────────────
 
 struct OdometrySource::Impl {
-    bool times_synthesized = false;  ///< times.txt 缺失时按标称频率合成，来源要能看出来
     OdometryOptions options;
     fs::path sequence;
     std::vector<fs::path> scans;
@@ -376,47 +375,40 @@ OdometrySource::OdometrySource(const std::string& sequence_path, OdometryOptions
     impl_->sequence = fs::path(sequence_path);
     impl_->scans = sortedFiles(impl_->sequence / "velodyne", ".bin");
 
-    // times.txt：存在就必须逐帧对齐。行数不符说明数据集不完整，用合成时间戳掩盖过去，
-    // 只会让 dt 与运动补偿悄悄失真。
+    // 时刻只用数据集自带的 times.txt，必须逐帧对齐。缺它、行数不符都说明数据集不完整，
+    // 拿标称周期编出来的时间掩盖过去，只会让 dt 与运动补偿悄悄失真。
     const fs::path times_file = impl_->sequence / "times.txt";
-    if (fs::exists(times_file)) {
-        std::size_t row = 0;
-        for (const auto& line : readLines(times_file)) {
-            ++row;
-            if (line.find_first_not_of(" \t") == std::string::npos) continue;  // 空白行
-            std::vector<double> numbers;
-            try {
-                numbers = parseNumbers(line);
-            } catch (const KittiError& e) {
-                throw KittiError("times.txt 第 " + std::to_string(row) + " 行: " + e.what());
-            }
-            if (numbers.size() != 1) {
-                throw KittiError("times.txt 第 " + std::to_string(row) + " 行应当恰好是一个数: "
-                                 + times_file.string());
-            }
-            const auto stamp = secondsToTimestamp(numbers.front());
-            if (!impl_->times.empty() && stamp <= impl_->times.back()) {
-                // 时刻必须严格递增：不递增的时间戳会让 dt 变成零或负，
-                // 后面的运动补偿与插值全部失去意义
-                throw KittiError("times.txt 第 " + std::to_string(row) + " 行时刻没有递增: "
-                                 + times_file.string());
-            }
-            impl_->times.push_back(stamp);
+    if (!fs::exists(times_file)) {
+        throw KittiError("缺 times.txt：KITTI 里程计的时刻在官方标定包（data_odometry_calib.zip）"
+                         "里，和 calib.txt 在一起: " + times_file.string());
+    }
+    std::size_t row = 0;
+    for (const auto& line : readLines(times_file)) {
+        ++row;
+        if (line.find_first_not_of(" \t") == std::string::npos) continue;  // 空白行
+        std::vector<double> numbers;
+        try {
+            numbers = parseNumbers(line);
+        } catch (const KittiError& e) {
+            throw KittiError("times.txt 第 " + std::to_string(row) + " 行: " + e.what());
         }
-        if (impl_->times.size() != impl_->scans.size()) {
-            throw KittiError("times.txt 行数 (" + std::to_string(impl_->times.size())
-                             + ") 与点云帧数 (" + std::to_string(impl_->scans.size())
-                             + ") 不符: " + times_file.string());
+        if (numbers.size() != 1) {
+            throw KittiError("times.txt 第 " + std::to_string(row) + " 行应当恰好是一个数: "
+                             + times_file.string());
         }
-        impl_->times_synthesized = false;
-    } else {
-        // 少数序列确实没有 times.txt：按标称频率合成，并且这件事是显式的。
-        impl_->times.resize(impl_->scans.size());
-        for (std::size_t i = 0; i < impl_->scans.size(); ++i) {
-            impl_->times[i] = fw::Timestamp{static_cast<std::int64_t>(i)
-                                            * impl_->options.scan_period.count()};
+        const auto stamp = secondsToTimestamp(numbers.front());
+        if (!impl_->times.empty() && stamp <= impl_->times.back()) {
+            // 时刻必须严格递增：不递增的时间戳会让 dt 变成零或负，
+            // 后面的运动补偿与插值全部失去意义
+            throw KittiError("times.txt 第 " + std::to_string(row) + " 行时刻没有递增: "
+                             + times_file.string());
         }
-        impl_->times_synthesized = true;
+        impl_->times.push_back(stamp);
+    }
+    if (impl_->times.size() != impl_->scans.size()) {
+        throw KittiError("times.txt 行数 (" + std::to_string(impl_->times.size())
+                         + ") 与点云帧数 (" + std::to_string(impl_->scans.size())
+                         + ") 不符: " + times_file.string());
     }
 
     const auto [begin, end] = applyRange(impl_->scans.size(), impl_->options.skip_scans,
@@ -542,10 +534,8 @@ fw::SourceDescriptor OdometrySource::descriptor() const {
     descriptor.point_time_source = impl_->options.derive_point_times
                                        ? fw::PointTimeSource::kReconstructed
                                        : fw::PointTimeSource::kAbsent;
-    // times.txt 只给一个时刻，它与扫描的哪一刻对应没有出处，不硬说成终点；
-    // 连 times.txt 都没有时，时刻是按标称频率合成的，更谈不上物理含义
-    descriptor.reference_kind = impl_->times_synthesized ? fw::ReferenceKind::kUnknown
-                                                         : fw::ReferenceKind::kDatasetProvided;
+    // times.txt 只给一个时刻，它与扫描的哪一刻对应没有出处，不硬说成终点
+    descriptor.reference_kind = fw::ReferenceKind::kDatasetProvided;
     descriptor.has_imu = false;
     descriptor.has_navigation = false;
     descriptor.has_calibration = true;
@@ -555,9 +545,6 @@ fw::SourceDescriptor OdometrySource::descriptor() const {
                                             impl_->times[impl_->last - 1]};
         // 每一帧的参考时刻都应当有位姿：目标窗口就是选中的首帧到末帧
         descriptor.evaluation_window = descriptor.coverage;
-    }
-    if (impl_->times_synthesized) {
-        descriptor.notes.push_back("times.txt 缺失：时刻按标称扫描周期合成，没有物理出处");
     }
     if (impl_->has_ground_truth) {
         descriptor.notes.push_back("真值只覆盖选中的扫描窗口，世界原点在第一帧选中扫描");

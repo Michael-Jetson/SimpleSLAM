@@ -149,8 +149,12 @@ Trajectory readTum(std::istream& input, const std::string& path) {
 
 Trajectory readKitti(std::istream& input, const std::string& path,
                      const TrajectoryIoOptions& options) {
-    std::vector<double> times;
-    if (!options.kitti_times_path.empty()) times = readTimesFile(options.kitti_times_path);
+    // KITTI 格式不带时刻：时刻只取数据集给的时刻文件，不拿行号或标称周期编
+    if (options.kitti_times_path.empty()) {
+        throw TrajectoryIoError(path + ": KITTI 格式不带时刻，要给时刻文件"
+                                       "（如 KITTI 里程计序列的 times.txt）");
+    }
+    const std::vector<double> times = readTimesFile(options.kitti_times_path);
 
     Trajectory trajectory;
     std::string line;
@@ -177,15 +181,10 @@ Trajectory readKitti(std::istream& input, const std::string& path,
         }
         const Vec3d translation(n[3], n[7], n[11]);
 
-        double seconds = 0.0;
-        if (!times.empty()) {
-            if (index >= times.size()) {
-                throw TrajectoryIoError("KITTI 时刻文件比位姿少: " + options.kitti_times_path);
-            }
-            seconds = times[index];
-        } else {
-            seconds = static_cast<double>(index) * options.kitti_period_s;
+        if (index >= times.size()) {
+            throw TrajectoryIoError("KITTI 时刻文件比位姿少: " + options.kitti_times_path);
         }
+        const double seconds = times[index];
         trajectory.push(secondsToTimestamp(seconds),
                         SE3d(translation, Eigen::Quaterniond(rotation).normalized()));
         ++index;

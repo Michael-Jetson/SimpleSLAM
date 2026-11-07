@@ -18,6 +18,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -900,12 +901,17 @@ TEST_CASE("轨迹读取：不是旋转的矩阵、不是单位的四元数一律
         std::ofstream(tum) << "1.0 0 0 0 0 0 0 2\n";          // 模长为 2
         std::ofstream(rounded) << "1.0 0 0 0 0 0 0.7071 0.7071\n";  // 四位小数的舍入
     }
-    CHECK_THROWS_AS(eval::readTrajectory(kitti, eval::TrajectoryFormat::kKitti),
-                    eval::TrajectoryIoError);
+    const auto kitti_times = (dir / "simpleslam_transitions_bad.times").string();
+    std::ofstream(kitti_times) << "0.0\n";
+    eval::TrajectoryIoOptions with_times;
+    with_times.kitti_times_path = kitti_times;
+    CHECK_THROWS_WITH(eval::readTrajectory(kitti, eval::TrajectoryFormat::kKitti, with_times),
+                      Catch::Matchers::ContainsSubstring("不是旋转矩阵"));
     CHECK_THROWS_AS(eval::readTrajectory(tum, eval::TrajectoryFormat::kTum),
                     eval::TrajectoryIoError);
     CHECK(eval::readTrajectory(rounded, eval::TrajectoryFormat::kTum).size() == 1);
     std::filesystem::remove(kitti);
+    std::filesystem::remove(kitti_times);
     std::filesystem::remove(tum);
     std::filesystem::remove(rounded);
 }

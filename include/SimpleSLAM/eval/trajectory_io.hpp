@@ -11,8 +11,8 @@
 /// - **TUM**：每行 `timestamp tx ty tz qx qy qz qw`，时间单位秒，四元数 xyzw。
 ///   自带时间，可直接与真值做时间关联。
 /// - **KITTI**：每行 12 个数，行主序的 3×4 位姿（R|t），**不带时间**。
-///   读取时按 `TrajectoryIoOptions` 给每行编时刻：给了时刻文件就用它，否则按固定周期，
-///   默认 0.1 秒（KITTI 里程计的帧率）。
+///   读取时必须给时刻文件（如 KITTI 里程计序列的 times.txt），没给就报错：把行号或
+///   标称周期当成时间，按时间关联与按时间取段的评测会悄悄错位。
 
 #include <SimpleSLAM/framework/trajectory.hpp>
 
@@ -40,9 +40,8 @@ public:
 };
 
 struct TrajectoryIoOptions {
-    /// KITTI 的时刻来源：给出 times 文件就用它，否则按固定周期生成。
+    /// KITTI 格式的时刻文件，一行一个秒数，与位姿逐行对应。读 KITTI 格式必须给，读 TUM 不用。
     std::string kitti_times_path;
-    double kitti_period_s = 0.1;
     /// 写出时的小数位数。轨迹是给人看也给工具读的，默认给够。
     int precision = 9;
 };

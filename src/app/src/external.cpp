@@ -32,10 +32,12 @@ int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Cata
                          std::ostream& out, std::ostream& err) {
     try {
         // 输入与评测函数都核对过才动任务记录目录：出错时不留下半份任务记录
-        const auto estimate =
-            eval::readTrajectory(request.estimate, formatOf(request.format, request.estimate));
-        const auto truth = eval::readTrajectory(request.groundtruth,
-                                                formatOf(request.format, request.groundtruth));
+        eval::TrajectoryIoOptions io;
+        io.kitti_times_path = request.times;
+        const auto estimate = eval::readTrajectory(
+            request.estimate, formatOf(request.format, request.estimate), io);
+        const auto truth = eval::readTrajectory(
+            request.groundtruth, formatOf(request.format, request.groundtruth), io);
 
         ResolvedTask task;
         task.config.task.name = request.name;

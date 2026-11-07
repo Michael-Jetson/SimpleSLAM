@@ -9,6 +9,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cmath>
 #include <filesystem>
@@ -299,11 +300,14 @@ TEST_CASE("odometry：跳帧与限帧", "[sources][kitti]") {
     CHECK(seen == 4);
 }
 
-TEST_CASE("odometry：times.txt 行数不符是错误，不用合成时间掩盖", "[sources][kitti]") {
+TEST_CASE("odometry：时刻只用数据集自带的 times.txt，缺了或行数不符都是错误", "[sources][kitti]") {
     TempDir dir("kitti_odo_bad");
     const auto sequence = makeOdometryDataset(dir, 3, Eigen::Matrix3d::Identity());
     writeText(sequence / "times.txt", "0.0\n0.1\n");  // 少一行
     CHECK_THROWS_AS(kitti::OdometrySource(sequence.string()), kitti::KittiError);
+    fs::remove(sequence / "times.txt");  // 不按标称周期编时间
+    CHECK_THROWS_WITH(kitti::OdometrySource(sequence.string()),
+                      Catch::Matchers::ContainsSubstring("缺 times.txt"));
 }
 
 TEST_CASE("raw：IMU 与激光按时刻交织，body 是 IMU", "[sources][kitti]") {

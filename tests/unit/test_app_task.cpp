@@ -17,6 +17,7 @@
 #include <SimpleSLAM/config/loader.hpp>
 #include <SimpleSLAM/core/types/geometry.hpp>
 #include <SimpleSLAM/eval/evaluator.hpp>
+#include <SimpleSLAM/eval/trajectory_io.hpp>
 #include <SimpleSLAM/plugins/odometry.hpp>
 #include <SimpleSLAM/plugins/sources/kitti_dataset.hpp>
 
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -659,6 +661,33 @@ TEST_CASE("单独评测外部轨迹：写成一份最小的任务记录，只评
     // 数字与任务记录里跑完立刻评的相同
     CHECK(readText(external / "evaluation" / "ate.errors.csv")
           == readText(run / "evaluation" / "ate.errors.csv"));
+
+    // KITTI 格式不带时刻：没给时刻文件就报错，给了就按它评
+    const fs::path kitti = fixture.dir.path() / "kitti";
+    fs::create_directories(kitti);
+    const auto odometry = eval::readTrajectory((run / "trajectory" / "odometry.tum").string(),
+                                               eval::TrajectoryFormat::kTum);
+    eval::writeTrajectory((kitti / "odometry.txt").string(), odometry,
+                          eval::TrajectoryFormat::kKitti);
+    {
+        std::ofstream times(kitti / "times.txt");
+        times << std::setprecision(17);
+        for (std::size_t i = 0; i < odometry.size(); ++i) {
+            times << static_cast<double>(odometry.at(i).time.count()) * 1e-9 << '\n';
+        }
+    }
+    request.estimate = (kitti / "odometry.txt").string();
+    request.out = (fixture.dir.path() / "kitti_without_times").string();
+    CHECK(app::evaluateTrajectories(request, catalogs(), out, err) == 1);
+    CHECK(err.str().find("times.txt") != std::string::npos);
+    CHECK_FALSE(fs::exists(request.out));
+    request.times = (kitti / "times.txt").string();
+    request.out = (fixture.dir.path() / "kitti_with_times").string();
+    CHECK(app::evaluateTrajectories(request, catalogs(), out, err) == 0);
+
+    // 外部真值要自带时刻：KITTI 格式的真值在任务里报错
+    CHECK(fixture.run({"evaluation.groundtruth=" + (kitti / "odometry.txt").string()}, true) == 1);
+    CHECK(fixture.err.str().find("TUM") != std::string::npos);
 
     // 读不了的轨迹：报错，不留下半份任务记录
     request.estimate = (fixture.dir.path() / "missing.tum").string();

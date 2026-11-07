@@ -31,7 +31,9 @@ int usage() {
                               不给时只打印结论、不留记录
   --overwrite                 目录已有内容时照样写
   --format <tum|kitti>        两条轨迹的格式（默认按内容判定）
-  --align <none|first_pose|se3|sim3>   对齐方式（默认 se3）
+  --times <文件>              KITTI 格式的时刻文件（如序列的 times.txt），KITTI 格式的输入共用；
+                              KITTI 格式不带时刻，有这种输入时必须给
+  --align <none|first_pose|se3|sim3|posyaw>   对齐方式（默认 se3）
   --tolerance <秒>            最近邻关联容差（默认 0.02）
   --interpolate <秒>          改为把真值插值到估计时刻，括点间隔不超过给定秒数
   --rpe-delta <秒>            RPE 的时间间隔（默认 1.0）
@@ -90,6 +92,7 @@ int main(int argc, char** argv) {
             if (flag == "--out") request.out = value();
             else if (flag == "--overwrite") request.overwrite = true;
             else if (flag == "--format") request.format = value();
+            else if (flag == "--times") request.times = value();
             else if (flag == "--align") alignment = value();
             else if (flag == "--tolerance") tolerance_s = finiteNumber(flag, value());
             else if (flag == "--interpolate") interpolate_gap_s = finiteNumber(flag, value());
