@@ -5,6 +5,12 @@ find_package(Catch2 3 REQUIRED)
 include(CTest)
 include(Catch)
 
+# 契约测试模板与合成来源（include/SimpleSLAM/testing/，只有头文件）。用户的实现在自己的
+# 测试里链接它，一行实例化模板
+add_library(simpleslam_testing INTERFACE)
+target_link_libraries(simpleslam_testing
+    INTERFACE simpleslam_modules simpleslam_algo Catch2::Catch2)
+
 # ── 通信运行时 / 框架契约 / 模块层：只依赖 Eigen、manif 与 Catch2 ──
 # 日志：来源树、日志组件与后台线程；槽怎么把来源交给实现（config/plugin.hpp 是头文件）
 add_executable(test_logging unit/test_logging.cpp)
@@ -83,6 +89,12 @@ if(SIMPLESLAM_BUILD_TOOLING)
         SIMPLESLAM_TEST_TASK_RUNNER="$<TARGET_FILE:test_task_runner>")
     add_dependencies(test_app_task test_task_runner)
     catch_discover_tests(test_app_task)
+
+    # 机制验收：用户的实现经契约模板一行验收；只改 YAML，方案就换实现
+    add_executable(test_mechanism_acceptance unit/test_mechanism_acceptance.cpp)
+    target_link_libraries(test_mechanism_acceptance
+        PRIVATE simpleslam_app simpleslam_testing Catch2::Catch2WithMain)
+    catch_discover_tests(test_mechanism_acceptance)
 
     add_executable(test_contract_boundaries unit/test_contract_boundaries.cpp)
     target_link_libraries(test_contract_boundaries
