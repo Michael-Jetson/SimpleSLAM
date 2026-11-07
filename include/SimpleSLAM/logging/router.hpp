@@ -161,7 +161,13 @@ private:
     std::mutex delivery_mutex_;
     std::ofstream file_;
     bool file_open_ = false;
-    std::deque<std::string> pending_file_;
+    /// run.log 接上之前先存着的行。和缓冲同一政策：只丢最旧的 debug、info，并计数。
+    struct Pending {
+        bool important = false;
+        std::string line;
+    };
+    std::deque<Pending> pending_file_;
+    std::size_t pending_ordinary_ = 0;
 };
 
 }  // namespace simpleslam::logging

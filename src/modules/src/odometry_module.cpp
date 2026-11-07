@@ -48,6 +48,17 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
                    .parameter_revision = context.parameter_revision});
 
     ++received_;
+    // 上一次复位没成功：先重试。成功了这一包照常处理；还不行，这一包记为状态不能再用
+    if (!algorithm_->stateReady()) {
+        reinitialize();
+        if (!algorithm_->stateReady()) {
+            ++failed_;
+            ++state_losses_;
+            log_.event("odometry.state_unusable", "复位还没成功");
+            acknowledge(*packet);
+            return;
+        }
+    }
     // 算法的状态停在哪一刻，与这一包的传播起点对一下：接不上就是一段没进这一包的输入
     if (last_state_time_ && *last_state_time_ < packet->propagation.begin) {
         context.missing_propagation = fw::TimeRange{*last_state_time_, packet->propagation.begin};
@@ -58,9 +69,13 @@ void OdometryModule::onPacket(const comm::MsgPtr<fw::SensorPacket>& packet) {
     try {
         outcome = algorithm_->process(*packet, context);
     } catch (const plugin::OdometryContractError& e) {
-        ++contract_errors_;
         log_.event("odometry.contract_error", e.what());
-        if (e.stage() == plugin::ContractStage::kOutput) reinitialize();
+        if (e.stage() == plugin::ContractStage::kOutput) {
+            ++output_contract_errors_;  // 跟踪过了：结果作废，估计状态要恢复
+            reinitialize();
+        } else {
+            ++contract_errors_;  // 输入不合契约：没进估计
+        }
         // 每个终态都要报进度：否则入口以为下游一直在忙
         acknowledge(*packet);
         return;

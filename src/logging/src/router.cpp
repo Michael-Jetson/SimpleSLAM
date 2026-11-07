@@ -34,7 +34,7 @@ std::string_view baseName(std::string_view path) {
     return slash == std::string_view::npos ? path : path.substr(slash + 1);
 }
 
-/// 终端：等级、时刻、帧序号、来源、正文。执行器自己的输出只印正文。
+/// 终端：等级、时刻、输入序号、来源、正文。执行器自己的输出只印正文。
 std::string consoleLine(const Record& record) {
     if (record.plain) return record.text;
     return std::format("{} {} {} {}  {}", detail::levelLetter(record.level),
@@ -42,7 +42,7 @@ std::string consoleLine(const Record& record) {
                        record.text);
 }
 
-/// run.log：等级、时刻、帧序号、来源、正文，执行器自己的输出也带；模块与插件的记录再加代码位置。
+/// run.log：等级、时刻、输入序号、来源、正文，执行器自己的输出也带；模块与插件的记录再加代码位置。
 std::string fileLine(const Record& record) {
     std::string where;
     if (!record.plain && record.where.line() != 0) {
@@ -108,8 +108,9 @@ void Router::openFile(const std::filesystem::path& path) {
     file_.open(path, std::ios::out | std::ios::trunc);
     if (!file_) throw std::runtime_error("打不开日志文件: " + path.string());
     file_open_ = true;
-    for (const auto& line : pending_file_) file_ << line << '\n';
+    for (const auto& pending : pending_file_) file_ << pending.line << '\n';
     pending_file_.clear();
+    pending_ordinary_ = 0;
     file_.flush();
 }
 
@@ -145,6 +146,7 @@ void Router::close() {
             file_open_ = false;
         }
         pending_file_.clear();
+        pending_ordinary_ = 0;
     }
     closed_.store(true);
     idle_.notify_all();
@@ -248,8 +250,16 @@ void Router::deliver(const Record& record) {
         if (file_open_) {
             file_ << fileLine(record) << '\n';
         } else if (options_.defer_file) {
-            pending_file_.push_back(fileLine(record));
-            if (pending_file_.size() > options_.capacity) pending_file_.pop_front();
+            const bool keep = important(record);
+            pending_file_.push_back(Pending{.important = keep, .line = fileLine(record)});
+            if (!keep && ++pending_ordinary_ > options_.capacity) {
+                // 和缓冲同一政策：warn、error 与执行器的输出不丢，只丢最旧的 debug、info
+                const auto oldest = std::find_if(pending_file_.begin(), pending_file_.end(),
+                                                 [](const Pending& p) { return !p.important; });
+                pending_file_.erase(oldest);
+                --pending_ordinary_;
+                dropped_.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     if (options_.tap) {

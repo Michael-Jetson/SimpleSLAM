@@ -397,6 +397,35 @@ void collectLeaves(const YAML::Node& node, const std::string& prefix, const Fiel
     if (!prefix.empty()) out.push_back(prefix);
 }
 
+/// 顶层一节在文本里的范围：从 `<key>:` 那一行起，到下一个不缩进的行之前，节后的空行不算。
+/// 找不到时两端都是 npos。规范化导出与任务记录里的 `task.yaml` 都是这种排法。
+std::pair<std::size_t, std::size_t> topLevelBlock(const std::string& text, std::string_view key) {
+    const std::string head = std::string(key) + ":";
+    std::size_t begin = std::string::npos;
+    std::size_t end = std::string::npos;
+    for (std::size_t pos = 0; pos < text.size();) {
+        const std::size_t newline = text.find('\n', pos);
+        const std::size_t next = newline == std::string::npos ? text.size() : newline + 1;
+        const std::string_view line(text.data() + pos, next - pos);
+        const bool blank = line.find_first_not_of(" \t\r\n") == std::string_view::npos;
+        if (begin == std::string::npos) {
+            const bool match = line.starts_with(head)
+                               && (line.size() == head.size() || line[head.size()] == ' '
+                                   || line[head.size()] == '\n' || line[head.size()] == '\r');
+            if (match) {
+                begin = pos;
+                end = next;
+            }
+        } else if (!blank && line.front() != ' ' && line.front() != '\t') {
+            break;  // 下一个顶层键
+        } else if (!blank) {
+            end = next;
+        }
+        pos = next;
+    }
+    return {begin, end};
+}
+
 /// 按点分路径取 YAML 节点；任一层缺失返回空节点。
 YAML::Node nodeAt(const YAML::Node& root, const std::string& path) {
     YAML::Node current = YAML::Clone(root);
@@ -856,6 +885,58 @@ LoadedTask loadTaskString(const std::string& text, const std::string& origin,
     // 类型对了不等于值有意义：覆盖全部到位之后整体校验
     applyOverrides(loaded.config, loaded.source.overrides);
     return loaded;
+}
+
+TaskConfig loadEvaluationView(const std::string& path, const std::vector<std::string>& overrides) {
+    for (const auto& item : overrides) {
+        if (!item.starts_with("evaluation.")) {
+            throw ConfigError("单独评测只改评测，覆盖项要以 evaluation. 开头，得到 " + item);
+        }
+    }
+    YAML::Node root = parseYaml(readFile(path, "任务文件"), path);
+    if (!root || root.IsNull()) root = YAML::Node(YAML::NodeType::Map);
+    if (!root.IsMap()) throw ConfigError(path + ": 任务文件的顶层必须是映射");
+
+    const auto wanted = [](std::string_view field) {
+        return field.starts_with("task.") || field == "data.sequences"
+               || field.starts_with("evaluation.");
+    };
+    // 只核对要读的这几节：拼错的键照样报，别的节怎么写都不管
+    const FieldPaths paths = fieldPaths();
+    std::vector<std::string> present;
+    collectLeaves(root, "", paths, present);
+    for (const auto& field : present) {
+        if (wanted(field) && paths.all.count(field) == 0) {
+            throw ConfigError(path + ": 未知配置项 " + field);
+        }
+    }
+    TaskConfig config;
+    visitConfig(config, [&](const char* field, auto& value, const char*) {
+        if (!wanted(field)) return;
+        const YAML::Node node = nodeAt(root, field);
+        if (!node || node.IsNull()) return;  // 缺省即默认值
+        assign(value, node, field, path);
+    });
+    applyOverrides(config, overrides);
+    return config;
+}
+
+void writeEvaluationSection(const std::string& path, const TaskConfig& config) {
+    std::string text = readFile(path, "任务文件");
+    const std::string fresh = dump(config);
+    const auto [from, to] = topLevelBlock(fresh, "evaluation");
+    const std::string block = fresh.substr(from, to - from);
+    const auto [begin, end] = topLevelBlock(text, "evaluation");
+    if (begin == std::string::npos) {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        text += '\n' + block;  // 没有这一节：补在最后
+    } else {
+        text.replace(begin, end - begin, block);
+    }
+    std::ofstream file(path);
+    if (!file) throw ConfigError("打不开配置输出文件: " + path);
+    file << text;
+    if (!file) throw ConfigError("写配置文件失败: " + path);
 }
 
 LoadedTask loadTaskFile(const std::string& path, const std::vector<std::string>& overrides) {

@@ -245,7 +245,7 @@ Evaluation TimingEvaluator::evaluate(const IEvaluationInputs& inputs) const {
     out.add("duration.p95", percentileOf(values, 0.95), unit, "T_p95");
     out.add("duration.max", stats.max, unit);
 
-    // 帧序号与数据时刻是整数；记下它的不针对某条输入时没有，那一格留空
+    // 输入序号与数据时刻是整数；记下它的不针对某条输入时没有，那一格留空
     constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
     Table table{.name = "samples",
                 .columns = {{.name = "frame", .unit = ""},

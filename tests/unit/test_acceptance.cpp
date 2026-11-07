@@ -603,6 +603,10 @@ TEST_CASE("跟踪的传感器不同就拒绝比较，显式转换之后才能比
                     fw::TrajectoryError);
     const auto converted = eval::rightMultiplied(body, SE3d::Identity(), "cam0");
     CHECK_NOTHROW(eval::absoluteTrajectoryError(converted, camera, eval::AteOptions{}));
+    // Sim3 对齐的尺度部分同样带着跟踪的传感器：缩放之后照样拒绝
+    CHECK(body.scaled(2.0).tracked() == "body");
+    CHECK_THROWS_AS(eval::absoluteTrajectoryError(body.scaled(2.0), camera, eval::AteOptions{}),
+                    fw::TrajectoryError);
 }
 
 TEST_CASE("协方差有值却没声明为已知：拒绝导出，不静默丢", "[acceptance][calibration]") {

@@ -9,7 +9,7 @@
 /// 写日志的人只决定等级与正文，其余都是自动的：
 /// - 来源跟着装配路径走：模块名 › 实现类型 › 子槽(实现类型)。按来源设等级用的键与配置路径
 ///   同一种写法（`odometry.plugin.map`）；
-/// - 帧序号与数据时刻由所属模块在处理每条输入之前设上（`setFrame`），下面的插件沿来源读到；
+/// - 输入序号与数据时刻由所属模块在处理每条输入之前设上（`setFrame`），下面的插件沿来源读到；
 /// - 时刻取运行时的时钟：离线是数据时间，在线是墙钟。
 ///
 /// 去向由日志组件定（`router.hpp`），日志对象不碰终端和文件。同一个对象也记事件与度量
@@ -39,8 +39,9 @@ enum class Level : std::uint8_t { kDebug, kInfo, kWarn, kError };
 /// `debug`、`info`、`warn`、`error`；别的写法返回空。
 [[nodiscard]] std::optional<Level> parseLevel(std::string_view text) noexcept;
 
-/// 记录关于的那一帧。所属模块在处理每条输入之前设上（`Logger::setFrame`），不针对某条输入的
-/// 记录带最近处理的那一条。序号按模块自己的输入计：里程计是包序号，后端是关键帧库序号。
+/// 记录关于的那条输入。所属模块在处理每条输入之前设上（`Logger::setFrame`），不针对某条
+/// 输入的记录带最近处理的那一条。序号是输入序号，按模块自己的输入计：里程计是包序号，
+/// 后端是关键帧库序号。
 struct Frame {
     std::uint64_t sequence = 0;
     std::int64_t data_time_ns = 0;

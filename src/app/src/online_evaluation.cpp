@@ -105,7 +105,7 @@ void OnlineEvaluationModule::onOdometry(const fw::OdometryResult& result) {
 
 void OnlineEvaluationModule::evaluateNow() {
     if (recorder_.odometry().empty()) return;  // 还没有位姿，不评
-    // 度量记在最近一条结果所在的那一包上，与里程计的度量同一个帧序号
+    // 度量记在最近一条结果所在的那一包上，与里程计的度量同一个输入序号
     log_.setFrame({.sequence = last_packet_,
                    .data_time_ns = last_time_.count(),
                    .session = 0,

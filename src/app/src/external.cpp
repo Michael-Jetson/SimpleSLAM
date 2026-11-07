@@ -39,20 +39,15 @@ int evaluateTrajectories(const TrajectoryEvaluation& request, const config::Cata
         const auto truth = eval::readTrajectory(
             request.groundtruth, formatOf(request.format, request.groundtruth), io);
 
-        ResolvedTask task;
-        task.config.task.name = request.name;
-        task.config.evaluation.evaluators = request.evaluators;
-        if (task.config.evaluation.evaluators.empty()) {
-            task.config.evaluation.evaluators = {
+        config::TaskConfig wanted;
+        wanted.task.name = request.name;
+        wanted.evaluation.evaluators = request.evaluators;
+        if (wanted.evaluation.evaluators.empty()) {
+            wanted.evaluation.evaluators = {
                 {"ate", {.type = "ate", .params = {}, .children = {}}},
                 {"rpe", {.type = "rpe", .params = {}, .children = {}}}};
         }
-        for (auto& [name, spec] : task.config.evaluation.evaluators) {
-            auto slot =
-                catalogs.resolve<eval::EvaluatorBase>(spec, "evaluation.evaluators." + name);
-            spec = slot.resolved();
-            task.evaluators.emplace(name, std::move(slot));
-        }
+        const ResolvedTask task = resolveEvaluators(std::move(wanted), catalogs);
 
         // 两条轨迹进任务记录：评测只读任务记录
         const fs::path dir(request.out);

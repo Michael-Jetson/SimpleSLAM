@@ -419,7 +419,7 @@ int evaluateSequences(const ResolvedTask& task, const fs::path& dir,
         collect(run);
         runs.push_back(std::move(run));
     }
-    config::writeConfigFile((dir / "task.yaml").string(), c);  // 评测一节随这次评测更新
+    config::writeEvaluationSection((dir / "task.yaml").string(), c);  // 只更新评测一节
     const int exit_code = worstExitCode(runs);
     writeResult(dir, c, runs, exit_code);
     printTable(out, runs);

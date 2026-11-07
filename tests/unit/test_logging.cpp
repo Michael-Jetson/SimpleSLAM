@@ -286,6 +286,38 @@ TEST_CASE("run.log 稍后接上：之前该进文件的记录接上时补写，�
     std::filesystem::remove(path);
 }
 
+TEST_CASE("run.log 接上之前存着的记录照缓冲的政策：只丢最旧的 debug、info，并计数",
+          "[logging][file]") {
+    const auto path = std::filesystem::temp_directory_path() / "simpleslam_test_run_pending.log";
+    std::filesystem::remove(path);
+    std::ostringstream out;
+    std::ostringstream err;
+    lg::LogOptions options;
+    options.asynchronous = false;
+    options.defer_file = true;
+    options.capacity = 2;
+    options.out = &out;
+    options.err = &err;
+    auto router = lg::Router::create(std::move(options));
+    const lg::Logger module = router->root("/slam/odometry");
+    module.info("i1");
+    module.warn("w1");
+    module.info("i2");
+    module.error("e1");
+    module.info("i3");  // 第三条 info 挤掉最旧的 i1
+    module.info("i4");  // 再挤掉 i2；warn、error 不占这个上限
+    router->openFile(path);
+    CHECK(router->dropped() == 2);
+    router->close();
+    std::ifstream in(path);
+    std::vector<std::string> texts;
+    for (std::string line; std::getline(in, line);) {
+        texts.push_back(line.substr(line.rfind("  ") + 2));  // 正文在两个空格之后
+    }
+    CHECK(texts == std::vector<std::string>{"w1", "e1", "i3", "i4"});
+    std::filesystem::remove(path);
+}
+
 TEST_CASE("缓冲满了丢最旧的 debug、info；warn 与执行器的输出不丢，先后不乱", "[logging][buffer]") {
     std::mutex mutex;
     std::condition_variable changed;

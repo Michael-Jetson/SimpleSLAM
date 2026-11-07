@@ -398,13 +398,8 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
         if (!fs::exists(dir / "task.yaml")) {
             throw std::runtime_error(dir_text + " 不是任务记录：里面没有 task.yaml");
         }
-        for (const auto& item : overrides) {
-            if (!item.starts_with("evaluation.")) {
-                throw std::runtime_error("单独评测只改评测，覆盖项要以 evaluation. 开头，得到 "
-                                         + item);
-            }
-        }
-        const ResolvedTask task = loadTask((dir / "task.yaml").string(), overrides, catalogs);
+        const ResolvedTask task =
+            loadEvaluationTask((dir / "task.yaml").string(), overrides, catalogs);
         if (!task.config.data.sequences.empty()) {
             return evaluateSequences(task, dir, overrides, catalogs, out, err);
         }
@@ -415,8 +410,8 @@ int evaluateTask(const std::string& dir_text, const std::vector<std::string>& ov
         const bool complete = run_dir::readComplete(dir);
         const auto evaluated = evaluateRunDir(dir, task, run_dir::readTargetWindow(dir), out);
         writeResult(dir, headerOf(task), complete, &evaluated);
-        // 评测一节随这次评测更新：评测不改变这次运行
-        config::writeConfigFile((dir / "task.yaml").string(), task.config);
+        // 评测一节随这次评测更新，别的节一个字不动：评测不改变这次运行
+        config::writeEvaluationSection((dir / "task.yaml").string(), task.config);
         reportResult(dir, complete, out, err);
         return exitCodeFor(complete);
     } catch (const std::exception& e) {

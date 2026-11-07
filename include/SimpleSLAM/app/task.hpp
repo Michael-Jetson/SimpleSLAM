@@ -49,4 +49,14 @@ struct ResolvedTask {
                                     const std::vector<std::string>& overrides,
                                     const config::Catalogs& catalogs);
 
+/// 只还原评测函数，节点换成补齐了默认值的那一份；数据、方案与后端的插件不碰。
+[[nodiscard]] ResolvedTask resolveEvaluators(config::TaskConfig config,
+                                             const config::Catalogs& catalogs);
+
+/// 单独评测用：只读任务记录里 `task.yaml` 评测要用的几节（`config::loadEvaluationView`），
+/// 只还原评测函数。入口的目录里没有当初的算法、系统文件的写法变了，都照样能评。
+[[nodiscard]] ResolvedTask loadEvaluationTask(const std::string& path,
+                                              const std::vector<std::string>& overrides,
+                                              const config::Catalogs& catalogs);
+
 }  // namespace simpleslam::app

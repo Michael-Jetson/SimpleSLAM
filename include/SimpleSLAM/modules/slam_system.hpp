@@ -47,6 +47,7 @@ struct RunOutcome {
     // ── 处理 ──
     std::uint64_t packets_without_outcome = 0; ///< 送达里程计、却没有终态的包
     std::uint64_t contract_errors = 0;         ///< 违反包契约、没进估计的帧
+    std::uint64_t output_contract_errors = 0;  ///< 跟踪了、产物却违反契约而作废的帧
     std::uint64_t failed_frames = 0;           ///< 算法失败（含状态不能再用）、没有结果的帧
     std::uint64_t failed_corrections = 0;      ///< 准备失败、没有生效的校正
     std::uint64_t reinitializations = 0;       ///< 按恢复协议重新初始化、轨迹断开的次数
@@ -86,10 +87,10 @@ struct RunOutcome {
     }
     [[nodiscard]] bool processingComplete() const noexcept {
         return !cancelled && packets_without_outcome == 0 && contract_errors == 0
-               && failed_frames == 0 && failed_corrections == 0 && reinitializations == 0
-               && isolated_failures == 0 && foreign_clock_drops == 0 && out_of_order_imu == 0
-               && dropped_triggers == 0 && rejected_triggers == 0 && imu_backlog_drops == 0
-               && attachment_drops == 0 && pending_triggers == 0;
+               && output_contract_errors == 0 && failed_frames == 0 && failed_corrections == 0
+               && reinitializations == 0 && isolated_failures == 0 && foreign_clock_drops == 0
+               && out_of_order_imu == 0 && dropped_triggers == 0 && rejected_triggers == 0
+               && imu_backlog_drops == 0 && attachment_drops == 0 && pending_triggers == 0;
     }
     [[nodiscard]] bool outputComplete() const noexcept {
         return trajectory_missing == 0 && trajectory_skipped == 0

@@ -97,6 +97,7 @@ void checkOdometryContract(
         const auto run = detail::runSynthetic<S>(config, sequence);
         CHECK(run.outcome.packets_without_outcome == 0);
         CHECK(run.outcome.contract_errors == 0);
+        CHECK(run.outcome.output_contract_errors == 0);
         CHECK(run.outcome.failed_frames == 0);
         CHECK(run.outcome.isolated_failures == 0);
         detail::checkPoses(run.odometry, sequence.scans);
@@ -118,6 +119,7 @@ void checkOdometryContract(
         INFO("退化输入报降级或跟丢，不抛异常，也不给非法的结果");
         CHECK(run.outcome.packets_without_outcome == 0);
         CHECK(run.outcome.contract_errors == 0);
+        CHECK(run.outcome.output_contract_errors == 0);
         CHECK(run.outcome.failed_frames == 0);
         CHECK(run.outcome.isolated_failures == 0);
         detail::checkPoses(run.odometry, sequence.scans);

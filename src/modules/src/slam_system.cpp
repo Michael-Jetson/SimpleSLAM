@@ -21,6 +21,8 @@ std::vector<std::string> RunOutcome::reasons() const {
     add(cancelled, "运行被取消：" + cancel_reason);
     add(packets_without_outcome > 0, std::format("{} 个送达的包没有终态", packets_without_outcome));
     add(contract_errors > 0, std::format("{} 帧违反包契约、没进估计", contract_errors));
+    add(output_contract_errors > 0,
+        std::format("{} 帧跟踪了、产物却违反契约，结果作废", output_contract_errors));
     add(failed_frames > 0, std::format("{} 帧算法失败、没有结果", failed_frames));
     add(failed_corrections > 0, std::format("{} 次校正准备失败、没有生效", failed_corrections));
     add(reinitializations > 0,
@@ -283,6 +285,7 @@ RunOutcome SlamSystem::collectOutcome() const {
     }
     if (odometry_ != nullptr) {
         outcome.contract_errors = odometry_->contractErrors();
+        outcome.output_contract_errors = odometry_->outputContractErrors();
         outcome.failed_frames = odometry_->failedFrames();
         outcome.failed_corrections = odometry_->failedCorrections();
         outcome.reinitializations = odometry_->reinitializations();

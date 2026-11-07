@@ -584,6 +584,39 @@ TEST_CASE("单独评测：补评与重评只读任务记录，数字与跑完立
     CHECK(readText(dir / "evaluation" / "ate.errors.csv") == table);
 }
 
+TEST_CASE("单独评测只读评测要用的几节：系统一节的写法变了也能评，别的节原样保留",
+          "[app][task][evaluate]") {
+    Fixture fixture("");
+    REQUIRE(fixture.run() == 0);
+    const fs::path& dir = fixture.run_dir;
+    // 模拟系统文件的写法变了：系统一节多一个这个入口不认识的键，顶层另有一节入口不认识
+    std::string text = readText(dir / "task.yaml");
+    const auto system = text.find("system:\n");
+    REQUIRE(system != std::string::npos);
+    text.insert(system + 8, "  retired_section:\n    anything: 1\n");
+    text += "\nslam:\n  scheme: retired_lio\n";
+    {
+        std::ofstream file(dir / "task.yaml");
+        file << text;
+    }
+    std::ostringstream out;
+    std::ostringstream err;
+    REQUIRE(app::evaluateTask(dir.string(), {"evaluation.evaluators.ate.type=ate"}, catalogs(), out,
+                              err)
+            == 0);
+    INFO(out.str() << err.str());
+    CHECK(fs::exists(dir / "evaluation" / "ate.errors.csv"));
+    // 评测一节换成这次的，前后的节一个字不变
+    const std::string after = readText(dir / "task.yaml");
+    const auto head = [](const std::string& s) { return s.substr(0, s.find("\nevaluation:\n")); };
+    const auto tail = [](const std::string& s) { return s.substr(s.find("\noutputs:\n")); };
+    CHECK(head(after) == head(text));
+    CHECK(tail(after) == tail(text));
+    const std::string section = after.substr(after.find("\nevaluation:\n"));
+    CHECK(section.substr(0, section.find("\noutputs:\n")).find("ate:\n      type: \"ate\"")
+          != std::string::npos);
+}
+
 TEST_CASE("自己写的评测函数与内置的一样登记、一样选、一样进结论", "[app][task][evaluate]") {
     Fixture fixture("evaluation:\n  evaluators:\n    drift: {type: final_drift}\n");
     REQUIRE(fixture.run({"outputs.kitti_trajectories=true"}) == 0);

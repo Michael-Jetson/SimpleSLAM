@@ -78,6 +78,15 @@ struct LoadedTask {
 [[nodiscard]] LoadedTask loadTaskFile(const std::string& path,
                                       const std::vector<std::string>& overrides = {});
 
+/// 单独评测用：只读任务记录里 `task.yaml` 的任务名、运行方式、序列表与评测一节，别的节
+/// 不读也不核对。SLAM 系统与数据怎么写与评测无关：写法变了，旧的任务记录照样能评。
+/// 覆盖项只能改 `evaluation.` 下的字段。
+[[nodiscard]] TaskConfig loadEvaluationView(const std::string& path,
+                                            const std::vector<std::string>& overrides = {});
+
+/// 把 `path` 里顶层的评测一节换成 `config` 的那一节（规范化导出），别的行一个字不动。
+void writeEvaluationSection(const std::string& path, const TaskConfig& config);
+
 /// 应用"路径=值"覆盖项，写法与任务文件里的 `overrides` 相同；改某个插件节点的 `type`
 /// 时，这个节点换成新实现的默认参数；参数写成 `system.params.<名字>=值`。然后整体校验。
 void applyOverrides(TaskConfig& config, const std::vector<std::string>& assignments);

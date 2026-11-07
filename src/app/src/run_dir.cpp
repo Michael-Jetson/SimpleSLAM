@@ -88,7 +88,7 @@ T parseNumber(const std::string& text, const fs::path& path, std::size_t line) {
     return value;
 }
 
-/// 帧序号与数据时刻：记录不针对某条输入时那两格是空的。
+/// 输入序号与数据时刻：记录不针对某条输入时那两格是空的。
 std::optional<std::uint64_t> frameOf(const YAML::Node& node) {
     if (!node || node.IsNull()) return std::nullopt;
     return node.as<std::uint64_t>();

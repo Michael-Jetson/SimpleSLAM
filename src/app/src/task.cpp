@@ -20,6 +20,16 @@ config::Slot<Interface> resolveField(config::PluginSpec& spec, const char* path,
     return slot;
 }
 
+std::map<std::string, config::Slot<eval::EvaluatorBase>> resolveEvaluatorMap(
+    config::TaskConfig& config, const config::Catalogs& catalogs) {
+    std::map<std::string, config::Slot<eval::EvaluatorBase>> evaluators;
+    for (auto& [name, spec] : config.evaluation.evaluators) {
+        const std::string path = "evaluation.evaluators." + name;
+        evaluators.emplace(name, resolveField<eval::EvaluatorBase>(spec, path.c_str(), catalogs));
+    }
+    return evaluators;
+}
+
 }  // namespace
 
 ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& catalogs) {
@@ -35,11 +45,7 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
         modules.place_recognizer.plugin, "system.modules.place_recognizer.plugin", catalogs);
     task.graph_optimizer = resolveField<plugin::GraphOptimizerBase>(
         modules.graph_optimizer.plugin, "system.modules.graph_optimizer.plugin", catalogs);
-    for (auto& [name, spec] : task.config.evaluation.evaluators) {
-        const std::string path = "evaluation.evaluators." + name;
-        task.evaluators.emplace(name,
-                                resolveField<eval::EvaluatorBase>(spec, path.c_str(), catalogs));
-    }
+    task.evaluators = resolveEvaluatorMap(task.config, catalogs);
 
     // 参数：收齐选中的组件与模块声明的，核对配置里的值，没写的补上默认值。管线里没有的模块
     // 与插件不算：它们声明的参数这次没人用
@@ -72,6 +78,18 @@ ResolvedTask resolveTask(config::LoadedTask loaded, const config::Catalogs& cata
 ResolvedTask loadTask(const std::string& path, const std::vector<std::string>& overrides,
                       const config::Catalogs& catalogs) {
     return resolveTask(config::loadTaskFile(path, overrides), catalogs);
+}
+
+ResolvedTask resolveEvaluators(config::TaskConfig config, const config::Catalogs& catalogs) {
+    ResolvedTask task;
+    task.config = std::move(config);
+    task.evaluators = resolveEvaluatorMap(task.config, catalogs);
+    return task;
+}
+
+ResolvedTask loadEvaluationTask(const std::string& path, const std::vector<std::string>& overrides,
+                                const config::Catalogs& catalogs) {
+    return resolveEvaluators(config::loadEvaluationView(path, overrides), catalogs);
 }
 
 }  // namespace simpleslam::app

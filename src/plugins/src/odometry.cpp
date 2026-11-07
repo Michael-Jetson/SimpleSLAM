@@ -94,8 +94,11 @@ FrameOutcome OdometryBase::process(const SensorPacket& packet, const fw::FrameCo
     bool keyframe = false;
     try {
         keyframe = tracked.status != TrackingStatus::kLost && selectKeyframe(tracked, packet);
+    } catch (const std::exception& e) {
+        throw OdometryContractError(std::string("关键帧判定失败（") + e.what()
+                                    + "），track 已执行，须恢复估计状态");
     } catch (...) {
-        throw OdometryContractError("关键帧判定失败，track 已执行，须恢复估计状态");
+        throw OdometryContractError("关键帧判定失败（未知异常），track 已执行，须恢复估计状态");
     }
 
     OdometryResult result;
@@ -123,8 +126,11 @@ FrameOutcome OdometryBase::process(const SensorPacket& packet, const fw::FrameCo
     if (keyframe) {
         try {
             onKeyframeSelected(result);
+        } catch (const std::exception& e) {
+            throw OdometryContractError(std::string("关键帧提交钩子失败（") + e.what()
+                                        + "），须恢复估计状态");
         } catch (...) {
-            throw OdometryContractError("关键帧提交钩子失败，须恢复估计状态");
+            throw OdometryContractError("关键帧提交钩子失败（未知异常），须恢复估计状态");
         }
         last_keyframe_pose_ = result.T_odom_body;
         last_keyframe_time_ = result.time;

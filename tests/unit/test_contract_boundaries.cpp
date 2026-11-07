@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -253,7 +254,8 @@ TEST_CASE("产物校验失败必须恢复，即使 track 声明抛异常时状�
     rig.send(packet(1));
     rig.send(packet(2));
     rig.send(packet(3));
-    CHECK(rig.module->contractErrors() == 1);
+    CHECK(rig.module->contractErrors() == 0);  // 输入没问题：跟踪过了，是产物违反契约
+    CHECK(rig.module->outputContractErrors() == 1);
     CHECK(rig.module->reinitializations() == 1);
     CHECK(rig.algorithm->lastResult().T_odom_body.translation().x() == Approx(1));
     CHECK(rig.algorithm->lastResult().sequence == 2);
@@ -269,6 +271,7 @@ TEST_CASE("算法执行前拒绝非法输入无需复位，输入错误不能伪
     rig.send(invalid);  // 没有 IMU 却声明覆盖非空区间
     CHECK(rig.algorithm->calls == 1);
     CHECK(rig.module->contractErrors() == 1);
+    CHECK(rig.module->outputContractErrors() == 0);
     CHECK(rig.module->reinitializations() == 0);
     rig.send(packet(3));
     CHECK(rig.algorithm->lastResult().T_odom_body.translation().x() == Approx(2));
@@ -279,7 +282,13 @@ TEST_CASE("关键帧后置钩子失败不提交结果和序号，并按产物失
     Estimator algorithm(Fault::kKeyframeHook);
     algorithm.recovery = pl::FailureRecovery::kStateIntact;
     (void)algorithm.process(packet(1), {});
-    CHECK_THROWS_AS(algorithm.process(packet(2), {}), pl::OdometryContractError);
+    try {
+        (void)algorithm.process(packet(2), {});
+        FAIL("钩子失败要变成契约错误");
+    } catch (const pl::OdometryContractError& e) {
+        // 改写成契约错误时留着原来的原因：诊断里看得到钩子为什么失败
+        CHECK(std::string(e.what()).find("关键帧地图构建失败") != std::string::npos);
+    }
     CHECK(algorithm.lastResult().packet_sequence == 1);
     CHECK(algorithm.lastResult().sequence == 1);
 
@@ -323,20 +332,26 @@ TEST_CASE("状态时刻不能超前于输入，复位失败期间禁止继续 tr
     rig.send(packet(1));
     rig.algorithm->reset_fails = true;
     rig.send(packet(2));
-    CHECK(rig.module->contractErrors() == 1);
+    CHECK(rig.module->outputContractErrors() == 1);
     rig.send(packet(3));
-    CHECK(rig.algorithm->calls == 2);  // 复位尚未成功，第三包不进入算法
+    CHECK(rig.algorithm->calls == 2);  // 复位重试还没成功，第三包不进入算法
     CHECK(rig.module->failedFrames() == 1);
+    CHECK(rig.module->stateLosses() == 1);
     CHECK(rig.runtime.isolatedFailures() == 0);  // 恢复失败是领域终态，进度照报
     rig.algorithm->reset_fails = false;
-    rig.send(packet(4));  // 本包用于恢复，尚未跟踪
-    rig.send(packet(5));
+    rig.send(packet(4));  // 先重试复位，成功了这一包照常跟踪，不记失败
     CHECK(rig.algorithm->calls == 3);
-    CHECK(rig.algorithm->lastResult().packet_sequence == 5);
-    CHECK(rig.algorithm->lastResult().sequence == 2);
+    CHECK(rig.module->failedFrames() == 1);
+    CHECK(rig.algorithm->lastResult().packet_sequence == 4);
     CHECK(rig.algorithm->lastResult().T_odom_body.translation().x() == Approx(1));
-    CHECK(rig.module->receivedPackets() == rig.module->processedFrames()
-          + rig.module->contractErrors() + rig.module->failedFrames());
+    rig.send(packet(5));
+    CHECK(rig.algorithm->calls == 4);
+    CHECK(rig.algorithm->lastResult().packet_sequence == 5);
+    CHECK(rig.algorithm->lastResult().sequence == 3);
+    CHECK(rig.algorithm->lastResult().T_odom_body.translation().x() == Approx(2));
+    CHECK(rig.module->receivedPackets()
+          == rig.module->processedFrames() + rig.module->contractErrors()
+                 + rig.module->outputContractErrors() + rig.module->failedFrames());
 }
 
 TEST_CASE("在线取消关闭队列后再等静止：本模块尾项和其他模块的服务均不开始",

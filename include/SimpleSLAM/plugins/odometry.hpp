@@ -127,7 +127,9 @@ enum class FrameDisposition : std::uint8_t {
     kTracked,           ///< 跟踪了，有结果
     kAwaitingSupport,   ///< 初始化之前缺支撑，按政策等待，没有跟踪
     kRejectedForGap,    ///< 缺支撑，按政策拒绝，没有跟踪
-    kStateUnusable,     ///< 跟踪了，但算法报告状态不能再用：结果不发布，按失败恢复协议处理
+    /// 状态不能再用：跟踪了但算法报告状态不可信，或上一次复位没成功、这一包也没能复位。
+    /// 结果不发布，按失败恢复协议处理。
+    kStateUnusable,
 };
 
 [[nodiscard]] constexpr const char* toString(FrameDisposition disposition) noexcept {
@@ -212,6 +214,8 @@ public:
 
     /// 算法是否已经初始化：产出过至少一个正常或降级的跟踪结果。
     [[nodiscard]] bool initialized() const noexcept { return initialized_; }
+    /// 估计状态可用：复位（`onReset()`）失败之后为 false，直到下一次复位成功。
+    [[nodiscard]] bool stateReady() const noexcept { return state_ready_; }
 
     [[nodiscard]] const OdometryResult& lastResult() const noexcept { return last_; }
     [[nodiscard]] SessionId session() const noexcept { return session_; }

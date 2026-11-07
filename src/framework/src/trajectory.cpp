@@ -99,6 +99,7 @@ Trajectory Trajectory::scaled(double scale) const {
     out.frame_ = frame_;
     out.clock_ = clock_;
     out.name_ = name_;
+    out.tracked_ = tracked_;
     out.samples_.reserve(samples_.size());
     for (const auto& sample : samples_) {
         out.samples_.push_back(TrajectorySample{

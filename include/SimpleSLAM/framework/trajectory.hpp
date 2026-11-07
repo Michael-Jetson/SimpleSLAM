@@ -95,7 +95,7 @@ public:
     /// 左乘一个变换（换参考系 / 对齐）。
     [[nodiscard]] Trajectory transformedBy(const SE3d& transform) const;
 
-    /// 只缩放平移（Sim3 对齐的尺度部分）。旋转不变。
+    /// 只缩放平移（Sim3 对齐的尺度部分）。旋转不变；参考系、时钟、跟踪的传感器照抄。
     [[nodiscard]] Trajectory scaled(double scale) const;
 
 private:

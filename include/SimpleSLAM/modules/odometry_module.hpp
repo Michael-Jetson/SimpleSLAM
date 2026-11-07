@@ -47,6 +47,10 @@ public:
     [[nodiscard]] std::uint64_t keyframeCount() const noexcept { return keyframes_; }
     /// 因为违反包契约而没被处理的帧数。非零说明有输入没进估计。
     [[nodiscard]] std::uint64_t contractErrors() const noexcept { return contract_errors_; }
+    /// 跟踪了、产物却违反契约的帧数：结果作废，按恢复协议重新初始化。
+    [[nodiscard]] std::uint64_t outputContractErrors() const noexcept {
+        return output_contract_errors_;
+    }
     /// 算法抛出异常、没能产出结果的帧数。
     [[nodiscard]] std::uint64_t failedFrames() const noexcept { return failed_; }
     /// 缺支撑、按算法政策等待初始化而没有跟踪的帧数。
@@ -57,7 +61,7 @@ public:
     [[nodiscard]] std::uint64_t degradedForGapFrames() const noexcept { return degraded_for_gap_; }
     /// 收到的包数。等于各终态之和。
     [[nodiscard]] std::uint64_t receivedPackets() const noexcept { return received_; }
-    /// 算法报告状态不能再用的帧数（计入失败帧）。
+    /// 状态不能再用的帧数（计入失败帧）：算法报告的，或复位还没成功、这一包也没能复位的。
     [[nodiscard]] std::uint64_t stateLosses() const noexcept { return state_losses_; }
     /// 准备失败、没有生效的校正数。
     [[nodiscard]] std::uint64_t failedCorrections() const noexcept { return failed_corrections_; }
@@ -68,7 +72,7 @@ public:
     [[nodiscard]] std::uint64_t propagationGaps() const noexcept { return propagation_gaps_; }
     /// 发布出去的里程计结果数。
     [[nodiscard]] std::uint64_t publishedResults() const noexcept { return published_results_; }
-    /// 真正生效了的最新一份解的版本。准备失败的解不算。
+    /// 当前这一段里真正生效了的最新一份解的版本：重新初始化时归零。准备失败的解不算。
     [[nodiscard]] std::uint64_t appliedSolution() const noexcept { return applied_solution_; }
     /// 处理过的最新一份解的版本：生效了的，或准备失败、不再尝试的。更旧的解直接跳过。
     [[nodiscard]] std::uint64_t handledSolution() const noexcept { return handled_solution_; }
@@ -121,6 +125,7 @@ private:
     std::optional<fw::Timestamp> last_state_time_;
     std::uint64_t processed_ = 0;
     std::uint64_t contract_errors_ = 0;
+    std::uint64_t output_contract_errors_ = 0;
     std::uint64_t failed_ = 0;
     std::uint64_t awaiting_ = 0;
     std::uint64_t rejected_for_gap_ = 0;
