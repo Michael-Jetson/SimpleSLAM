@@ -44,7 +44,7 @@ SimpleSLAM 不是又一个 SLAM 算法实现，而是一个让 SLAM 工程师能
 1. **模块化边界跟随数学接缝** — 在真正存在多种实现的地方设可替换边界，紧耦合的地方拒绝拆分
 2. **经 profile 确认的热路径必须单态** — 逐元素循环保证内联和向量化；跨模块插件边界每帧仅常数次虚分派
 3. **永不"停止世界"** — 后端优化不持有前端需要的锁，前端不等全局优化，校正在帧边界生效
-4. **故障隔离** — 后端故障不传播到前端，Odometry 始终继续输出位姿
+4. **同进程异常隔离** — 后端抛出的异常不传播到前端，Odometry 继续输出位姿；段错误、死循环不在此列
 5. **设计先行** — 先研究清楚，经过充分分析得到 v1 方案再施工；执行中只做小的优化（v2），不先草草设计、再大量返工
 6. **冗余只为应急和必要的安全** — 队列为突发留足余量；持续跟不上要优化算法，不靠框架兜底
 7. **简洁与功能统一** — 功能用简洁的结构实现，不为了功能堆出难以维护、难以开发的复杂架构
@@ -101,9 +101,8 @@ evaluation:
 
 接下来：
 
-1. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上对照 KISS-ICP。
-2. 第二种地图（面元地图）：通过契约测试后，只改 YAML 就能让 LO 换用它；选一个不满足接口的实现，装配时报错。
-3. LIO：复用同一个地图接口。
+1. 读 ROS 包：ROS 1 包、ROS 2 的 sqlite3 与 MCAP，不需要 ROS 运行环境。
+2. LO 方案 `lo_icp`：用上面的滤波与地图，在 KITTI 上对照 KISS-ICP；之后是 LIO，复用同一个地图接口。
 
 手写算法从 `examples/lio_skeleton/my_lio.hpp` 的 `track()` 开始，写日志调成员 `log_`（`log_.info(…)`、`log_.warn(…)`），来源与帧序号自动带上；`./run.py demo` 不下载数据集也能跑通整条链路（见"快速开始"）。
 
@@ -143,8 +142,8 @@ docker build -t simpleslam-dev .
 #    docker build --build-context manif=docker/deps/manif -t simpleslam-dev .
 
 # 2. 编译 + 测试
-docker run --rm -v $(pwd):/workspace -w /workspace simpleslam-dev \
-    bash -c "cmake -B build && cmake --build build -j && cd build && ctest --output-on-failure"
+docker run --rm -v "$PWD":/workspace -v /tmp/ss-build:/build -w /workspace simpleslam-dev \
+    bash -c "cmake -S . -B /build && cmake --build /build -j && ctest --test-dir /build --output-on-failure"
 ```
 
 ### 原生构建
@@ -175,11 +174,11 @@ include/SimpleSLAM/   # 公共头文件
   modules/（模块层：把插件接到总线与资源上）
   eval/（评测）、config/（配置、插件槽与目录）
   app/（入口层：目录、任务还原、执行器、任务记录与评测）
-src/                  # 各模块库实现（纯头模块仅 CMakeLists）
+src/                  # 各模块库的实现
 tools/                # simpleslam-eval（评测别的系统跑出来的轨迹）
 examples/lio_skeleton # 用户入口的范例：登记 my_lio，再交给执行器；算法在 my_lio.hpp
 run.py                # 一键入口，等同 python -m simpleslam
-python/simpleslam/    # Python 侧：操作台（构建、跑任务、看结果）、任务渲染与扫参、轨迹读写
+python/simpleslam/    # Python 侧：操作台（构建、跑任务、看结果）、任务渲染与扫参
 configs/systems/      # 系统 YAML：管线、模块、插件与参数
 configs/tasks/        # 任务 YAML 与 Python 写的任务
 tests/  scripts/      # 单元测试；依赖安装、合成数据夹具
@@ -195,7 +194,7 @@ tests/  scripts/      # 单元测试；依赖安装、合成数据夹具
 | Catch2 3.x | 单元测试 | 编译库 |
 | Python 3 | 操作台 `run.py` 与 Python 侧的测试，只用标准库 | 解释器 |
 
-按阶段引入的可选依赖：GTSAM 4.3+（因子图优化）、small_gicp（回环验证 ICP）、Ceres 2.1+（滑窗 BA）、OpenCV 4.5+（视觉前端）。
+用到时再引入的可选依赖：GTSAM 4.3+（因子图优化）、small_gicp（回环验证 ICP）、Ceres 2.1+（滑窗 BA）、OpenCV 4.5+（视觉前端）。
 
 ## 编码规范
 
