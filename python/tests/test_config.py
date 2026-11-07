@@ -19,7 +19,7 @@ def fake_schema(extra_fields=()) -> Schema:
         [
             Field("task.name", "string", "default", "任务名"),
             Field("task.repeats", "int", "1", "测试用的整数字段"),
-            Field("system.runtime.spin_budget", "int", "4096", "步进预算"),
+            Field("system.runtime.online_max_in_flight", "int", "200", "在线时在途的包数"),
             Field("system.packetizer.post_support_s", "double", "0.02", "测试用的实数字段"),
             Field(LIO, "slot", "", "里程计"),
             Field(GRAPH, "slot", "pgo", "图优化"),
@@ -105,10 +105,10 @@ class RenderTest(unittest.TestCase):
 
     def test_update_by_section_and_by_path(self):
         config = Config()
-        config.update({"task.repeats": 3}, system={"runtime": {"spin_budget": 12}})
+        config.update({"task.repeats": 3}, system={"runtime": {"online_max_in_flight": 12}})
         config.update(system={"modules": {"odometry": {"plugin": {"type": "lio"}}}})
         self.assertEqual(config["task.repeats"], 3)
-        self.assertEqual(config["system.runtime.spin_budget"], 12)
+        self.assertEqual(config["system.runtime.online_max_in_flight"], 12)
         self.assertEqual(config[LIO], {"type": "lio"})  # 带 type 的映射整体是一个值
 
     def test_copy_is_deep(self):

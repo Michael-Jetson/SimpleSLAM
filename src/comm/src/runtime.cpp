@@ -84,14 +84,15 @@ void Runtime::init() {
     state_.store(RuntimeState::kReady, std::memory_order_release);
 }
 
-std::size_t Runtime::step(std::size_t budget, bool fire_timers) {
+std::size_t Runtime::step(std::size_t budget) {
     detail::RuntimeThreadMark mark;
     if (!modules_started_ && state() != RuntimeState::kBuilding) {
         modules_started_ = true;
         core_->params().freeze();  // 开始运行：声明为运行中不改的参数从此拒绝写入
         for (const auto& m : modules_) m->start();
     }
-    if (fire_timers) fireDueTimers(timer_queues_, core_->clock().now());
+    // 停止之后定时器不再触发（不变量 12），与在线的模块线程同一个判据
+    if (!core_->hub()->inputsStopped()) fireDueTimers(timer_queues_, core_->clock().now());
     std::size_t done = 0;
     while (done < budget) {
         auto box = core_->hub()->popReady();
@@ -108,6 +109,31 @@ std::size_t Runtime::spinOnce(std::size_t budget) {
     const std::size_t done = step(budget);
     rethrowFatal();
     return done;
+}
+
+std::size_t Runtime::spinUntilIdle() {
+    if (state() >= RuntimeState::kDone) return 0;
+    if (state() == RuntimeState::kRunning) throw WiringError("spin() 运行期间不能步进");
+    const std::size_t done = stepUntilIdle();
+    rethrowFatal();
+    return done;
+}
+
+/// 离线跑到静止。不设轮数上限：回调无限自发布这种错让它挂住并被看见，和在线一样。
+std::size_t Runtime::stepUntilIdle() {
+    constexpr std::size_t kBatch = 4096;  // 两次看时间之间最多处理的批数
+    std::size_t total = 0;
+    auto last_report = std::chrono::steady_clock::now();
+    for (;;) {
+        const std::size_t done = step(kBatch);
+        if (done == 0) return total;
+        total += done;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_report >= std::chrono::seconds(2)) {
+            detail::reportSafely(core_->reporter(), "Runtime", "等待静止超过 2 秒：仍有模块在处理");
+            last_report = now;
+        }
+    }
 }
 
 std::size_t Runtime::spinFor(Duration span, std::size_t budget) {
@@ -205,17 +231,9 @@ void Runtime::requestStop() {
 bool Runtime::waitIdle(Duration timeout) {
     if (inRuntimeThread()) return false;
     if (virtual_clock_ == nullptr) return core_->hub()->waitIdle(timeout);
-    while (step(4096) != 0) {
-    }
+    stepUntilIdle();
     rethrowFatal();
     return core_->hub()->idle();
-}
-
-bool Runtime::drainRemaining() {
-    for (std::size_t i = 0; i < 256; ++i) {
-        if (step(4096, false) == 0) return true;  // 收尾时定时器不再触发
-    }
-    return false;
 }
 
 void Runtime::shutdown(ShutdownMode mode) {
@@ -233,19 +251,14 @@ void Runtime::shutdown(ShutdownMode mode) {
     }
     finishRun();
 
-    // 此刻只有本线程在跑
-    bool drained = !cancelled_;
+    // 此刻只有本线程在跑。输入已停，定时器不再触发；排不空就一直排，定期上报（不变量 12）
     if (mode == ShutdownMode::kFinish) {
-        drained = drainRemaining();
+        stepUntilIdle();
         for (auto& m : modules_) m->finish();
-        drained = drainRemaining() && drained;
+        stepUntilIdle();
     }
     for (auto& m : modules_) m->shutdown();
     core_->hub()->clearReady();
-    drained_ = drained;
-    if (!drained && mode == ShutdownMode::kFinish) {
-        detail::reportSafely(core_->reporter(), "Runtime", "关闭时排空预算用尽：仍有未处理的工作");
-    }
     state_.store(RuntimeState::kDone, std::memory_order_release);
 }
 

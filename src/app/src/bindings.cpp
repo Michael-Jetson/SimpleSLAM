@@ -41,7 +41,6 @@ fw::PacketizerPolicy toPacketizerPolicy(const config::PacketizerSection& section
 modules::SlamSystemOptions toSystemOptions(const config::TaskConfig& config) {
     modules::SlamSystemOptions options;
     options.offline = config.task.mode == "offline";
-    options.spin_budget = static_cast<std::size_t>(config.system.runtime.spin_budget);
     options.online_max_in_flight =
         static_cast<std::size_t>(config.system.runtime.online_max_in_flight);
     // 等级在配置校验时已经核对过：这里只换算

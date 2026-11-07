@@ -129,7 +129,7 @@ class ThroughCppTest(unittest.TestCase):
             "任务节": self.base(task={"name": "demo", "mode": "online"}),
             "系统节": self.base(system={
                 "pipeline": "mapping",
-                "runtime": {"spin_budget": 1024, "online_max_in_flight": 0},
+                "runtime": {"online_max_in_flight": 0},
                 "packetizer": {"source_policy": "config", "imu_required": False,
                                "post_support_s": 0.02},
                 "modules": {

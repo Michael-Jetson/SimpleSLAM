@@ -301,7 +301,6 @@ TEST_CASE("读完之后终结再查结果：结局固定，模块可读，步进
     system.shutdown();
     const auto final_outcome = system.runOutcome();
     CHECK(final_outcome.finalized);
-    CHECK(final_outcome.shutdown_drained);
     CHECK(final_outcome.complete());
     const auto poses = system.trajectory()->odometry().size();
     CHECK(poses == 3);
@@ -986,7 +985,6 @@ TEST_CASE("取消运行：不再排空，排队中的调用明确结案，结果
 
     runtime.shutdown(comm::ShutdownMode::kCancel);
     CHECK(runtime.cancelled());
-    CHECK_FALSE(runtime.shutdownDrained());
     CHECK(callbacks == 0);                         // 没有排空：服务端没处理，回调也送不到
     CHECK(client.mailbox()->stats().discarded >= 1);  // 送不到的终态可见
 

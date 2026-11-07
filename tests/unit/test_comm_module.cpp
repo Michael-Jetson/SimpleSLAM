@@ -1116,7 +1116,6 @@ TEST_CASE("在线：模块内串行、停止走完因果链、取消、长回调
         CHECK(tail.count == 5000);
         rt.shutdown();
         CHECK(tail.finish_seen);
-        CHECK(rt.shutdownDrained());
         CHECK(rt.state() == cm::RuntimeState::kDone);
     }
     // 回调里 requestStop
@@ -1161,7 +1160,6 @@ TEST_CASE("在线：模块内串行、停止走完因果链、取消、长回调
         rt.shutdown(cm::ShutdownMode::kCancel);
         driver.join();
         CHECK(rt.cancelled());
-        CHECK(!rt.shutdownDrained());
         CHECK(slow.seen < 100);
     }
     // 长回调不挡别的模块

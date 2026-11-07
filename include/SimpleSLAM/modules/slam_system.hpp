@@ -45,8 +45,6 @@ struct RunOutcome {
     fw::SourceOutcome input = fw::SourceOutcome::kRunning;
 
     // ── 处理 ──
-    bool drained = true;                       ///< 每次步进都跑到了静止
-    bool shutdown_drained = true;              ///< 关闭时把已接纳的工作排空了
     std::uint64_t packets_without_outcome = 0; ///< 送达里程计、却没有终态的包
     std::uint64_t contract_errors = 0;         ///< 违反包契约、没进估计的帧
     std::uint64_t failed_frames = 0;           ///< 算法失败（含状态不能再用）、没有结果的帧
@@ -87,7 +85,7 @@ struct RunOutcome {
         return input == fw::SourceOutcome::kCleanEof;
     }
     [[nodiscard]] bool processingComplete() const noexcept {
-        return !cancelled && drained && shutdown_drained && packets_without_outcome == 0 && contract_errors == 0
+        return !cancelled && packets_without_outcome == 0 && contract_errors == 0
                && failed_frames == 0 && failed_corrections == 0 && reinitializations == 0
                && isolated_failures == 0 && foreign_clock_drops == 0 && out_of_order_imu == 0
                && dropped_triggers == 0 && rejected_triggers == 0 && imu_backlog_drops == 0
@@ -125,8 +123,6 @@ struct RunResult {
 struct SlamSystemOptions {
     /// 离线：单线程步进、虚拟时钟、可重复。在线：一个模块一个线程 + 单调时钟。
     bool offline = true;
-    /// 每轮步进的任务预算，防止持续到达的消息让一次步进不返回。
-    std::size_t spin_budget = 4096;
     /// 在线时入口允许多少包在途。队列只为突发准备，冗余给足：200 包是 10 Hz 激光的 20 秒。
     /// 超过它就丢触发帧，IMU 并入下一包，并记进运行结局。离线不限，不丢。
     std::size_t online_max_in_flight = 200;
@@ -256,11 +252,9 @@ public:
     /// 把虚拟时钟推进到已读样本的数据时刻。在线模式（单调时钟）下是空操作。
     void advanceClockToData();
 
-    /// 处理到系统静止（没有就绪任务为止），带轮数上限兜底。
-    ///
-    /// 轮数用完仍有工作时，这次运行记为"没排空"（RunOutcome::drained）：
-    /// 兜底的上限不能悄悄吞掉没处理完的工作。
-    std::size_t settle(std::size_t max_rounds = 256);
+    /// 处理到系统静止（没有就绪任务为止）。不设上限：回调无限自发布时挂住，定期上报
+    /// （`comm::Runtime::spinUntilIdle`）。返回处理的批数。
+    std::size_t settle();
 
     void start() { runtime_.start(); }
     void spin() { runtime_.spin(); }
@@ -319,7 +313,6 @@ private:
     comm::Runtime runtime_;
 
     fw::SourceDescriptor descriptor_;
-    bool all_settled_ = true;
     bool finalized_ = false;
     bool origin_set_ = false;
     RunResult final_result_;

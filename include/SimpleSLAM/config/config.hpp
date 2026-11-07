@@ -39,7 +39,6 @@ struct TaskSection {
 };
 
 struct RuntimeSection {
-    std::int64_t spin_budget = 4096;
     /// 在线时入口允许多少包在途。队列只为突发准备，冗余给足：200 包是 10 Hz 激光的 20 秒。
     std::int64_t online_max_in_flight = 200;
 };
@@ -158,7 +157,6 @@ void visitConfig(Config& c, Visitor&& visit) {
 
     auto& s = c.system;
     visit("system.pipeline", s.pipeline, "管线：odometry / mapping / localization");
-    visit("system.runtime.spin_budget", s.runtime.spin_budget, "每轮步进的任务预算");
     visit("system.runtime.online_max_in_flight", s.runtime.online_max_in_flight,
           "在线时入口允许在途的包数（0 表示不限）");
 

@@ -347,8 +347,8 @@ class Config:
     def update(self, values: Mapping[str, Any] | None = None, **sections: Any) -> "Config":
         """按点分路径或按节更新，两种写法可以混用：
 
-        ``update({"system.runtime.spin_budget": 40})`` 与
-        ``update(system={"runtime": {"spin_budget": 40}})`` 等价。
+        ``update({"system.runtime.online_max_in_flight": 40})`` 与
+        ``update(system={"runtime": {"online_max_in_flight": 40}})`` 等价。
         """
         flat: dict[str, Any] = {}
         _flatten("", values or {}, flat)

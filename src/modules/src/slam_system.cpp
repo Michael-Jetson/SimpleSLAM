@@ -19,8 +19,6 @@ std::vector<std::string> RunOutcome::reasons() const {
     };
     add(!inputComplete(), std::format("输入不完整：{}", fw::toString(input)));
     add(cancelled, "运行被取消：" + cancel_reason);
-    add(!drained, "排空预算用尽，仍有未处理的工作");
-    add(!shutdown_drained && !cancelled, "关闭时排空预算用尽，已接纳的工作没有做完");
     add(packets_without_outcome > 0, std::format("{} 个送达的包没有终态", packets_without_outcome));
     add(contract_errors > 0, std::format("{} 帧违反包契约、没进估计", contract_errors));
     add(failed_frames > 0, std::format("{} 帧算法失败、没有结果", failed_frames));
@@ -235,20 +233,9 @@ void SlamSystem::advanceClockToData() {
     if (data_time.count() > 0) clock->advanceTo(comm::Time{data_time.count()});
 }
 
-std::size_t SlamSystem::settle(std::size_t max_rounds) {
+std::size_t SlamSystem::settle() {
     if (finalized_) return 0;
-    std::size_t total = 0;
-    bool quiescent = false;
-    for (std::size_t i = 0; i < max_rounds; ++i) {
-        const std::size_t done = runtime_.spinOnce(options_.spin_budget);
-        total += done;
-        if (done == 0) {
-            quiescent = true;
-            break;
-        }
-    }
-    if (!quiescent) all_settled_ = false;
-    return total;
+    return runtime_.spinUntilIdle();
 }
 
 const RunResult& SlamSystem::result() const {
@@ -268,7 +255,6 @@ void SlamSystem::finalize(comm::ShutdownMode mode, std::string reason) {
     resources_.freeze();
     final_result_.outcome = collectOutcome();
     auto& outcome = final_result_.outcome;
-    outcome.shutdown_drained = runtime_.shutdownDrained();
     outcome.cancelled = runtime_.cancelled();
     outcome.cancel_reason = std::move(reason);
     outcome.finalized = true;
@@ -282,7 +268,6 @@ void SlamSystem::finalize(comm::ShutdownMode mode, std::string reason) {
 
 RunOutcome SlamSystem::collectOutcome() const {
     RunOutcome outcome;
-    outcome.drained = all_settled_;
     outcome.isolated_failures = runtime_.isolatedFailures();
     const auto keyframes = resources_.keyframes.snapshot()->size();
     if (sensor_io_ != nullptr) {

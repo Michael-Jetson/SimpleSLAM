@@ -715,7 +715,6 @@ void validateConfig(const TaskConfig& config) {
 
     const auto& system = config.system;
     requireOneOf("system.pipeline", system.pipeline, {"odometry", "mapping", "localization"});
-    requireAtLeast("system.runtime.spin_budget", system.runtime.spin_budget, 1);
     requireAtLeast("system.runtime.online_max_in_flight", system.runtime.online_max_in_flight, 0);
     requireOneOf("system.packetizer.source_policy", system.packetizer.source_policy,
                  {"source", "config"});

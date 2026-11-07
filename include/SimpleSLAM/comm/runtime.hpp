@@ -100,6 +100,9 @@ public:
     std::size_t spinOnce(std::size_t budget = 1024);
     /// 虚拟时钟下推进一段时间，按定时器到期点逐段推进。
     std::size_t spinFor(Duration span, std::size_t budget = 1024);
+    /// 步进到系统静止：到期的定时器照常触发，就绪的收件箱处理到一个不剩。不设上限：
+    /// 回调无限自发布时挂住，每 2 秒上报一次，和在线一致。返回处理的批数。
+    std::size_t spinUntilIdle();
 
     // ── 在线驱动 ──
 
@@ -115,7 +118,8 @@ public:
     /// requestStop() 是否已经调用过（异常策略为停机时也会触发）。
     [[nodiscard]] bool stopRequested() const noexcept { return core_->hub()->inputsStopped(); }
 
-    /// 等系统静止：没有排队也没有执行中的工作。离线时由本线程步进，在线时等待。
+    /// 等系统静止：没有排队也没有执行中的工作。离线时由本线程步进到静止（同 spinUntilIdle），
+    /// 在线时等待。
     bool waitIdle(Duration timeout = Duration{0});
 
     /// 结束运行。模块保留为只读的最终状态，析构时才销毁。
@@ -156,7 +160,6 @@ public:
     [[nodiscard]] std::uint64_t isolatedFailures() const;
     /// 第一个被接住的异常，不论策略。
     [[nodiscard]] std::optional<ModuleFailure> firstFailure() const { return core_->hub()->firstFailure(); }
-    [[nodiscard]] bool shutdownDrained() const noexcept { return drained_; }
     [[nodiscard]] bool cancelled() const noexcept { return cancelled_; }
     [[nodiscard]] RuntimeState state() const noexcept { return state_.load(std::memory_order_acquire); }
 
@@ -170,8 +173,8 @@ public:
     [[nodiscard]] logging::Router& logRouter() noexcept { return core_->logRouter(); }
 
 private:
-    std::size_t step(std::size_t budget, bool fire_timers = true);
-    bool drainRemaining();
+    std::size_t step(std::size_t budget);
+    std::size_t stepUntilIdle();
     void finishRun();
     [[nodiscard]] std::optional<Time> nextTimerDue() const;
     void rethrowFatal();
@@ -191,7 +194,6 @@ private:
     std::vector<std::thread> threads_;
     std::vector<TimerQueue*> timer_queues_;  ///< init() 时定下
 
-    bool drained_ = true;
     bool cancelled_ = false;
 };
 

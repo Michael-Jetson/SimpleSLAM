@@ -55,8 +55,8 @@ void writeText(const std::filesystem::path& path, const std::string& text) {
 }  // namespace
 
 TEST_CASE("缺省即默认值", "[config]") {
-    const auto config = load("system:\n  runtime:\n    spin_budget: 7\n");
-    CHECK(config.system.runtime.spin_budget == 7);
+    const auto config = load("system:\n  packetizer:\n    max_imu_backlog: 7\n");
+    CHECK(config.system.packetizer.max_imu_backlog == 7);
     CHECK(config.system.runtime.online_max_in_flight == 200);  // 没写的保持默认
     CHECK(config.system.pipeline == "odometry");
     CHECK(config.task.name == "default");
@@ -67,26 +67,27 @@ TEST_CASE("缺省即默认值", "[config]") {
 TEST_CASE("未知键是错误而不是忽略", "[config]") {
     // 少一个字母的键静默跑完，比报错难查一百倍
     CHECK_THROWS_AS(load("systm:\n  pipeline: mapping\n"), ConfigError);
-    CHECK_THROWS_AS(load("system:\n  runtim:\n    spin_budget: 7\n"), ConfigError);
+    CHECK_THROWS_AS(load("system:\n  packetize:\n    max_imu_backlog: 7\n"), ConfigError);
     CHECK_THROWS_AS(load("task:\n  nmae: x\n"), ConfigError);
 }
 
 TEST_CASE("类型不符是错误，不做隐式转换", "[config]") {
-    CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: abc\n"), ConfigError);
-    CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: 1.5\n"), ConfigError);
+    CHECK_THROWS_AS(load("system:\n  packetizer:\n    max_imu_backlog: abc\n"), ConfigError);
+    CHECK_THROWS_AS(load("system:\n  packetizer:\n    max_imu_backlog: 1.5\n"), ConfigError);
     CHECK_THROWS_AS(load("outputs:\n  kitti_trajectories: 1\n"), ConfigError);
-    CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: \"4\"\n"), ConfigError);
+    CHECK_THROWS_AS(load("system:\n  packetizer:\n    max_imu_backlog: \"4\"\n"), ConfigError);
     CHECK_THROWS_AS(load("data:\n  sequences: \"00\"\n"), ConfigError);  // 要列表
     CHECK_THROWS_AS(load("data:\n  source: kitti_odometry\n"), ConfigError);  // 插件节点是映射
 }
 
 TEST_CASE("规范化导出只随内容变，不随注释、键序与写不写默认值变", "[config]") {
-    const auto a = load("# 注释\nsystem:\n  runtime:\n    spin_budget: 9\ntask:\n  name: run\n");
+    const auto a =
+        load("# 注释\nsystem:\n  packetizer:\n    max_imu_backlog: 9\ntask:\n  name: run\n");
     const auto b = load("task:\n  name: run\n  mode: offline\n"
-                        "system:\n  runtime:\n    spin_budget: 9\n");
+                        "system:\n  packetizer:\n    max_imu_backlog: 9\n");
     CHECK(dumpConfig(a) == dumpConfig(b));
 
-    const auto c = load("task:\n  name: run\nsystem:\n  runtime:\n    spin_budget: 10\n");
+    const auto c = load("task:\n  name: run\nsystem:\n  packetizer:\n    max_imu_backlog: 10\n");
     CHECK(dumpConfig(a) != dumpConfig(c));
 }
 
@@ -151,7 +152,7 @@ TEST_CASE("未知的空映射也是未知键", "[config]") {
 }
 
 TEST_CASE("类型对了不等于值有意义", "[config]") {
-    CHECK_THROWS_AS(load("system:\n  runtime:\n    spin_budget: 0\n"), ConfigError);
+    CHECK_THROWS_AS(load("system:\n  packetizer:\n    max_imu_backlog: 0\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: -0.1\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: nan\n"), ConfigError);
     CHECK_THROWS_AS(load("system:\n  packetizer:\n    post_support_s: 1e400\n"), ConfigError);
@@ -172,7 +173,7 @@ TEST_CASE("类型对了不等于值有意义", "[config]") {
               .data.sequences.size() == 2);
     // 覆盖项走同一套校验
     TaskConfig config;
-    CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.spin_budget=0"}), ConfigError);
+    CHECK_THROWS_AS(applyOverrides(config, {"system.packetizer.max_imu_backlog=0"}), ConfigError);
 }
 
 TEST_CASE("日志的等级：写法不对在运行之前报错", "[config][log]") {
@@ -194,15 +195,15 @@ TEST_CASE("日志的等级：写法不对在运行之前报错", "[config][log]"
 
 TEST_CASE("覆盖项按 schema 的类型解析", "[config]") {
     TaskConfig config;
-    applyOverrides(config, {"system.runtime.spin_budget=40", "task.mode=online",
+    applyOverrides(config, {"system.packetizer.max_imu_backlog=40", "task.mode=online",
                             "outputs.dir=/tmp/run", "data.sequences=[\"00\", \"05\"]"});
-    CHECK(config.system.runtime.spin_budget == 40);
+    CHECK(config.system.packetizer.max_imu_backlog == 40);
     CHECK(config.task.mode == "online");
     CHECK(config.outputs.dir == "/tmp/run");
     CHECK(config.data.sequences == std::vector<std::string>{"00", "05"});
 
     CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.nope=1"}), ConfigError);
-    CHECK_THROWS_AS(applyOverrides(config, {"system.runtime.spin_budget=abc"}), ConfigError);
+    CHECK_THROWS_AS(applyOverrides(config, {"system.packetizer.max_imu_backlog=abc"}), ConfigError);
     CHECK_THROWS_AS(applyOverrides(config, {"没有等号"}), ConfigError);
 }
 
@@ -289,9 +290,9 @@ TEST_CASE("schema 从同一份字段清单导出", "[config]") {
             CHECK(field.default_value == "{}");
             saw_params = true;
         }
-        if (field.path == "system.runtime.spin_budget") {
+        if (field.path == "system.packetizer.max_imu_backlog") {
             CHECK(field.type == "int");
-            CHECK(field.default_value == "4096");
+            CHECK(field.default_value == "100000");
         }
         if (field.path == "system.modules.odometry.plugin") {
             CHECK(field.type == "slot");

@@ -89,7 +89,6 @@ TEST_CASE("停止之后已接纳的输入把因果链走完", "[comm][lifecycle]
     runtime.shutdown();
     CHECK(relayed->load() == 1);
     CHECK(sunk->load() == 1);
-    CHECK(runtime.shutdownDrained());
 }
 
 TEST_CASE("在线停止时同样走完因果链", "[comm][lifecycle]") {
@@ -186,6 +185,28 @@ TEST_CASE("周期唤醒可合并，定时器不会把收件箱撑大", "[comm][l
 
     runtime.spinOnce();
     CHECK(counter.ticks == 1);  // 两百次到期合并成一次
+}
+
+TEST_CASE("离线：停止之后的步进不再触发到期的定时器，跑到静止不设上限", "[comm][lifecycle]") {
+    // 不变量 12：停输入、停定时器、等在途工作走完。离线由控制线程步进，判据与在线的模块线程相同
+    Runtime runtime(RuntimeOptions{true});
+    auto& counter = runtime.addModule<Counter>("/counter");
+    runtime.init();
+    counter.startTimer(std::chrono::milliseconds(10));
+    auto* clock = runtime.virtualClock();
+    REQUIRE(clock != nullptr);
+
+    clock->advanceTo(Time{10'000'000});
+    runtime.spinUntilIdle();
+    CHECK(counter.ticks == 1);
+
+    runtime.requestStop();
+    clock->advanceTo(Time{50'000'000});
+    CHECK(runtime.spinUntilIdle() == 0);
+    CHECK(runtime.waitIdle());
+    CHECK(counter.ticks == 1);  // 停止之后到期的不再触发
+    runtime.shutdown();
+    CHECK(counter.ticks == 1);
 }
 
 TEST_CASE("取消定时器之后不再触发，到期时释放捕获对象", "[comm][lifecycle]") {
