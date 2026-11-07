@@ -6,8 +6,10 @@
 /// 随标量给出；评测输入的可选能力没有时明确报错。
 
 #include <SimpleSLAM/eval/evaluators.hpp>
+#include <SimpleSLAM/testing/evaluator_contract.hpp>
 
 #include <catch2/catch_approx.hpp>
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -76,6 +78,12 @@ bool noted(const Evaluation& evaluation, std::string_view text) {
 }
 
 }  // namespace
+
+// ── 契约：所有评测函数都要满足 ──
+
+TEMPLATE_LIST_TEST_CASE("评测函数契约", "[contract][eval]", BuiltinEvaluators) {
+    simpleslam::testing::checkEvaluatorContract<TestType>();
+}
 
 TEST_CASE("ate：统计量带单位，汇总表只收 rmse，逐帧误差进表格", "[eval][evaluators]") {
     AteEvaluator::Config config;

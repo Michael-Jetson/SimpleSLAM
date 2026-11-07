@@ -13,6 +13,7 @@
 
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace simpleslam::eval {
 
@@ -147,5 +148,9 @@ public:
 private:
     Config config_;
 };
+
+/// 内置的评测函数：一份类型表，同时驱动入口的目录登记与契约测试。加一个内置评测函数只改
+/// 这一行，它就既能在 YAML 里用 `type` 选到，也自动受契约测试。
+using BuiltinEvaluators = std::tuple<AteEvaluator, RpeEvaluator, KittiEvaluator, TimingEvaluator>;
 
 }  // namespace simpleslam::eval

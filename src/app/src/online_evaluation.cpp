@@ -115,7 +115,7 @@ void OnlineEvaluationModule::evaluateNow() {
         // 在线评测是额外的观察：一个评测函数出错只记一条警告，不影响这次运行
         try {
             const eval::Evaluation result = entry.evaluator->evaluate(inputs);
-            checkEvaluation(entry.name, result);
+            eval::checkEvaluation(entry.name, result);
             for (const auto& scalar : result.scalars) {
                 log_.metric(entry.name + "." + scalar.name, scalar.value, scalar.unit);
             }

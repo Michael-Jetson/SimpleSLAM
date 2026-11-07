@@ -131,6 +131,10 @@ public:
     [[nodiscard]] virtual std::vector<EventSample> events(std::string_view key) const;
 };
 
+/// 评测函数给的名字进指标名、文件名与 CSV 的表头，表格的每一行要与表头对齐。不合格时抛
+/// `std::runtime_error`，指名是哪个评测函数。执行器在用结果之前核对，契约测试模板也用它。
+void checkEvaluation(std::string_view evaluator, const Evaluation& result);
+
 class EvaluatorBase : public logging::Loggable {
 public:
     static constexpr std::string_view kInterfaceName = "EvaluatorBase";

@@ -14,6 +14,7 @@
 /// 失败、没有被隔离的异常；位姿有限，时刻是扫描的参考时刻；同样的输入跑两次轨迹逐位相同；
 /// 退化帧（空扫描、极稀疏、共面）上同样不出错，可以降级或跟丢。精度用评测函数另看。
 
+#include <SimpleSLAM/algo/builtins.hpp>
 #include <SimpleSLAM/config/plugin.hpp>
 #include <SimpleSLAM/modules/slam_system.hpp>
 #include <SimpleSLAM/plugins/odometry.hpp>
@@ -22,6 +23,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,16 +72,22 @@ inline void checkPoses(const fw::Trajectory& trajectory, int scans) {
 
 }  // namespace detail
 
-/// 方案契约。`config` 是被测方案的配置。
+/// 方案契约。`config` 是被测方案的配置。还原方案的插件节点时，目录里先登记了算法库的内置实现；
+/// 子槽默认用的是你自己的实现时，由 `register_children` 把它们加进目录。
 template <class S>
     requires config::PluginImplementation<S, plugin::OdometryBase>
-void checkOdometryContract(const typename S::Config& config = {}) {
+void checkOdometryContract(
+    const typename S::Config& config = {},
+    const std::function<void(config::Catalogs&)>& register_children = {}) {
     SECTION("能登记进目录，按类型名还原、构造") {
         config::Catalogs catalogs;
+        algo::registerBuiltins(catalogs);  // 方案的子槽多是算法库的接口
+        if (register_children) register_children(catalogs);
         catalogs.of<plugin::OdometryBase>().template add<S>();
-        const auto slot = catalogs.resolve<plugin::OdometryBase>(
-            config::PluginSpec{.type = std::string(S::kTypeName), .params = {}, .children = {}},
-            "system.modules.odometry.plugin");
+        // 用这份配置写成的插件节点还原，和 YAML 里写了它一样
+        const auto spec = config::Slot<plugin::OdometryBase>::of<S>(config).resolved();
+        const auto slot =
+            catalogs.resolve<plugin::OdometryBase>(spec, "system.modules.odometry.plugin");
         CHECK(slot.type() == S::kTypeName);
         CHECK(slot.make() != nullptr);
     }

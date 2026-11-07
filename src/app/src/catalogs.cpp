@@ -11,6 +11,7 @@
 #include <SimpleSLAM/plugins/sources/kitti_dataset.hpp>
 
 #include <string>
+#include <tuple>
 
 namespace simpleslam::app {
 
@@ -26,10 +27,9 @@ config::Catalogs builtinCatalogs() {
     catalogs.of<plugin::GraphOptimizerBase>().add<plugin::NoGraphOptimizer>();
 
     auto& evaluators = catalogs.of<eval::EvaluatorBase>();
-    evaluators.add<eval::AteEvaluator>();
-    evaluators.add<eval::RpeEvaluator>();
-    evaluators.add<eval::KittiEvaluator>();
-    evaluators.add<eval::TimingEvaluator>();
+    [&]<class... Ts>(const std::tuple<Ts...>* /*list*/) {
+        (evaluators.template add<Ts>(), ...);
+    }(static_cast<const eval::BuiltinEvaluators*>(nullptr));
     // 空目录：方案没有内置实现，用户在入口追加
     (void)catalogs.of<plugin::OdometryBase>();
     return catalogs;

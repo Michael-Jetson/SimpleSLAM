@@ -55,10 +55,6 @@ private:
     mutable std::vector<std::string> used_;
 };
 
-/// 评测函数给的名字进指标名、文件名与 CSV 的表头，表格的每一行要与表头对齐。不合格时抛，
-/// 指名是哪个评测函数。跑完评与在线评都在用结果之前核对。
-void checkEvaluation(const std::string& evaluator, const eval::Evaluation& result);
-
 /// 给人看的一行：样本数与进汇总表的那几项；没测出东西时写最后一条说明。
 [[nodiscard]] std::string summaryLine(const std::string& name, const std::string& type,
                                       const eval::Evaluation& result);

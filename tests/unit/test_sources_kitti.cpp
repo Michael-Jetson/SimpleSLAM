@@ -6,6 +6,8 @@
 /// 相机系换到 body 系、raw 的 body 是 IMU 且外参来自 calib_imu_to_velo。
 
 #include <SimpleSLAM/plugins/sources/kitti.hpp>
+#include <SimpleSLAM/plugins/sources/kitti_dataset.hpp>
+#include <SimpleSLAM/testing/dataset_reader_contract.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -298,6 +300,22 @@ TEST_CASE("odometry：跳帧与限帧", "[sources][kitti]") {
     std::size_t seen = 1;
     while (source.next()) ++seen;
     CHECK(seen == 4);
+}
+
+// ── 契约：两个 KITTI 读取器在合成的目录上过读取器契约 ──
+
+TEST_CASE("数据集读取器契约：kitti_odometry", "[contract][dataset]") {
+    TempDir dir("kitti_contract_odometry");
+    plugin::kitti::OdometryReader::Config config;
+    config.path = makeOdometryDataset(dir, 5, Eigen::Matrix3d::Identity()).string();
+    testing::checkDatasetReaderContract<plugin::kitti::OdometryReader>(config);
+}
+
+TEST_CASE("数据集读取器契约：kitti_raw", "[contract][dataset]") {
+    TempDir dir("kitti_contract_raw");
+    plugin::kitti::RawReader::Config config;
+    config.path = makeRawDataset(dir, 4, 10).string();
+    testing::checkDatasetReaderContract<plugin::kitti::RawReader>(config);
 }
 
 TEST_CASE("odometry：时刻只用数据集自带的 times.txt，缺了或行数不符都是错误", "[sources][kitti]") {
